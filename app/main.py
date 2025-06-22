@@ -12,7 +12,6 @@ from fastapi import FastAPI, HTTPException
 
 from xtts_service_v2 import TTSService
 from log_util import ColoredFormatter
-import version
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
