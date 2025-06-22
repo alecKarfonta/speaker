@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: speaker-config
+  namespace: speaker
+data:
+  ENVIRONMENT: "production"
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  WORKERS: "1"
+  LOG_LEVEL: "INFO"
+  MODEL_CACHE_DIR: "/app/model_cache"
+  AUDIO_SAVE_DIR: "/app/saved_audio"
+  CUDA_VISIBLE_DEVICES: "0" 
