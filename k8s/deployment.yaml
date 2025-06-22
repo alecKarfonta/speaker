@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: speaker
+  namespace: speaker
+  labels:
+    app: speaker
+    component: tts-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: speaker
+      component: tts-api
+  template:
+    metadata:
+      labels:
+        app: speaker
+        component: tts-api
+    spec:
+      containers:
+      - name: speaker-api
+        image: speaker:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: speaker-config
+              key: ENVIRONMENT
+        - name: API_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: speaker-config
+              key: API_HOST
+        - name: API_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: speaker-config
+              key: API_PORT
+        - name: WORKERS
+          valueFrom:
+            configMapKeyRef:
+              name: speaker-config
+              key: WORKERS
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: speaker-config
+              key: LOG_LEVEL
+        - name: MODEL_CACHE_DIR
+          valueFrom:
+            configMapKeyRef:
+              name: speaker-config
+              key: MODEL_CACHE_DIR
+        - name: AUDIO_SAVE_DIR
+          valueFrom:
+            configMapKeyRef:
+              name: speaker-config
+              key: AUDIO_SAVE_DIR
+        - name: CUDA_VISIBLE_DEVICES
+          valueFrom:
+            configMapKeyRef:
+              name: speaker-config
+              key: CUDA_VISIBLE_DEVICES
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2"
+            nvidia.com/gpu: 1
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: model-cache
+          mountPath: /app/model_cache
+        - name: saved-audio
+          mountPath: /app/saved_audio
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: speaker-model-cache
+      - name: saved-audio
+        emptyDir: {}
+      nodeSelector:
+        nvidia.com/gpu: "true" 

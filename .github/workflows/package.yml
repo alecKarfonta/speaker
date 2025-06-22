@@ -1,0 +1,161 @@
+name: Build and Publish Packages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/aleckarfonta/speaker
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Validate GHCR Token
+      run: |
+        echo "## 🔐 Token Validation" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Check if GHCR_TOKEN exists
+        if [ -n "${{ secrets.GHCR_TOKEN }}" ]; then
+          echo "✅ GHCR_TOKEN secret is available" >> $GITHUB_STEP_SUMMARY
+          echo "- Token length: ${#GHCR_TOKEN} characters" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ GHCR_TOKEN secret is NOT available" >> $GITHUB_STEP_SUMMARY
+          echo "Falling back to GITHUB_TOKEN..." >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check if GITHUB_TOKEN exists as fallback
+        if [ -n "${{ secrets.GITHUB_TOKEN }}" ]; then
+          echo "✅ GITHUB_TOKEN is available as fallback" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ No tokens available!" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Using token:** ${{ secrets.GHCR_TOKEN && 'GHCR_TOKEN' || 'GITHUB_TOKEN' }}" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+    
+    - name: Verify Docker Login
+      run: |
+        echo "## 🐳 Docker Login Verification" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Test if we can access GHCR
+        if docker pull hello-world:latest 2>/dev/null; then
+          echo "✅ Docker daemon is working" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Docker daemon issues" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Test GHCR access
+        if curl -s -f https://ghcr.io/v2/ > /dev/null; then
+          echo "✅ GHCR registry is accessible" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ GHCR registry access issues" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Registry:** ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Username:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Image:** ${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Get version
+      id: version
+      run: |
+        VERSION=$(grep 'app_version =' app/version.py | sed 's/.*"\(.*\)".*/\1/' || echo "1.0.0")
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Using version: $VERSION"
+    
+    - name: Debug info
+      run: |
+        echo "Registry: ${{ env.REGISTRY }}"
+        echo "Image name: ${{ env.IMAGE_NAME }}"
+        echo "Actor: ${{ github.actor }}"
+        echo "Repository: ${{ github.repository }}"
+        echo "Repository owner: ${{ github.repository_owner }}"
+        echo "Token type: ${{ secrets.GHCR_TOKEN && 'GHCR_TOKEN' || 'GITHUB_TOKEN' }}"
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.IMAGE_NAME }}
+        tags: |
+          type=raw,value=v${{ steps.version.outputs.version }}
+          type=raw,value=latest
+          type=sha,prefix=main-
+        labels: |
+          org.opencontainers.image.title=Speaker TTS API
+          org.opencontainers.image.description=Text-to-Speech API using XTTS v2 voice cloning
+          org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          org.opencontainers.image.url=https://github.com/${{ github.repository }}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64
+    
+    - name: Create or update release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.version.outputs.version }}
+        name: Release v${{ steps.version.outputs.version }}
+        body: |
+          ## Docker Images
+          - `${{ env.IMAGE_NAME }}:v${{ steps.version.outputs.version }}`
+          - `${{ env.IMAGE_NAME }}:latest`
+          
+          ## Quick Start
+          ```bash
+          docker pull ${{ env.IMAGE_NAME }}:v${{ steps.version.outputs.version }}
+          ```
+          
+          ## Changes
+          - Updated from commit ${{ github.sha }}
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Summary
+      run: |
+        echo "## 📦 Package Published Successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Version:** v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Images:**" >> $GITHUB_STEP_SUMMARY
+        echo "- \`${{ env.IMAGE_NAME }}:v${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- \`${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Package URL:** https://github.com/${{ github.repository }}/pkgs/container/speaker" >> $GITHUB_STEP_SUMMARY
+        echo "**Release URL:** https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY 
