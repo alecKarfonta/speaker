@@ -13,7 +13,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  BACKEND_IMAGE_NAME: ${{ github.repository }}
+  FRONTEND_IMAGE_NAME: ${{ github.repository }}-frontend
 
 jobs:
   # Code Quality and Testing
@@ -111,7 +112,7 @@ jobs:
         name: frontend-build
         path: frontend/dist/
 
-  # Build and Push Docker Image
+  # Build and Push Docker Images
   build-and-push:
     needs: [quality-check, frontend-quality]
     runs-on: ubuntu-latest
@@ -120,8 +121,9 @@ jobs:
       packages: write
     
     outputs:
-      image: ${{ steps.image.outputs.image }}
-      digest: ${{ steps.build.outputs.digest }}
+      backend-image: ${{ steps.backend-image.outputs.image }}
+      frontend-image: ${{ steps.frontend-image.outputs.image }}
+      digest: ${{ steps.build-backend.outputs.digest }}
     
     steps:
     - name: Checkout code
@@ -137,34 +139,63 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Extract metadata
-      id: meta
+    - name: Extract metadata for backend
+      id: meta-backend
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        images: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}
         tags: |
           type=ref,event=branch
           type=ref,event=pr
           type=sha,prefix={{branch}}-
           type=raw,value=latest,enable={{is_default_branch}}
     
-    - name: Build and push Docker image
-      id: build
+    - name: Extract metadata for frontend
+      id: meta-frontend
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: Build and push backend Docker image
+      id: build-backend
       uses: docker/build-push-action@v5
       with:
         context: .
         file: ./Dockerfile
         push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
+        tags: ${{ steps.meta-backend.outputs.tags }}
+        labels: ${{ steps.meta-backend.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         platforms: linux/amd64
     
-    - name: Output image
-      id: image
+    - name: Build and push frontend Docker image
+      id: build-frontend
+      uses: docker/build-push-action@v5
+      with:
+        context: ./frontend
+        file: ./frontend/Dockerfile
+        push: true
+        tags: ${{ steps.meta-frontend.outputs.tags }}
+        labels: ${{ steps.meta-frontend.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64
+    
+    - name: Output backend image
+      id: backend-image
       run: |
-        echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+        echo "image=${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+    
+    - name: Output frontend image
+      id: frontend-image
+      run: |
+        echo "image=${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
 
   # Security Scanning
   security-scan:
@@ -174,18 +205,31 @@ jobs:
       security-events: write
     
     steps:
-    - name: Run Trivy vulnerability scanner
+    - name: Run Trivy vulnerability scanner on backend
       uses: aquasecurity/trivy-action@master
       with:
-        image-ref: ${{ needs.build-and-push.outputs.image }}
+        image-ref: ${{ needs.build-and-push.outputs.backend-image }}
         format: 'sarif'
-        output: 'trivy-results.sarif'
+        output: 'trivy-backend-results.sarif'
+    
+    - name: Run Trivy vulnerability scanner on frontend
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ needs.build-and-push.outputs.frontend-image }}
+        format: 'sarif'
+        output: 'trivy-frontend-results.sarif'
     
     - name: Upload Trivy scan results to GitHub Security tab
       uses: github/codeql-action/upload-sarif@v2
       if: always()
       with:
-        sarif_file: 'trivy-results.sarif'
+        sarif_file: 'trivy-backend-results.sarif'
+    
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-frontend-results.sarif'
 
   # Deploy to Development
   deploy-dev:
@@ -207,10 +251,11 @@ jobs:
       run: |
         echo "${{ secrets.KUBECONFIG_DEV }}" | base64 -d > $HOME/.kube/config
     
-    - name: Update image in deployment
+    - name: Update images in deployment
       run: |
         cd k8s
-        sed -i "s|image: speaker:latest|image: ${{ needs.build-and-push.outputs.image }}|g" deployment.yaml
+        sed -i "s|image: speaker:latest|image: ${{ needs.build-and-push.outputs.backend-image }}|g" deployment.yaml
+        sed -i "s|image: speaker-frontend:latest|image: ${{ needs.build-and-push.outputs.frontend-image }}|g" frontend-deployment.yaml
         sed -i "s|namespace: speaker|namespace: speaker-dev|g" *.yaml
     
     - name: Deploy to development
@@ -221,20 +266,25 @@ jobs:
         kubectl apply -f secret.yaml
         kubectl apply -f pvc.yaml
         kubectl apply -f deployment.yaml
+        kubectl apply -f frontend-deployment.yaml
         kubectl apply -f service.yaml
+        kubectl apply -f frontend-service.yaml
         kubectl apply -f hpa.yaml
         kubectl apply -f monitoring/
     
     - name: Wait for deployment
       run: |
         kubectl wait --for=condition=available --timeout=600s deployment/speaker -n speaker-dev
+        kubectl wait --for=condition=available --timeout=600s deployment/speaker-frontend -n speaker-dev
     
     - name: Run smoke tests
       run: |
         kubectl port-forward service/speaker-service 8010:8000 -n speaker-dev &
+        kubectl port-forward service/speaker-frontend-service 3010:80 -n speaker-dev &
         sleep 10
         curl -f http://localhost:8010/health || exit 1
         curl -f http://localhost:8010/voices || exit 1
+        curl -f http://localhost:3010/ || exit 1
 
   # Deploy to Production
   deploy-prod:
@@ -256,10 +306,11 @@ jobs:
       run: |
         echo "${{ secrets.KUBECONFIG_PROD }}" | base64 -d > $HOME/.kube/config
     
-    - name: Update image in deployment
+    - name: Update images in deployment
       run: |
         cd k8s
-        sed -i "s|image: speaker:latest|image: ${{ needs.build-and-push.outputs.image }}|g" deployment.yaml
+        sed -i "s|image: speaker:latest|image: ${{ needs.build-and-push.outputs.backend-image }}|g" deployment.yaml
+        sed -i "s|image: speaker-frontend:latest|image: ${{ needs.build-and-push.outputs.frontend-image }}|g" frontend-deployment.yaml
     
     - name: Deploy to production
       run: |
@@ -269,7 +320,9 @@ jobs:
         kubectl apply -f secret.yaml
         kubectl apply -f pvc.yaml
         kubectl apply -f deployment.yaml
+        kubectl apply -f frontend-deployment.yaml
         kubectl apply -f service.yaml
+        kubectl apply -f frontend-service.yaml
         kubectl apply -f ingress.yaml
         kubectl apply -f hpa.yaml
         kubectl apply -f monitoring/
@@ -277,6 +330,7 @@ jobs:
     - name: Wait for deployment
       run: |
         kubectl wait --for=condition=available --timeout=600s deployment/speaker -n speaker
+        kubectl wait --for=condition=available --timeout=600s deployment/speaker-frontend -n speaker
     
     - name: Run production health checks
       run: |
@@ -284,6 +338,7 @@ jobs:
         sleep 30
         curl -f https://speaker-api.yourdomain.com/health || exit 1
         curl -f https://speaker-api.yourdomain.com/voices || exit 1
+        curl -f https://speaker.yourdomain.com/ || exit 1
     
     - name: Notify deployment
       uses: 8398a7/action-slack@v3
@@ -294,5 +349,6 @@ jobs:
         webhook_url: ${{ secrets.SLACK_WEBHOOK }}
         text: |
           TTS API deployment to production: ${{ job.status }}
-          Image: ${{ needs.build-and-push.outputs.image }}
+          Backend Image: ${{ needs.build-and-push.outputs.backend-image }}
+          Frontend Image: ${{ needs.build-and-push.outputs.frontend-image }}
           Commit: ${{ github.sha }} 
