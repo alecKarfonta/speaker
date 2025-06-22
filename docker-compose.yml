@@ -30,3 +30,24 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    networks:
+      - tts-network
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3010:80"
+    depends_on:
+      - tts-api
+    networks:
+      - tts-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  tts-network:
+    driver: bridge

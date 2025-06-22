@@ -82,4 +82,20 @@ htmlcov/
 
 # Audio test files
 test_coqui_*.wav
-test_real_openaudio_*.wav 
+test_real_openaudio_*.wav
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.next/
+frontend/.nuxt/
+frontend/.output/
+frontend/.cache/ 
