@@ -1,0 +1,202 @@
+name: Release and Package
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Check if we need to create a new release
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.version_check.outputs.should_release }}
+      current_version: ${{ steps.version_check.outputs.current_version }}
+      new_version: ${{ steps.version_check.outputs.new_version }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Get current version
+      id: current_version
+      run: |
+        CURRENT_VERSION=$(grep 'app_version:' app/version.py | sed 's/.*"\(.*\)".*/\1/')
+        echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        echo "Current version: $CURRENT_VERSION"
+    
+    - name: Check if tag exists
+      id: version_check
+      run: |
+        CURRENT_VERSION=${{ steps.current_version.outputs.version }}
+        
+        # Check if tag already exists
+        if git tag --list | grep -q "^v$CURRENT_VERSION$"; then
+          echo "Tag v$CURRENT_VERSION already exists, incrementing patch version"
+          # Auto-increment patch version
+          IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+          MAJOR=${VERSION_PARTS[0]}
+          MINOR=${VERSION_PARTS[1]}
+          PATCH=$((${VERSION_PARTS[2]} + 1))
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "should_release=true" >> $GITHUB_OUTPUT
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Will create new version: $NEW_VERSION"
+        else
+          echo "Tag v$CURRENT_VERSION does not exist, will create release"
+          echo "should_release=true" >> $GITHUB_OUTPUT
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "new_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        fi
+
+  # Update version if needed
+  update-version:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true' && needs.check-version.outputs.current_version != needs.check-version.outputs.new_version
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Update version in config
+      run: |
+        NEW_VERSION=${{ needs.check-version.outputs.new_version }}
+        sed -i "s/app_version: str = \".*\"/app_version: str = \"$NEW_VERSION\"/" app/version.py
+        
+        # Also update hardcoded versions in other files
+        find . -name "*.py" -type f -exec sed -i "s/version=\"[0-9]*\.[0-9]*\.[0-9]*\"/version=\"$NEW_VERSION\"/g" {} +
+        find . -name "*.py" -type f -exec sed -i "s/\"version\": \"[0-9]*\.[0-9]*\.[0-9]*\"/\"version\": \"$NEW_VERSION\"/g" {} +
+    
+    - name: Commit version update
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add -A
+        git commit -m "Bump version to ${{ needs.check-version.outputs.new_version }}" || exit 0
+        git push
+
+  # Build and test before release
+  build-and-test:
+    needs: [check-version, update-version]
+    if: always() && needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+      image_tags: ${{ steps.meta.outputs.tags }}
+    
+    permissions:
+      contents: read
+      packages: write
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: main  # Get the latest commit including version update
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run basic tests
+      run: |
+        python -m py_compile app/version.py
+        python -m py_compile app/main.py
+        python -m py_compile app/xtts_service_v2.py
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=raw,value=v${{ needs.check-version.outputs.new_version }}
+          type=raw,value=latest
+          type=sha,prefix={{branch}}-
+    
+    - name: Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64
+
+  # Create GitHub release
+  create-release:
+    needs: [check-version, build-and-test]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        ref: main
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Get commits since last tag
+        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+        if [ -z "$LAST_TAG" ]; then
+          COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+        else
+          COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+        fi
+        
+        echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+        echo "## What's Changed" >> $GITHUB_OUTPUT
+        echo "" >> $GITHUB_OUTPUT
+        echo "$COMMITS" >> $GITHUB_OUTPUT
+        echo "" >> $GITHUB_OUTPUT
+        echo "## Docker Images" >> $GITHUB_OUTPUT
+        echo "- \`ghcr.io/${{ github.repository }}:v${{ needs.check-version.outputs.new_version }}\`" >> $GITHUB_OUTPUT
+        echo "- \`ghcr.io/${{ github.repository }}:latest\`" >> $GITHUB_OUTPUT
+        echo "" >> $GITHUB_OUTPUT
+        echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...v${{ needs.check-version.outputs.new_version }}" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+    
+    - name: Create Release
+      uses: actions/create-release@v1
+      id: create_release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ needs.check-version.outputs.new_version }}
+        release_name: Release v${{ needs.check-version.outputs.new_version }}
+        body: ${{ steps.changelog.outputs.CHANGELOG }}
+        draft: false
+        prerelease: false 

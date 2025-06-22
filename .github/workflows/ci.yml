@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run syntax checks
+      run: |
+        python -m py_compile app/version.py
+        python -m py_compile app/main.py
+        python -m py_compile app/xtts_service_v2.py
+        python -m py_compile app/log_util.py
+        python -m py_compile app/models.py
+    
+    - name: Test Docker build
+      run: |
+        docker build -t speaker-test .
+        docker run --rm speaker-test python -c "import app.version; print(f'Version: {app.version.app_version}')" 

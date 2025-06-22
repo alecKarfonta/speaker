@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Audio files (keep voice samples but exclude test files)
+test_*.wav
+test_*.mp3
+output.wav
+
+# Model cache
+model_cache/
+dependencies_cache/
+
+# Docker
+.dockerignore
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Coverage reports
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Test files
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Audio test files
+test_coqui_*.wav
+test_real_openaudio_*.wav 
