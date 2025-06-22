@@ -1,0 +1,11 @@
+FROM grafana/grafana:10.0.0
+
+# Copy dashboard configuration
+COPY grafana-datasource.yaml /etc/grafana/provisioning/datasources/prometheus.yaml
+COPY grafana-dashboard-provider.yaml /etc/grafana/provisioning/dashboards/dashboard-provider.yaml
+COPY tts-dashboard.json /etc/grafana/dashboards/tts-dashboard.json
+
+# Set environment variables
+ENV GF_SECURITY_ADMIN_PASSWORD=admin123
+ENV GF_USERS_ALLOW_SIGN_UP=false
+ENV GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel 

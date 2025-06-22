@@ -1,0 +1,130 @@
+{
+  "id": null,
+  "title": "TTS API Performance Dashboard",
+  "tags": ["tts", "api", "performance"],
+  "style": "dark",
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Rate",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(tts_requests_total[5m])",
+          "legendFormat": "{{endpoint}} - {{method}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "id": 2,
+      "title": "Response Time by Word Count",
+      "type": "heatmap",
+      "targets": [
+        {
+          "expr": "rate(tts_word_count_duration_seconds_bucket[5m])",
+          "legendFormat": "{{word_count_range}} words"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "id": 3,
+      "title": "Response Time by Voice",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(tts_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "{{voice_name}} - P95"
+        },
+        {
+          "expr": "histogram_quantile(0.50, rate(tts_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "{{voice_name}} - P50"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "id": 4,
+      "title": "Error Rate",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(tts_errors_total[5m])",
+          "legendFormat": "{{error_type}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "id": 5,
+      "title": "System Resources",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "tts_system_cpu_usage_percent",
+          "legendFormat": "CPU Usage %"
+        },
+        {
+          "expr": "tts_system_memory_usage_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "Memory Usage GB"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+    },
+    {
+      "id": 6,
+      "title": "Active Voices",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "tts_active_voices",
+          "legendFormat": "Active Voices"
+        }
+      ],
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 16}
+    },
+    {
+      "id": 7,
+      "title": "Model Load Time",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "tts_model_load_time_seconds",
+          "legendFormat": "Load Time (s)"
+        }
+      ],
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 16}
+    },
+    {
+      "id": 8,
+      "title": "Response Time Distribution",
+      "type": "histogram",
+      "targets": [
+        {
+          "expr": "rate(tts_request_duration_seconds_bucket[5m])",
+          "legendFormat": "{{le}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24}
+    },
+    {
+      "id": 9,
+      "title": "Character Count Performance",
+      "type": "heatmap",
+      "targets": [
+        {
+          "expr": "rate(tts_character_count_duration_seconds_bucket[5m])",
+          "legendFormat": "{{char_count_range}} chars"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "10s"
+} 
