@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { Play, Upload, Settings } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Play } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
 
 interface Voice {
