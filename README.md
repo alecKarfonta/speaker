@@ -12,6 +12,7 @@ A high-quality Text-to-Speech API with XTTS v2 voice cloning capabilities, featu
 - **Monitoring & Metrics**: Built-in performance monitoring and health checks
 - **Rate Limiting**: Configurable rate limiting to prevent abuse
 - **Audit Logging**: Comprehensive audit trail for sensitive operations
+- **Performance Monitoring**: Intelligent word-based performance tracking with Prometheus metrics
 
 ## 📋 Stage 1 Improvements
 
@@ -41,130 +42,36 @@ A high-quality Text-to-Speech API with XTTS v2 voice cloning capabilities, featu
 - CUDA-compatible GPU (recommended)
 - 8GB+ RAM
 
-### Quick Start
+## 🚀 Quick Start
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd speaker
-   ```
+### Using Docker Compose (Recommended)
 
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+# Start with monitoring stack
+./scripts/start_monitoring.sh
 
-3. **Run the API**
-   ```bash
-   python -m app.main
-   ```
+# Or start basic services only
+docker-compose up -d
+```
 
-4. **Access the API**
-   - API: http://localhost:8010
-   - Documentation: http://localhost:8010/docs
-   - Health Check: http://localhost:8010/health
+### Manual Setup
+
+1. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+2. Start the API:
+```bash
+python app/main.py
+```
+
+The API will be available at `http://localhost:8010`
 
 ## 📚 API Documentation
 
-### Base URL
-```
-http://localhost:8010
-```
-
-### Authentication
-Currently, the API is open access with rate limiting. API key authentication can be enabled via configuration.
-
-### Rate Limits
-- 100 requests per minute per IP address
-- Configurable via environment variables
-
-### Endpoints
-
-#### 🏠 Root Endpoint
-```http
-GET /
-```
-Returns API information and status.
-
-**Response:**
-```json
-{
-  "message": "Welcome to the Speaker TTS API",
-  "version": "1.0.0",
-  "model": "xtts_v2",
-  "status": "operational",
-  "documentation": "/docs",
-  "health_check": "/health"
-}
-```
-
-#### 🎯 TTS Generation
-```http
-POST /tts
-```
-
-**Request Body:**
-```json
-{
-  "text": "Hello, this is a test of the TTS system.",
-  "voice_name": "demo_1",
-  "language": "en",
-  "temperature": 0.8,
-  "top_p": 0.9,
-  "emotion": "(happy)",
-  "speed": 1.0
-}
-```
-
-**Parameters:**
-- `text` (string, required): Text to convert (1-2000 characters)
-- `voice_name` (string, required): Name of the voice to use
-- `language` (string, optional): Two-letter language code (default: "en")
-- `temperature` (float, optional): Randomness control (0.1-1.0, default: 0.8)
-- `top_p` (float, optional): Top-p sampling (0.1-1.0, default: 0.9)
-- `emotion` (string, optional): Emotion tag like "(happy)", "(sad)", etc.
-- `speed` (float, optional): Speech speed multiplier (0.5-2.0, default: 1.0)
-
-**Response:** Audio data in WAV format
-
-#### 🎤 Voice Management
-
-**List Voices**
-```http
-GET /voices
-```
-
-**Upload Voice**
-```http
-POST /voices
-Content-Type: multipart/form-data
-
-voice_name: my_voice
-file: [audio_file.wav]
-```
-
-**Delete Voice**
-```http
-DELETE /voices/{voice_name}
-```
-
-#### 🌍 Languages
-```http
-GET /languages
-```
-Returns supported languages and their codes.
-
-#### 💓 Health Check
-```http
-GET /health
-```
-Returns service health status and system metrics.
-
-#### 📊 Metrics
-```http
-GET /metrics
-```
-Returns API usage metrics and performance statistics.
+- **Interactive Docs**: http://localhost:8010/docs
+- **OpenAPI Spec**: http://localhost:8010/openapi.json
 
 ## 🔧 Configuration
 
@@ -278,11 +185,11 @@ docker run -p 8010:8010 speaker-tts
 
 ### Docker Compose
 ```bash
-# Start services
-docker-compose up -d
+# Start with monitoring stack
+./scripts/start_monitoring.sh
 
-# View logs
-docker-compose logs -f
+# Or start basic services only
+docker-compose up -d
 ```
 
 ### Kubernetes
@@ -348,3 +255,78 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ---
 
 **Next Steps**: See `plans/next-steps.md` for upcoming improvements and roadmap.
+
+## Performance Monitoring
+
+The TTS API includes comprehensive performance monitoring with intelligent word-based tracking:
+
+### Metrics Available
+
+- **Request Performance**: Response times by endpoint, voice, and language
+- **Word-based Analysis**: Performance categorized by word count ranges (1-10, 11-25, 26-50, 51-100, 101-200, 200+)
+- **Character-based Analysis**: Performance by character count ranges
+- **System Resources**: CPU, memory, and GPU usage
+- **Error Tracking**: Error rates and types
+- **Voice Usage**: Most popular voices and languages
+
+### Monitoring Stack
+
+The monitoring stack is now integrated into the main Docker Compose setup:
+
+- **Prometheus**: Metrics collection and storage
+- **Grafana**: Beautiful dashboards for visualization
+- **Real-time Monitoring**: Live performance tracking
+
+### Accessing Metrics
+
+- **Prometheus Metrics**: http://localhost:8010/prometheus
+- **API Metrics**: http://localhost:8010/metrics
+- **Prometheus UI**: http://localhost:9090
+- **Grafana Dashboard**: http://localhost:3000 (admin/admin123)
+- **Frontend**: http://localhost:3010
+
+### Key Metrics
+
+The system tracks these intelligent metrics:
+
+1. **Word Count Performance**: 
+   - Tracks response time based on actual word count
+   - Handles emotion tags intelligently (e.g., "(happy) Hello world" counts as 2 words)
+   - Categorizes into meaningful ranges for analysis
+
+2. **Character Count Performance**:
+   - Tracks performance by character count ranges
+   - Useful for understanding text length impact
+
+3. **Voice-specific Performance**:
+   - Each voice's performance is tracked separately
+   - Helps identify which voices are faster/slower
+
+4. **System Health**:
+   - Real-time CPU and memory usage
+   - GPU utilization (if available)
+   - Model load times
+
+### Prometheus Metrics
+
+The API exposes these Prometheus metrics:
+
+- `tts_requests_total`: Total request count with labels
+- `tts_request_duration_seconds`: Request duration histograms
+- `tts_word_count_duration_seconds`: Word-based performance
+- `tts_character_count_duration_seconds`: Character-based performance
+- `tts_active_voices`: Number of active voices
+- `tts_system_memory_usage_bytes`: Memory usage
+- `tts_system_cpu_usage_percent`: CPU usage
+- `tts_errors_total`: Error counts by type
+
+### Grafana Dashboard
+
+The included Grafana dashboard provides:
+
+- Request rate visualization
+- Response time heatmaps by word count
+- Voice performance comparison
+- Error rate tracking
+- System resource monitoring
+- Real-time performance distribution

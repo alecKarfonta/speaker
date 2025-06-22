@@ -115,12 +115,30 @@ class TTSService:
         """Initialize TTS model with multiple fallback strategies"""
         self.logger.debug("Starting model initialization")
 
-        # Maybe download the model
-        download_result = ModelManager().download_model(self.model_name)
-        model_dir = str(download_result[0])
+        # Set environment variable to automatically accept TOS
+        os.environ["TTS_TOS"] = "y"
+        
+        # Check if model already exists
+        model_dir = os.path.expanduser(f"~/.local/share/tts/tts_models--multilingual--multi-dataset--xtts_v2")
         model_path = f"{model_dir}/model.pth"
         config_path = f"{model_dir}/config.json"
         vocab_path = f"{model_dir}/vocab.json"
+        
+        # Only download if model doesn't exist
+        if not os.path.exists(model_path):
+            self.logger.info("Model not found, downloading...")
+            try:
+                # Try to download with TOS acceptance
+                download_result = ModelManager().download_model(self.model_name)
+                model_dir = str(download_result[0])
+                model_path = f"{model_dir}/model.pth"
+                config_path = f"{model_dir}/config.json"
+                vocab_path = f"{model_dir}/vocab.json"
+            except Exception as e:
+                self.logger.error(f"Failed to download model: {e}")
+                raise
+        else:
+            self.logger.info("Model already exists, using cached version")
         
         self.xtts_config = XttsConfig()
         self.xtts_config.load_json(config_path)
@@ -146,7 +164,6 @@ class TTSService:
             self.logger.warning("CUDA not available, using CPU. This will be slower.")
         self.model.eval()
         self.logger.debug("Model initialized successfully")
-        
 
     def load_voice(self, voice_name: str, voice_path: str):
         """Load a voice file into memory"""

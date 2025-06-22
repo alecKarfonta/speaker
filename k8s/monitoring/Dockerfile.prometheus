@@ -1,0 +1,7 @@
+FROM prom/prometheus:v2.45.0
+
+# Copy Prometheus configuration
+COPY prometheus-config.yaml /etc/prometheus/prometheus.yml
+
+# Set command arguments
+CMD ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--web.console.libraries=/etc/prometheus/console_libraries", "--web.console.templates=/etc/prometheus/consoles", "--storage.tsdb.retention.time=200h", "--web.enable-lifecycle"] 

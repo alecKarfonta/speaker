@@ -6,9 +6,6 @@ services:
     build: .
     ports:
       - "8010:8000"
-    volumes:
-      - /home/alec/git/model_cache/:/app/model_cache/
-      - /home/alec/git/model_cache/dependencies_cache:/dependencies_cache
     environment:
       - ENVIRONMENT=development
       - PYTHONPATH=/app:/app
@@ -16,6 +13,7 @@ services:
       - TORCH_HOME=/app/model_cache/torch
       - TRANSFORMERS_CACHE=/app/model_cache/transformers
       - NVIDIA_VISIBLE_DEVICES=all
+      - COQUI_TOS_AGREED=1
     deploy:
       resources:
         reservations:
@@ -49,6 +47,50 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  # Prometheus for metrics collection
+  prometheus:
+    build:
+      context: ./k8s/monitoring
+      dockerfile: Dockerfile.prometheus
+    ports:
+      - "9199:9090"
+    volumes:
+      - prometheus_data:/prometheus
+    networks:
+      - tts-network
+    depends_on:
+      - tts-api
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Grafana for metrics visualization
+  grafana:
+    build:
+      context: ./k8s/monitoring
+      dockerfile: Dockerfile.grafana
+    ports:
+      - "3333:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - tts-network
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  prometheus_data:
+  grafana_data:
 
 networks:
   tts-network:

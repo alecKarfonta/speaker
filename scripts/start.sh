@@ -17,7 +17,7 @@ which uvicorn
 uvicorn --version
 
 # Start the uvicorn server from the app directory where main.py is located
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 
 set +x  # Disable verbose mode

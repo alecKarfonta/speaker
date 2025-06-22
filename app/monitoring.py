@@ -6,15 +6,76 @@ Provides functionality for tracking API usage, performance metrics, and health m
 import time
 import psutil
 import threading
+import re
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
 import logging
 
+# Prometheus metrics
+from prometheus_client import (
+    Counter, Histogram, Gauge, Summary, generate_latest, 
+    CONTENT_TYPE_LATEST, REGISTRY
+)
+
 logger = logging.getLogger(__name__)
 
+# Prometheus metrics
+REQUEST_COUNT = Counter(
+    'tts_requests_total',
+    'Total number of TTS requests',
+    ['endpoint', 'method', 'status_code', 'voice_name', 'language']
+)
+
+REQUEST_DURATION = Histogram(
+    'tts_request_duration_seconds',
+    'Request duration in seconds',
+    ['endpoint', 'voice_name', 'language'],
+    buckets=[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0]
+)
+
+WORD_COUNT_DURATION = Histogram(
+    'tts_word_count_duration_seconds',
+    'Request duration by word count',
+    ['word_count_range', 'voice_name'],
+    buckets=[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0]
+)
+
+CHARACTER_COUNT_DURATION = Histogram(
+    'tts_character_count_duration_seconds',
+    'Request duration by character count',
+    ['char_count_range', 'voice_name'],
+    buckets=[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0]
+)
+
+ACTIVE_VOICES = Gauge(
+    'tts_active_voices',
+    'Number of active voices'
+)
+
+MODEL_LOAD_TIME = Gauge(
+    'tts_model_load_time_seconds',
+    'Time taken to load the TTS model'
+)
+
+SYSTEM_MEMORY_USAGE = Gauge(
+    'tts_system_memory_usage_bytes',
+    'System memory usage in bytes'
+)
+
+SYSTEM_CPU_USAGE = Gauge(
+    'tts_system_cpu_usage_percent',
+    'System CPU usage percentage'
+)
+
+ERROR_COUNT = Counter(
+    'tts_errors_total',
+    'Total number of errors',
+    ['error_type', 'endpoint']
+)
+
 class MetricsCollector:
-    """Collects and tracks API metrics"""
+    """Collects and tracks API metrics with intelligent word-based performance tracking"""
     
     def __init__(self, max_history: int = 1000):
         self.max_history = max_history
@@ -38,22 +99,90 @@ class MetricsCollector:
         self.model_load_time = None
         self.last_request_time = None
         
+        # Word-based performance tracking
+        self.word_count_performance = defaultdict(list)
+        self.character_count_performance = defaultdict(list)
+        
         # Thread safety
         self._lock = threading.Lock()
     
+    def _count_words(self, text: str) -> int:
+        """Count words in text, handling various text formats"""
+        if not text:
+            return 0
+        
+        # Remove emotion tags like (happy), (sad), etc.
+        text = re.sub(r'\([^)]*\)', '', text)
+        
+        # Split by whitespace and filter out empty strings
+        words = [word for word in text.split() if word.strip()]
+        return len(words)
+    
+    def _get_word_count_range(self, word_count: int) -> str:
+        """Get word count range for categorization"""
+        if word_count <= 10:
+            return "1-10"
+        elif word_count <= 25:
+            return "11-25"
+        elif word_count <= 50:
+            return "26-50"
+        elif word_count <= 100:
+            return "51-100"
+        elif word_count <= 200:
+            return "101-200"
+        else:
+            return "200+"
+    
+    def _get_char_count_range(self, char_count: int) -> str:
+        """Get character count range for categorization"""
+        if char_count <= 50:
+            return "1-50"
+        elif char_count <= 100:
+            return "51-100"
+        elif char_count <= 200:
+            return "101-200"
+        elif char_count <= 500:
+            return "201-500"
+        elif char_count <= 1000:
+            return "501-1000"
+        else:
+            return "1000+"
+    
     def record_request(self, endpoint: str, method: str, status_code: int, 
                       response_time: float, voice_name: Optional[str] = None,
-                      language: Optional[str] = None, text_length: Optional[int] = None):
-        """Record a request and its metrics"""
+                      language: Optional[str] = None, text_length: Optional[int] = None,
+                      text: Optional[str] = None):
+        """Record a request and its metrics with intelligent word-based tracking"""
         with self._lock:
             self.total_requests += 1
             self.last_request_time = datetime.utcnow()
+            
+            # Update Prometheus metrics
+            REQUEST_COUNT.labels(
+                endpoint=endpoint,
+                method=method,
+                status_code=str(status_code),
+                voice_name=voice_name or "unknown",
+                language=language or "unknown"
+            ).inc()
+            
+            REQUEST_DURATION.labels(
+                endpoint=endpoint,
+                voice_name=voice_name or "unknown",
+                language=language or "unknown"
+            ).observe(response_time)
             
             if 200 <= status_code < 400:
                 self.successful_requests += 1
             else:
                 self.failed_requests += 1
                 self.error_counts[f"{status_code}"] += 1
+                
+                # Record error in Prometheus
+                ERROR_COUNT.labels(
+                    error_type=f"http_{status_code}",
+                    endpoint=endpoint
+                ).inc()
             
             # Record timing
             self.request_times.append(response_time)
@@ -65,7 +194,8 @@ class MetricsCollector:
                 'response_time': response_time,
                 'voice_name': voice_name,
                 'language': language,
-                'text_length': text_length
+                'text_length': text_length,
+                'text': text
             })
             
             # Track voice and language usage
@@ -73,11 +203,88 @@ class MetricsCollector:
                 self.voice_usage[voice_name] += 1
             if language:
                 self.language_usage[language] += 1
+            
+            # Intelligent word-based performance tracking
+            if text and voice_name:
+                word_count = self._count_words(text)
+                char_count = len(text) if text else 0
+                
+                word_range = self._get_word_count_range(word_count)
+                char_range = self._get_char_count_range(char_count)
+                
+                # Store performance data
+                self.word_count_performance[word_range].append(response_time)
+                self.character_count_performance[char_range].append(response_time)
+                
+                # Update Prometheus histograms
+                WORD_COUNT_DURATION.labels(
+                    word_count_range=word_range,
+                    voice_name=voice_name
+                ).observe(response_time)
+                
+                CHARACTER_COUNT_DURATION.labels(
+                    char_count_range=char_range,
+                    voice_name=voice_name
+                ).observe(response_time)
     
     def record_model_load_time(self, load_time: float):
         """Record model loading time"""
         with self._lock:
             self.model_load_time = load_time
+            MODEL_LOAD_TIME.set(load_time)
+    
+    def update_system_metrics(self):
+        """Update system metrics for Prometheus"""
+        try:
+            # Memory usage
+            memory = psutil.virtual_memory()
+            SYSTEM_MEMORY_USAGE.set(memory.used)
+            
+            # CPU usage
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            SYSTEM_CPU_USAGE.set(cpu_percent)
+            
+            # Active voices
+            ACTIVE_VOICES.set(len(self.voice_usage))
+            
+        except Exception as e:
+            logger.error(f"Error updating system metrics: {e}")
+    
+    def get_word_performance_metrics(self) -> Dict[str, Any]:
+        """Get word-based performance metrics"""
+        with self._lock:
+            metrics = {}
+            
+            for word_range, times in self.word_count_performance.items():
+                if times:
+                    metrics[word_range] = {
+                        'count': len(times),
+                        'avg_time': sum(times) / len(times),
+                        'min_time': min(times),
+                        'max_time': max(times),
+                        'p95_time': sorted(times)[int(len(times) * 0.95)] if len(times) > 0 else 0,
+                        'p99_time': sorted(times)[int(len(times) * 0.99)] if len(times) > 0 else 0
+                    }
+            
+            return metrics
+    
+    def get_character_performance_metrics(self) -> Dict[str, Any]:
+        """Get character-based performance metrics"""
+        with self._lock:
+            metrics = {}
+            
+            for char_range, times in self.character_count_performance.items():
+                if times:
+                    metrics[char_range] = {
+                        'count': len(times),
+                        'avg_time': sum(times) / len(times),
+                        'min_time': min(times),
+                        'max_time': max(times),
+                        'p95_time': sorted(times)[int(len(times) * 0.95)] if len(times) > 0 else 0,
+                        'p99_time': sorted(times)[int(len(times) * 0.99)] if len(times) > 0 else 0
+                    }
+            
+            return metrics
     
     def get_metrics(self) -> Dict[str, Any]:
         """Get current metrics"""
@@ -109,7 +316,9 @@ class MetricsCollector:
                 'uptime': time.time() - self.start_time,
                 'top_voices': dict(sorted(self.voice_usage.items(), key=lambda x: x[1], reverse=True)[:5]),
                 'top_languages': dict(sorted(self.language_usage.items(), key=lambda x: x[1], reverse=True)[:5]),
-                'error_counts': dict(self.error_counts)
+                'error_counts': dict(self.error_counts),
+                'word_performance': self.get_word_performance_metrics(),
+                'character_performance': self.get_character_performance_metrics()
             }
     
     def reset_metrics(self):
@@ -123,6 +332,8 @@ class MetricsCollector:
             self.voice_usage.clear()
             self.language_usage.clear()
             self.error_counts.clear()
+            self.word_count_performance.clear()
+            self.character_count_performance.clear()
             self.start_time = time.time()
 
 class HealthMonitor:

@@ -15,15 +15,16 @@ from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from fastapi.openapi.utils import get_openapi
+from prometheus_client import generate_latest, REGISTRY, CONTENT_TYPE_LATEST
 
-from xtts_service_v2 import TTSService
-from log_util import ColoredFormatter
-from monitoring import metrics_collector, health_monitor, audit_logger, get_metrics, get_health
-from models import (
+from app.xtts_service_v2 import TTSService
+from app.log_util import ColoredFormatter
+from app.monitoring import metrics_collector, health_monitor, audit_logger, get_metrics, get_health
+from app.models import (
     TTSRequest, VoiceUploadResponse, VoiceDeleteResponse, LanguageListResponse,
     HealthResponse, APIInfo, MetricsResponse, ErrorResponse, ErrorDetail
 )
-import version
+import app.version as version
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -199,10 +200,12 @@ async def metrics_middleware(request: Request, call_next):
     voice_name = None
     language = None
     text_length = None
+    text = None
     
     # Try to extract TTS-specific metrics
     if request.url.path == "/tts" and request.method == "POST":
         try:
+            # Get the request body for TTS requests
             body = await request.body()
             # Note: This is a simplified approach. In production, you might want to
             # parse the JSON body more carefully
@@ -211,10 +214,11 @@ async def metrics_middleware(request: Request, call_next):
                 voice_name = "extracted_from_request"  # Simplified
                 language = "extracted_from_request"    # Simplified
                 text_length = len(body)  # Simplified
+                text = "extracted_from_request"  # Simplified
         except:
             pass
     
-    # Record metrics
+    # Record metrics with enhanced tracking
     metrics_collector.record_request(
         endpoint=request.url.path,
         method=request.method,
@@ -222,8 +226,12 @@ async def metrics_middleware(request: Request, call_next):
         response_time=response_time,
         voice_name=voice_name,
         language=language,
-        text_length=text_length
+        text_length=text_length,
+        text=text
     )
+    
+    # Update system metrics for Prometheus
+    metrics_collector.update_system_metrics()
     
     return response
 
@@ -411,6 +419,18 @@ async def generate_speech(
             user_agent
         )
         
+        # Record detailed metrics with actual text content for word-based tracking
+        metrics_collector.record_request(
+            endpoint="/tts",
+            method="POST",
+            status_code=200,
+            response_time=0,  # Will be set by middleware
+            voice_name=request.voice_name,
+            language=request.language,
+            text_length=len(request.text),
+            text=request.text  # Pass actual text for word counting
+        )
+        
         return Response(
             content=audio_bytes,
             media_type="audio/wav",
@@ -563,6 +583,23 @@ async def get_api_metrics():
     """
     metrics = get_metrics()
     return MetricsResponse(**metrics)
+
+@app.get("/prometheus")
+async def prometheus_metrics():
+    """
+    Prometheus metrics endpoint.
+    
+    Returns metrics in Prometheus format for scraping by monitoring systems.
+    """
+    return Response(
+        content=generate_latest(REGISTRY),
+        media_type=CONTENT_TYPE_LATEST,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
 
 if __name__ == "__main__":
     import uvicorn
