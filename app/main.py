@@ -16,10 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from fastapi.openapi.utils import get_openapi
 
-from .xtts_service_v2 import TTSService
-from .log_util import ColoredFormatter
-from .monitoring import metrics_collector, health_monitor, audit_logger, get_metrics, get_health
-from .models import (
+from xtts_service_v2 import TTSService
+from log_util import ColoredFormatter
+from monitoring import metrics_collector, health_monitor, audit_logger, get_metrics, get_health
+from models import (
     TTSRequest, VoiceUploadResponse, VoiceDeleteResponse, LanguageListResponse,
     HealthResponse, APIInfo, MetricsResponse, ErrorResponse, ErrorDetail
 )
@@ -253,8 +253,8 @@ async def get_voices():
 @app.post("/voices", status_code=status.HTTP_201_CREATED, response_model=VoiceUploadResponse)
 async def add_voice(
     voice_name: str, 
-    file: UploadFile = File(...),
-    request: Request = Depends(check_rate_limit)
+    request: Request,
+    file: UploadFile = File(...)
 ):
     """
     Add a new voice by uploading an audio file.
@@ -264,6 +264,9 @@ async def add_voice(
     
     The voice will be available for TTS generation after upload.
     """
+    # Check rate limit
+    check_rate_limit(request)
+    
     # Validate voice name (alphanumeric and underscores only)
     if not voice_name.replace('_', '').isalnum():
         raise HTTPException(
@@ -335,7 +338,7 @@ async def add_voice(
 @app.post("/tts", response_class=Response)
 async def generate_speech(
     request: TTSRequest,
-    http_request: Request = Depends(check_rate_limit)
+    http_request: Request
 ):
     """
     Generate speech from text using the specified voice.
@@ -350,6 +353,9 @@ async def generate_speech(
     
     Returns audio data in WAV format.
     """
+    # Check rate limit
+    check_rate_limit(http_request)
+    
     try:
         # Validate voice exists
         available_voices = tts_service.get_voices()
@@ -508,12 +514,15 @@ async def get_supported_languages():
     return LanguageListResponse(languages=languages, total_count=len(languages))
 
 @app.delete("/voices/{voice_name}", response_model=VoiceDeleteResponse)
-async def delete_voice(voice_name: str, request: Request = Depends(check_rate_limit)):
+async def delete_voice(voice_name: str, request: Request):
     """
     Delete a voice and all its associated audio files.
     
     - **voice_name**: Name of the voice to delete
     """
+    # Check rate limit
+    check_rate_limit(request)
+    
     voice_dir = f"data/voices/{voice_name}"
     
     if not os.path.exists(voice_dir):
