@@ -43,6 +43,9 @@ SpeechRecognition>=3.10.0
 openai-whisper>=20231117
 pyaudio>=0.2.11
 
+# System monitoring
+psutil>=5.9.0
+
 # Development dependencies
 packaging>=21.0
 setuptools>=65.0
