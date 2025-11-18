@@ -7,8 +7,8 @@ export default defineConfig({
     host: true,
     port: 3000,
     proxy: {
-      '/tts': 'http://tts_api:8000',
-      '/voices': 'http://tts_api:8000'
+      '/tts': 'http://localhost:8010',
+      '/voices': 'http://localhost:8010'
     }
   },
   build: {

@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     portaudio19-dev \
     libportaudio2 \
     libportaudiocpp0 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
