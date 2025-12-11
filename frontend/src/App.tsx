@@ -1,33 +1,59 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
-import Navigation from './components/Navigation';
-import TTSGenerator from './components/TTSGenerator';
-import LiveStreamTTS from './components/LiveStreamTTS';
+import TTSWorkspace from './components/tts/TTSWorkspace';
+
+// Placeholder components for other routes
+const LiveStream: React.FC = () => (
+  <div className="flex items-center justify-center h-screen bg-background text-text-secondary">
+    Live Stream (Coming Soon)
+  </div>
+);
+
+const VoiceLibrary: React.FC = () => (
+  <div className="flex items-center justify-center h-screen bg-background text-text-secondary">
+    Voice Library (Coming Soon)
+  </div>
+);
+
+const SettingsPage: React.FC = () => (
+  <div className="flex items-center justify-center h-screen bg-background text-text-secondary">
+    Settings (Coming Soon)
+  </div>
+);
 
 function App() {
   return (
     <Router>
-      <div className="flex flex-col min-h-screen bg-gray-50">
-        <header className="bg-blue-600 text-white p-4 shadow-md">
-          <h1 className="text-2xl font-bold">Text-to-Speech API Interface</h1>
-        </header>
-        
-        <Navigation />
-        
-        <main className="flex-1 p-4 max-w-4xl mx-auto w-full">
-          <Routes>
-            <Route path="/" element={<TTSGenerator />} />
-            <Route path="/stream" element={<LiveStreamTTS />} />
-          </Routes>
-        </main>
-        
-        <footer className="bg-gray-100 p-4 text-center text-gray-600 text-sm">
-          TTS Frontend Interface | API is available at /docs for Swagger UI
-        </footer>
-        
-        <Toaster position="top-right" />
-      </div>
+      <Routes>
+        <Route path="/" element={<TTSWorkspace />} />
+        <Route path="/stream" element={<LiveStream />} />
+        <Route path="/voices" element={<VoiceLibrary />} />
+        <Route path="/settings" element={<SettingsPage />} />
+      </Routes>
+      
+      <Toaster 
+        position="bottom-right"
+        toastOptions={{
+          style: {
+            background: 'var(--bg-secondary)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border-default)',
+          },
+          success: {
+            iconTheme: {
+              primary: 'var(--success)',
+              secondary: 'white',
+            },
+          },
+          error: {
+            iconTheme: {
+              primary: 'var(--error)',
+              secondary: 'white',
+            },
+          },
+        }}
+      />
     </Router>
   );
 }
