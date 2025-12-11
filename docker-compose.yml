@@ -8,12 +8,17 @@ services:
       - "8010:8000"
     environment:
       - ENVIRONMENT=development
-      - PYTHONPATH=/app:/app
+      - PYTHONPATH=/app:/app/GLM-TTS
       - HF_HOME=/app/model_cache/huggingface
       - TORCH_HOME=/app/model_cache/torch
       - TRANSFORMERS_CACHE=/app/model_cache/transformers
       - NVIDIA_VISIBLE_DEVICES=all
       - COQUI_TOS_AGREED=1
+      # TTS Backend: "xtts" or "glm-tts"
+      - TTS_BACKEND=xtts
+    volumes:
+      # Mount GLM-TTS model checkpoints (download separately: ~8GB)
+      - ./GLM-TTS/ckpt:/app/GLM-TTS/ckpt:ro
     deploy:
       resources:
         reservations:

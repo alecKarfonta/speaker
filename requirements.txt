@@ -15,6 +15,26 @@ soundfile>=0.12.0
 # TTS dependencies
 coqui-tts>=0.21.0
 
+# GLM-TTS dependencies (needed for glm-tts backend)
+onnxruntime-gpu>=1.17.0
+HyperPyYAML>=1.2.0
+safetensors>=0.4.0
+peft>=0.7.0
+inflect>=7.0.0
+contractions>=0.1.70
+WeTextProcessing>=1.0.3
+pypinyin>=0.44.0
+jieba>=0.42.1
+emoji>=2.0.0
+pronouncing>=0.2.0
+sentencepiece>=0.1.99
+zhconv>=1.4.3
+zhon>=2.1.1
+pydub>=0.25.1
+x_transformers>=1.40.0
+einops>=0.8.0
+jiwer>=4.0.0
+
 # Speech dependencies for OpenAudio TTS
 transformers>=4.30.0
 tokenizers>=0.13.0

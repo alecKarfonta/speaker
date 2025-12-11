@@ -36,15 +36,60 @@ class Settings(BaseModel):
     rate_limit_requests: int = Field(default=100)
     rate_limit_window: int = Field(default=60)
     
-    # TTS Model Configuration
-    model_name: str = Field(
-        default="tts_models--multilingual--multi-dataset--tts_models--multilingual--multi-dataset--xtts_v2"
+    # TTS Backend Configuration
+    tts_backend: str = Field(
+        default="xtts",
+        description="TTS backend to use: 'xtts' or 'glm-tts'"
     )
-    use_deepspeed: bool = Field(default=True)
+    
+    # XTTS Model Configuration
+    model_name: str = Field(
+        default="tts_models/multilingual/multi-dataset/xtts_v2"
+    )
+    use_deepspeed: bool = Field(default=False)
     tau: float = Field(default=0.3)
     gpt_cond_len: int = Field(default=3)
     top_k: int = Field(default=3)
     top_p: int = Field(default=5)
+    
+    # GLM-TTS Configuration
+    glm_tts_model_path: str = Field(
+        default="/app/GLM-TTS/ckpt",
+        description="Path to GLM-TTS model checkpoints"
+    )
+    glm_tts_sample_rate: int = Field(default=24000)
+    glm_tts_use_phoneme: bool = Field(default=False)
+    glm_tts_beam_size: int = Field(default=1)
+    glm_tts_sampling: int = Field(default=25)
+    # Token generation limits (higher = more audio per text)
+    # Note: these are based on TEXT TOKEN length, not character length
+    glm_tts_max_token_text_ratio: float = Field(
+        default=30.0,
+        description="Max audio tokens = text_token_len * this ratio"
+    )
+    glm_tts_min_token_text_ratio: float = Field(
+        default=8.0,
+        description="Min audio tokens = text_token_len * this ratio (prevents early EOS)"
+    )
+    # Text chunking (larger = fewer chunks, better continuity)
+    glm_tts_max_text_len: int = Field(
+        default=200,
+        description="Max characters per chunk before splitting"
+    )
+    glm_tts_min_text_len: int = Field(
+        default=50,
+        description="Min characters per chunk"
+    )
+    # STT API for voice transcription (used to get prompt_text)
+    # Use host.docker.internal from inside Docker containers
+    stt_api_url: str = Field(
+        default="http://host.docker.internal:8603/v1/audio/transcriptions",
+        description="URL of STT API for voice transcription"
+    )
+    stt_api_key: str = Field(
+        default="stt-api-key",
+        description="API key for STT service"
+    )
     
     # File Storage
     voice_data_dir: str = Field(default="data/voices")
@@ -88,6 +133,13 @@ class Settings(BaseModel):
         valid_envs = ['development', 'staging', 'production']
         if v.lower() not in valid_envs:
             raise ValueError(f'environment must be one of {valid_envs}')
+        return v.lower()
+    
+    @validator('tts_backend')
+    def validate_tts_backend(cls, v):
+        valid_backends = ['xtts', 'glm-tts']
+        if v.lower() not in valid_backends:
+            raise ValueError(f'tts_backend must be one of {valid_backends}')
         return v.lower()
     
     @validator('cors_origins', 'cors_allow_methods', 'cors_allow_headers')
@@ -203,6 +255,37 @@ def get_model_config() -> Dict[str, Any]:
         "top_k": settings.top_k,
         "top_p": settings.top_p,
     }
+
+def get_backend_config() -> Dict[str, Any]:
+    """Get TTS backend configuration based on selected backend"""
+    # Check env var first, then fall back to settings
+    backend = os.environ.get("TTS_BACKEND", settings.tts_backend)
+    
+    if backend == "xtts":
+        return {
+            "model_name": settings.model_name,
+            "use_deepspeed": settings.use_deepspeed,
+            "tau": settings.tau,
+            "gpt_cond_len": settings.gpt_cond_len,
+            "top_k": settings.top_k,
+            "top_p": settings.top_p,
+        }
+    elif backend == "glm-tts":
+        return {
+            "model_path": settings.glm_tts_model_path,
+            "sample_rate": settings.glm_tts_sample_rate,
+            "use_phoneme": settings.glm_tts_use_phoneme,
+            "beam_size": settings.glm_tts_beam_size,
+            "sampling": settings.glm_tts_sampling,
+            "max_token_text_ratio": settings.glm_tts_max_token_text_ratio,
+            "min_token_text_ratio": settings.glm_tts_min_token_text_ratio,
+            "max_text_len": settings.glm_tts_max_text_len,
+            "min_text_len": settings.glm_tts_min_text_len,
+            "stt_api_url": settings.stt_api_url,
+            "stt_api_key": settings.stt_api_key,
+        }
+    else:
+        return {}
 
 def is_production() -> bool:
     """Check if running in production environment"""

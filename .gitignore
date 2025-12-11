@@ -99,3 +99,22 @@ frontend/.next/
 frontend/.nuxt/
 frontend/.output/
 frontend/.cache/ 
+# Model weights and checkpoints
+*.pt
+*.bin
+*.safetensors
+*.onnx
+*.ckpt
+GLM-TTS/ckpt/
+ckpt/
+
+# Large files
+*.h5
+*.hdf5
+*.tar.gz
+*.zip
+
+# Output files
+output.wav
+*.wav
+GLM-TTS/

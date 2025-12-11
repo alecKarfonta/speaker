@@ -17,7 +17,9 @@ from fastapi.responses import Response, JSONResponse
 from fastapi.openapi.utils import get_openapi
 from prometheus_client import generate_latest, REGISTRY, CONTENT_TYPE_LATEST
 
-from app.xtts_service_v2 import TTSService
+from app.tts_factory import TTSBackendFactory, register_default_backends
+from app.tts_backend_base import TTSBackendBase
+from app.config import settings, get_backend_config
 from app.log_util import ColoredFormatter
 from app.monitoring import metrics_collector, health_monitor, audit_logger, get_metrics, get_health
 from app.models import (
@@ -40,8 +42,19 @@ if logger.handlers:
         logger.removeHandler(handler)
 logger.addHandler(handler)
 
-# TTS Service - Now using Coqui TTS with XTTS v2 voice cloning
-tts_service = TTSService(logger=logger)
+# Register available TTS backends
+register_default_backends()
+
+# TTS Service - Create backend based on configuration
+# Can be set via TTS_BACKEND environment variable or settings.tts_backend
+backend_name = os.environ.get("TTS_BACKEND", settings.tts_backend)
+backend_config = get_backend_config()
+logger.info(f"Initializing TTS backend: {backend_name}")
+tts_service: TTSBackendBase = TTSBackendFactory.create_backend(
+    backend_name,
+    logger=logger,
+    config=backend_config
+)
 
 # Rate limiting storage (in production, use Redis)
 rate_limit_storage: Dict[str, List[float]] = {}
@@ -385,10 +398,30 @@ async def generate_speech(
             f"voice={request.voice_name}, language={request.language}"
         )
 
+        # Build kwargs for optional GLM-TTS parameters
+        glm_kwargs = {}
+        if request.sampling is not None:
+            glm_kwargs["sampling"] = request.sampling
+        if request.min_token_text_ratio is not None:
+            glm_kwargs["min_token_text_ratio"] = request.min_token_text_ratio
+        if request.max_token_text_ratio is not None:
+            glm_kwargs["max_token_text_ratio"] = request.max_token_text_ratio
+        if request.beam_size is not None:
+            glm_kwargs["beam_size"] = request.beam_size
+        if request.temperature is not None:
+            glm_kwargs["temperature"] = request.temperature
+        if request.top_p is not None:
+            glm_kwargs["top_p"] = request.top_p
+        if request.repetition_penalty is not None:
+            glm_kwargs["repetition_penalty"] = request.repetition_penalty
+        if request.sample_method is not None:
+            glm_kwargs["sample_method"] = request.sample_method
+        
         audio, sample_rate = tts_service.generate_speech(
             text=text,
             voice_name=request.voice_name,
-            language=request.language
+            language=request.language,
+            **glm_kwargs
         )
 
         # Debug logging
@@ -403,10 +436,22 @@ async def generate_speech(
                 detail="Failed to generate audio"
             )
         
-        # Convert audio to bytes
-        audio_bytes = np.array(audio, dtype=np.float32).tobytes()
+        # Encode audio based on requested format
+        output_format = request.output_format.value if request.output_format else "raw"
+        
+        if output_format == "wav":
+            # Encode as proper WAV file
+            wav_buffer = io.BytesIO()
+            sf.write(wav_buffer, audio, sample_rate, format='WAV', subtype='PCM_16')
+            wav_buffer.seek(0)
+            audio_bytes = wav_buffer.read()
+            media_type = "audio/wav"
+        else:
+            # Default: raw float32 PCM bytes (backward compatible)
+            audio_bytes = np.array(audio, dtype=np.float32).tobytes()
+            media_type = "audio/pcm"
 
-        logger.debug(f"Successfully generated audio of length: {len(audio_bytes)} bytes")
+        logger.debug(f"Successfully generated audio ({output_format}): {len(audio_bytes)} bytes")
         
         # Log for audit
         client_ip = http_request.client.host if http_request.client else "unknown"
@@ -431,14 +476,16 @@ async def generate_speech(
             text=request.text  # Pass actual text for word counting
         )
         
+        filename = "speech.wav" if output_format == "wav" else "speech.pcm"
         return Response(
             content=audio_bytes,
-            media_type="audio/wav",
+            media_type=media_type,
             headers={
-                "Content-Disposition": "attachment; filename=speech.wav",
+                "Content-Disposition": f"attachment; filename={filename}",
                 "Content-Length": str(len(audio_bytes)),
                 "X-Sample-Rate": str(sample_rate),
                 "X-Audio-Duration": str(len(audio)/sample_rate),
+                "X-Audio-Format": output_format,
                 "X-Model": tts_service.model_name,
                 "X-Voice": request.voice_name,
                 "X-Language": request.language,

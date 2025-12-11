@@ -48,6 +48,11 @@ class EmotionType(str, Enum):
     SERIOUS = "(serious)"
     PLAYFUL = "(playful)"
 
+class OutputFormat(str, Enum):
+    """Output audio format"""
+    RAW = "raw"  # Raw float32 PCM bytes (default, backward compatible)
+    WAV = "wav"  # Proper WAV file with headers
+
 # Request Models
 class TTSRequest(BaseModel):
     """Request model for TTS generation"""
@@ -86,6 +91,51 @@ class TTSRequest(BaseModel):
         ge=0.5, 
         le=2.0, 
         description="Speech speed multiplier"
+    )
+    output_format: OutputFormat = Field(
+        default=OutputFormat.RAW,
+        description="Output audio format: 'raw' for float32 PCM bytes (default), 'wav' for proper WAV file"
+    )
+    
+    # GLM-TTS specific parameters (optional, uses defaults if not provided)
+    sampling: Optional[int] = Field(
+        default=None,
+        ge=1, le=100,
+        description="GLM-TTS: Top-k sampling value (default: 25)"
+    )
+    min_token_text_ratio: Optional[float] = Field(
+        default=None,
+        ge=1.0, le=20.0,
+        description="GLM-TTS: Min audio tokens per text token (default: 8)"
+    )
+    max_token_text_ratio: Optional[float] = Field(
+        default=None,
+        ge=10.0, le=100.0,
+        description="GLM-TTS: Max audio tokens per text token (default: 30)"
+    )
+    beam_size: Optional[int] = Field(
+        default=None,
+        ge=1, le=5,
+        description="GLM-TTS: Beam search width (default: 1)"
+    )
+    temperature: Optional[float] = Field(
+        default=None,
+        ge=0.1, le=2.0,
+        description="GLM-TTS: Sampling temperature (default: 1.0)"
+    )
+    top_p: Optional[float] = Field(
+        default=None,
+        ge=0.1, le=1.0,
+        description="GLM-TTS: Nucleus sampling threshold (default: 0.8)"
+    )
+    repetition_penalty: Optional[float] = Field(
+        default=None,
+        ge=0.0, le=1.0,
+        description="GLM-TTS: Repetition penalty threshold (default: 0.1)"
+    )
+    sample_method: Optional[str] = Field(
+        default=None,
+        description="GLM-TTS: Sampling method - 'ras' (default) or 'topk'"
     )
 
     class Config:

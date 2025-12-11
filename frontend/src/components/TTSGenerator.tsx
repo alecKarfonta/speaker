@@ -3,12 +3,24 @@ import { Play, Upload, Settings, X, ChevronDown, ChevronUp } from 'lucide-react'
 import { toast } from 'react-hot-toast';
 
 interface TTSParams {
+  // XTTS params
   tau: number;
   gpt_cond_len: number;
   top_k: number;
   top_p: number;
   decoder_iterations: number;
   split_sentences: boolean;
+  // GLM-TTS params
+  sampling: number;
+  min_token_text_ratio: number;
+  max_token_text_ratio: number;
+  beam_size: number;
+  temperature: number;
+  glm_top_p: number;
+  repetition_penalty: number;
+  sample_method: 'ras' | 'topk';
+  // Output format
+  output_format: 'raw' | 'wav';
 }
 
 interface Voice {
@@ -22,6 +34,9 @@ interface TTSResponse {
   voice: string;
   audioUrl: string;
   timestamp: string;
+  language: string;
+  backend: 'glm-tts' | 'xtts';
+  params: Partial<TTSParams>;
 }
 
 interface UploadData {
@@ -91,13 +106,26 @@ const TTSGenerator: React.FC = () => {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [advancedParams, setAdvancedParams] = useState<TTSParams>({
+    // XTTS defaults
     tau: 0.6,
     gpt_cond_len: 10,
     top_k: 10,
     top_p: 0.9,
     decoder_iterations: 30,
-    split_sentences: true
+    split_sentences: true,
+    // GLM-TTS defaults
+    sampling: 25,
+    min_token_text_ratio: 8,
+    max_token_text_ratio: 30,
+    beam_size: 1,
+    temperature: 1.0,
+    glm_top_p: 0.8,
+    repetition_penalty: 0.1,
+    sample_method: 'ras',
+    // Output format
+    output_format: 'wav'
   });
+  const [backend, setBackend] = useState<'xtts' | 'glm-tts'>('glm-tts');
   const [uploadData, setUploadData] = useState<UploadData>({
     voiceName: '',
     file: null
@@ -158,12 +186,32 @@ const TTSGenerator: React.FC = () => {
     setLoading(true);
     
     try {
-      const requestBody = {
+      // Build request body based on backend type
+      const requestBody: Record<string, any> = {
         text: text,
         voice_name: selectedVoice,
         language: language,
-        ...advancedParams
+        output_format: advancedParams.output_format,
       };
+      
+      // Add backend-specific params
+      if (backend === 'glm-tts') {
+        requestBody.sampling = advancedParams.sampling;
+        requestBody.min_token_text_ratio = advancedParams.min_token_text_ratio;
+        requestBody.max_token_text_ratio = advancedParams.max_token_text_ratio;
+        requestBody.beam_size = advancedParams.beam_size;
+        requestBody.temperature = advancedParams.temperature;
+        requestBody.top_p = advancedParams.glm_top_p;
+        requestBody.repetition_penalty = advancedParams.repetition_penalty;
+        requestBody.sample_method = advancedParams.sample_method;
+      } else {
+        requestBody.tau = advancedParams.tau;
+        requestBody.gpt_cond_len = advancedParams.gpt_cond_len;
+        requestBody.top_k = advancedParams.top_k;
+        requestBody.top_p = advancedParams.top_p;
+        requestBody.decoder_iterations = advancedParams.decoder_iterations;
+        requestBody.split_sentences = advancedParams.split_sentences;
+      }
       
       console.log('Sending request:', requestBody);
       
@@ -187,10 +235,17 @@ const TTSGenerator: React.FC = () => {
         throw new Error('Received empty audio response from the server');
       }
 
-      // Convert raw float32 data to WAV format
-      const float32Array = new Float32Array(buffer);
-      const wavBuffer = convertFloat32ToWav(float32Array);
-      const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+      let wavBlob: Blob;
+      
+      if (advancedParams.output_format === 'wav') {
+        // Already WAV format from server
+        wavBlob = new Blob([buffer], { type: 'audio/wav' });
+      } else {
+        // Convert raw float32 data to WAV format
+        const float32Array = new Float32Array(buffer);
+        const wavBuffer = convertFloat32ToWav(float32Array);
+        wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+      }
       
       // Create a URL for the blob
       const audioUrl = URL.createObjectURL(wavBlob);
@@ -237,7 +292,25 @@ const TTSGenerator: React.FC = () => {
         text,
         voice: selectedVoice,
         audioUrl,
-        timestamp: new Date().toLocaleTimeString()
+        timestamp: new Date().toLocaleTimeString(),
+        language,
+        backend,
+        params: backend === 'glm-tts' ? {
+          sampling: advancedParams.sampling,
+          temperature: advancedParams.temperature,
+          glm_top_p: advancedParams.glm_top_p,
+          min_token_text_ratio: advancedParams.min_token_text_ratio,
+          max_token_text_ratio: advancedParams.max_token_text_ratio,
+          beam_size: advancedParams.beam_size,
+          repetition_penalty: advancedParams.repetition_penalty,
+          sample_method: advancedParams.sample_method,
+        } : {
+          tau: advancedParams.tau,
+          gpt_cond_len: advancedParams.gpt_cond_len,
+          top_k: advancedParams.top_k,
+          top_p: advancedParams.top_p,
+          decoder_iterations: advancedParams.decoder_iterations,
+        }
       };
       
       setResponses(prev => [newResponse, ...prev]);
@@ -433,91 +506,259 @@ const TTSGenerator: React.FC = () => {
           
           {showAdvanced && (
             <div className="bg-gray-50 p-4 rounded-md space-y-4">
-              <h3 className="font-medium text-gray-700">Advanced Parameters</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-medium text-gray-700">Advanced Parameters</h3>
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-gray-600">Backend:</span>
+                  <select
+                    value={backend}
+                    onChange={(e) => setBackend(e.target.value as 'xtts' | 'glm-tts')}
+                    className="px-2 py-1 border border-gray-300 rounded text-sm"
+                  >
+                    <option value="glm-tts">GLM-TTS</option>
+                    <option value="xtts">XTTS</option>
+                  </select>
+                </div>
+              </div>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">
-                    Temperature (tau): {advancedParams.tau}
-                  </label>
-                  <input
-                    type="range"
-                    min="-1"
-                    max="1"
-                    step="0.1"
-                    value={advancedParams.tau}
-                    onChange={(e) => handleParamChange('tau', parseFloat(e.target.value))}
-                    className="w-full"
-                  />
+              {backend === 'glm-tts' ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Sampling (top-k): {advancedParams.sampling}
+                    </label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="100"
+                      value={advancedParams.sampling}
+                      onChange={(e) => handleParamChange('sampling', parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                    <p className="text-xs text-gray-500">Lower = more deterministic</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Temperature: {advancedParams.temperature.toFixed(1)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="2.0"
+                      step="0.1"
+                      value={advancedParams.temperature}
+                      onChange={(e) => handleParamChange('temperature', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                    <p className="text-xs text-gray-500">Higher = more random</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Top-P (nucleus): {advancedParams.glm_top_p.toFixed(2)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="1.0"
+                      step="0.05"
+                      value={advancedParams.glm_top_p}
+                      onChange={(e) => handleParamChange('glm_top_p', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                    <p className="text-xs text-gray-500">Nucleus sampling threshold</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Min Token Ratio: {advancedParams.min_token_text_ratio}
+                    </label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="20"
+                      value={advancedParams.min_token_text_ratio}
+                      onChange={(e) => handleParamChange('min_token_text_ratio', parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                    <p className="text-xs text-gray-500">Min audio length</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Max Token Ratio: {advancedParams.max_token_text_ratio}
+                    </label>
+                    <input
+                      type="range"
+                      min="10"
+                      max="100"
+                      value={advancedParams.max_token_text_ratio}
+                      onChange={(e) => handleParamChange('max_token_text_ratio', parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                    <p className="text-xs text-gray-500">Max audio length</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Beam Size: {advancedParams.beam_size}
+                    </label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="5"
+                      value={advancedParams.beam_size}
+                      onChange={(e) => handleParamChange('beam_size', parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                    <p className="text-xs text-gray-500">Quality vs speed</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Repetition Penalty: {advancedParams.repetition_penalty.toFixed(2)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={advancedParams.repetition_penalty}
+                      onChange={(e) => handleParamChange('repetition_penalty', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                    <p className="text-xs text-gray-500">Prevent repetition</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Sample Method
+                    </label>
+                    <select
+                      value={advancedParams.sample_method}
+                      onChange={(e) => handleParamChange('sample_method', e.target.value as any)}
+                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                    >
+                      <option value="ras">RAS (Repetition-Aware)</option>
+                      <option value="topk">Top-K</option>
+                    </select>
+                    <p className="text-xs text-gray-500">Sampling algorithm</p>
+                  </div>
                 </div>
-                
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">
-                    GPT Conditioning Length: {advancedParams.gpt_cond_len}
-                  </label>
-                  <input
-                    type="range"
-                    min="1"
-                    max="50"
-                    value={advancedParams.gpt_cond_len}
-                    onChange={(e) => handleParamChange('gpt_cond_len', parseInt(e.target.value))}
-                    className="w-full"
-                  />
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Temperature (tau): {advancedParams.tau}
+                    </label>
+                    <input
+                      type="range"
+                      min="-1"
+                      max="1"
+                      step="0.1"
+                      value={advancedParams.tau}
+                      onChange={(e) => handleParamChange('tau', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      GPT Conditioning Length: {advancedParams.gpt_cond_len}
+                    </label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="50"
+                      value={advancedParams.gpt_cond_len}
+                      onChange={(e) => handleParamChange('gpt_cond_len', parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Top K: {advancedParams.top_k}
+                    </label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="50"
+                      value={advancedParams.top_k}
+                      onChange={(e) => handleParamChange('top_k', parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Top P: {advancedParams.top_p}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={advancedParams.top_p}
+                      onChange={(e) => handleParamChange('top_p', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1">
+                      Decoder Iterations: {advancedParams.decoder_iterations}
+                    </label>
+                    <input
+                      type="range"
+                      min="10"
+                      max="100"
+                      value={advancedParams.decoder_iterations}
+                      onChange={(e) => handleParamChange('decoder_iterations', parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="split_sentences"
+                      checked={advancedParams.split_sentences}
+                      onChange={(e) => handleParamChange('split_sentences', e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="split_sentences" className="ml-2 block text-sm text-gray-700">
+                      Split Sentences
+                    </label>
+                  </div>
                 </div>
-                
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">
-                    Top K: {advancedParams.top_k}
+              )}
+              
+              <div className="border-t pt-4 mt-4">
+                <label className="block text-sm text-gray-700 mb-2">Output Format:</label>
+                <div className="flex space-x-4">
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="output_format"
+                      value="wav"
+                      checked={advancedParams.output_format === 'wav'}
+                      onChange={() => handleParamChange('output_format', 'wav' as any)}
+                      className="h-4 w-4 text-blue-600"
+                    />
+                    <span className="ml-2 text-sm">WAV (recommended)</span>
                   </label>
-                  <input
-                    type="range"
-                    min="1"
-                    max="50"
-                    value={advancedParams.top_k}
-                    onChange={(e) => handleParamChange('top_k', parseInt(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">
-                    Top P: {advancedParams.top_p}
-                  </label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={advancedParams.top_p}
-                    onChange={(e) => handleParamChange('top_p', parseFloat(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">
-                    Decoder Iterations: {advancedParams.decoder_iterations}
-                  </label>
-                  <input
-                    type="range"
-                    min="10"
-                    max="100"
-                    value={advancedParams.decoder_iterations}
-                    onChange={(e) => handleParamChange('decoder_iterations', parseInt(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                
-                <div className="flex items-center">
-                  <input
-                    type="checkbox"
-                    id="split_sentences"
-                    checked={advancedParams.split_sentences}
-                    onChange={(e) => handleParamChange('split_sentences', e.target.checked)}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                  />
-                  <label htmlFor="split_sentences" className="ml-2 block text-sm text-gray-700">
-                    Split Sentences
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="output_format"
+                      value="raw"
+                      checked={advancedParams.output_format === 'raw'}
+                      onChange={() => handleParamChange('output_format', 'raw' as any)}
+                      className="h-4 w-4 text-blue-600"
+                    />
+                    <span className="ml-2 text-sm">Raw PCM</span>
                   </label>
                 </div>
               </div>
@@ -599,15 +840,39 @@ const TTSGenerator: React.FC = () => {
                 className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50"
               >
                 <div className="flex justify-between items-start mb-2">
-                  <div>
+                  <div className="flex-1">
                     <h3 className="font-medium text-gray-900 truncate max-w-md">{response.text}</h3>
                     <p className="text-sm text-gray-500">
-                      Voice: {response.voice} | {response.timestamp}
+                      Voice: {response.voice} | {response.language?.toUpperCase() || 'EN'} | {response.timestamp}
+                    </p>
+                    <p className="text-xs text-blue-600 mt-1">
+                      {response.backend?.toUpperCase() || 'GLM-TTS'}
+                      {response.params && (
+                        <span className="text-gray-400 ml-2">
+                          {response.backend === 'glm-tts' ? (
+                            <>
+                              sampling={response.params.sampling} | 
+                              temp={response.params.temperature} | 
+                              top_p={response.params.glm_top_p} | 
+                              beam={response.params.beam_size} | 
+                              min_ratio={response.params.min_token_text_ratio} | 
+                              max_ratio={response.params.max_token_text_ratio}
+                            </>
+                          ) : (
+                            <>
+                              tau={response.params.tau} | 
+                              top_k={response.params.top_k} | 
+                              top_p={response.params.top_p} | 
+                              gpt_cond={response.params.gpt_cond_len}
+                            </>
+                          )}
+                        </span>
+                      )}
                     </p>
                   </div>
                   <button 
                     onClick={() => deleteResponse(response.id)}
-                    className="text-gray-400 hover:text-red-500"
+                    className="text-gray-400 hover:text-red-500 ml-2"
                   >
                     <X size={18} />
                   </button>
