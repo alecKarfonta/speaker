@@ -217,7 +217,7 @@ const HistoryPanel: React.FC = () => {
       <div className="absolute top-0 left-0 right-0 h-32 bg-gradient-to-b from-accent/5 to-transparent pointer-events-none" />
       
       {/* Header */}
-      <div className="relative px-5 py-5 border-b border-white/5">
+      <div className="px-5 py-5 border-b border-white/5 relative z-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="relative">
@@ -255,7 +255,7 @@ const HistoryPanel: React.FC = () => {
       </div>
 
       {/* History list */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide relative z-10">
         {history.length === 0 ? (
           <motion.div 
             initial={{ opacity: 0, y: 20 }}

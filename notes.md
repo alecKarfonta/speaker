@@ -585,6 +585,42 @@ Both support zero-shot cloning, but the internal mechanism differs.
 11. [ ] Test GLM-TTS backend (requires model download)
 12. [ ] Documentation update
 
+## CI/CD Issues (2025-12-11)
+
+### Issue: GitHub Container Registry 403 Forbidden
+**Problem:** Build action fails when pushing to ghcr.io with 403 Forbidden error
+```
+ERROR: failed to push ghcr.io/aleckarfonta/speaker-frontend:v1.0.0: 
+unexpected status from HEAD request: 403 Forbidden
+```
+
+**Root Cause:** 
+- Running on self-hosted runner
+- Package doesn't exist yet in GHCR, or
+- Package not linked to repository with proper permissions
+- GITHUB_TOKEN on self-hosted runners may have limited permissions
+
+**Solutions:**
+1. **Initial Package Creation** (One-time setup):
+   - Manually push first version to create packages
+   - Run: `bash scripts/init_ghcr_packages.sh`
+   - Then link packages to repository in GitHub settings
+
+2. **Use Personal Access Token** (Recommended for self-hosted):
+   - Create PAT with `write:packages`, `read:packages` scopes
+   - Add as repository secret named `GHCR_TOKEN`
+   - Update workflow to use `secrets.GHCR_TOKEN` instead of `secrets.GITHUB_TOKEN`
+
+3. **Fix Package Permissions**:
+   - Go to https://github.com/aleckarfonta?tab=packages
+   - For each package: Settings → Manage Actions access
+   - Add repository with "Write" role
+   - Ensure visibility allows workflow access
+
+**Status:** Investigating - need to either create packages first or use PAT
+
+---
+
 ## Testing Results (2025-12-10)
 
 ### XTTS Backend - WORKING
