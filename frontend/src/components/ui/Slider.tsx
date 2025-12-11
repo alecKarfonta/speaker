@@ -1,5 +1,6 @@
 import React from 'react';
 import * as SliderPrimitive from '@radix-ui/react-slider';
+import { motion } from 'framer-motion';
 import { cn } from '../../lib/utils';
 
 interface SliderProps {
@@ -34,46 +35,64 @@ const Slider: React.FC<SliderProps> = ({
           <label className="text-sm font-medium text-text-secondary">
             {label}
           </label>
-          <span className="text-sm font-mono text-accent tabular-nums">
+          <motion.span 
+            key={value}
+            initial={{ opacity: 0, y: -5 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-sm font-mono text-accent tabular-nums bg-accent/10 px-2 py-0.5 rounded-md"
+          >
             {formatValue(value)}
-          </span>
+          </motion.span>
         </div>
       )}
       
       <SliderPrimitive.Root
-        className="relative flex items-center select-none touch-none w-full h-6 cursor-pointer group"
+        className="relative flex items-center select-none touch-none w-full h-7 cursor-pointer group"
         value={[value]}
         onValueChange={([v]) => onChange(v)}
         min={min}
         max={max}
         step={step}
       >
-        <SliderPrimitive.Track className="bg-bg-tertiary relative grow rounded-full h-2 overflow-hidden">
-          {/* Gradient fill */}
-          <SliderPrimitive.Range 
-            className="absolute h-full rounded-full"
-            style={{
-              background: `linear-gradient(90deg, var(--accent-primary), #60a5fa)`
+        <SliderPrimitive.Track className="relative grow rounded-full h-2 overflow-hidden bg-white/5">
+          {/* Background glow */}
+          <div 
+            className="absolute h-full transition-all duration-300"
+            style={{ 
+              width: `${percentage}%`,
+              background: 'linear-gradient(90deg, rgba(99, 102, 241, 0.2), rgba(168, 85, 247, 0.2))',
+              filter: 'blur(8px)',
             }}
           />
           
-          {/* Glow effect on hover */}
-          <div 
-            className="absolute h-full bg-accent/20 blur-sm opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ width: `${percentage}%` }}
+          {/* Actual fill */}
+          <SliderPrimitive.Range 
+            className="absolute h-full rounded-full transition-all"
+            style={{
+              background: `linear-gradient(90deg, 
+                hsl(239, 84%, 67%) 0%, 
+                hsl(262, 83%, 58%) 50%,
+                hsl(280, 87%, 65%) 100%
+              )`,
+            }}
           />
         </SliderPrimitive.Track>
         
-        <SliderPrimitive.Thumb
-          className={cn(
-            'block w-5 h-5 bg-white rounded-full',
-            'shadow-lg shadow-black/20',
-            'border-2 border-accent',
-            'focus:outline-none focus:ring-2 focus:ring-accent/50 focus:ring-offset-2 focus:ring-offset-background',
-            'hover:scale-110 active:scale-105',
-            'transition-transform cursor-grab active:cursor-grabbing'
-          )}
-        />
+        <SliderPrimitive.Thumb asChild>
+          <motion.div
+            whileHover={{ scale: 1.2 }}
+            whileTap={{ scale: 0.9 }}
+            className={cn(
+              'block w-5 h-5 rounded-full cursor-grab active:cursor-grabbing',
+              'bg-white shadow-xl',
+              'focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-background',
+              'transition-shadow duration-200'
+            )}
+            style={{
+              boxShadow: '0 0 0 4px rgba(99, 102, 241, 0.2), 0 4px 12px rgba(0, 0, 0, 0.4)',
+            }}
+          />
+        </SliderPrimitive.Thumb>
       </SliderPrimitive.Root>
       
       {description && (
