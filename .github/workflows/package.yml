@@ -26,62 +26,19 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
     
-    - name: Validate GHCR Token
-      run: |
-        echo "## 🔐 Token Validation" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Check if GHCR_TOKEN exists
-        if [ -n "${{ secrets.GHCR_TOKEN }}" ]; then
-          echo "✅ GHCR_TOKEN secret is available" >> $GITHUB_STEP_SUMMARY
-          echo "- Token length: ${#GHCR_TOKEN} characters" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ GHCR_TOKEN secret is NOT available" >> $GITHUB_STEP_SUMMARY
-          echo "Falling back to GITHUB_TOKEN..." >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        # Check if GITHUB_TOKEN exists as fallback
-        if [ -n "${{ secrets.GITHUB_TOKEN }}" ]; then
-          echo "✅ GITHUB_TOKEN is available as fallback" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ No tokens available!" >> $GITHUB_STEP_SUMMARY
-          exit 1
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Using token:** ${{ secrets.GHCR_TOKEN && 'GHCR_TOKEN' || 'GITHUB_TOKEN' }}" >> $GITHUB_STEP_SUMMARY
-    
     - name: Log in to Container Registry
       uses: docker/login-action@v3
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
-        password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Verify Docker Login
       run: |
-        echo "## 🐳 Docker Login Verification" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Test if we can access GHCR
-        if docker pull hello-world:latest 2>/dev/null; then
-          echo "✅ Docker daemon is working" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ Docker daemon issues" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        # Test GHCR access
-        if curl -s -f https://ghcr.io/v2/ > /dev/null; then
-          echo "✅ GHCR registry is accessible" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ GHCR registry access issues" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Registry:** ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
-        echo "**Username:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
-        echo "**Backend Image:** ${{ env.BACKEND_IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
-        echo "**Frontend Image:** ${{ env.FRONTEND_IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "Registry: ${{ env.REGISTRY }}"
+        echo "Username: ${{ github.actor }}"
+        echo "Backend Image: ${{ env.BACKEND_IMAGE_NAME }}"
+        echo "Frontend Image: ${{ env.FRONTEND_IMAGE_NAME }}"
     
     - name: Get version
       id: version

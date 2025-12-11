@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     wget \
     gcc \
+    git \
     libasound2-dev \
     portaudio19-dev \
     libportaudio2 \
@@ -36,13 +37,9 @@ COPY start_api.sh .
 # Copy voice files into the container
 COPY data/voices/ ./data/voices/
 
-# Copy GLM-TTS code (without model checkpoints - mount those at runtime)
-COPY GLM-TTS/cosyvoice/ ./GLM-TTS/cosyvoice/
-COPY GLM-TTS/flow/ ./GLM-TTS/flow/
-COPY GLM-TTS/llm/ ./GLM-TTS/llm/
-COPY GLM-TTS/utils/ ./GLM-TTS/utils/
-COPY GLM-TTS/frontend/ ./GLM-TTS/frontend/
-COPY GLM-TTS/configs/ ./GLM-TTS/configs/
+# Clone GLM-TTS code (without model checkpoints - mount those at runtime)
+RUN git clone --depth 1 https://github.com/zai-org/GLM-TTS.git GLM-TTS && \
+    rm -rf GLM-TTS/.git GLM-TTS/ckpt
 
 # Make scripts executable
 RUN chmod +x scripts/*.sh
