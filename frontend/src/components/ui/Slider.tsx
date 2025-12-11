@@ -25,36 +25,53 @@ const Slider: React.FC<SliderProps> = ({
   formatValue = (v) => v.toString(),
   className,
 }) => {
+  const percentage = ((value - min) / (max - min)) * 100;
+
   return (
-    <div className={cn('space-y-2', className)}>
+    <div className={cn('space-y-3', className)}>
       {label && (
         <div className="flex items-center justify-between">
           <label className="text-sm font-medium text-text-secondary">
             {label}
           </label>
-          <span className="text-sm font-mono text-accent">
+          <span className="text-sm font-mono text-accent tabular-nums">
             {formatValue(value)}
           </span>
         </div>
       )}
       
       <SliderPrimitive.Root
-        className="relative flex items-center select-none touch-none w-full h-5"
+        className="relative flex items-center select-none touch-none w-full h-6 cursor-pointer group"
         value={[value]}
         onValueChange={([v]) => onChange(v)}
         min={min}
         max={max}
         step={step}
       >
-        <SliderPrimitive.Track className="bg-bg-tertiary relative grow rounded-full h-1.5">
-          <SliderPrimitive.Range className="absolute bg-accent rounded-full h-full" />
+        <SliderPrimitive.Track className="bg-bg-tertiary relative grow rounded-full h-2 overflow-hidden">
+          {/* Gradient fill */}
+          <SliderPrimitive.Range 
+            className="absolute h-full rounded-full"
+            style={{
+              background: `linear-gradient(90deg, var(--accent-primary), #60a5fa)`
+            }}
+          />
+          
+          {/* Glow effect on hover */}
+          <div 
+            className="absolute h-full bg-accent/20 blur-sm opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ width: `${percentage}%` }}
+          />
         </SliderPrimitive.Track>
+        
         <SliderPrimitive.Thumb
           className={cn(
-            'block w-4 h-4 bg-white rounded-full shadow-md',
+            'block w-5 h-5 bg-white rounded-full',
+            'shadow-lg shadow-black/20',
             'border-2 border-accent',
-            'focus:outline-none focus:ring-2 focus:ring-accent/50',
-            'hover:scale-110 transition-transform cursor-pointer'
+            'focus:outline-none focus:ring-2 focus:ring-accent/50 focus:ring-offset-2 focus:ring-offset-background',
+            'hover:scale-110 active:scale-105',
+            'transition-transform cursor-grab active:cursor-grabbing'
           )}
         />
       </SliderPrimitive.Root>
@@ -67,4 +84,3 @@ const Slider: React.FC<SliderProps> = ({
 };
 
 export default Slider;
-
