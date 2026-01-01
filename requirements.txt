@@ -11,6 +11,7 @@ torchcodec>=0.0.1
 numpy>=1.24.0
 librosa>=0.10.0
 soundfile>=0.12.0
+tiktoken
 
 # TTS dependencies
 coqui-tts>=0.21.0
@@ -18,8 +19,10 @@ coqui-tts>=0.21.0
 # GLM-TTS dependencies (needed for glm-tts backend)
 onnxruntime-gpu>=1.17.0
 HyperPyYAML>=1.2.0
+ruamel.yaml>=0.17.0,<0.19.0  # Pin to avoid max_depth AttributeError with hyperpyyaml
 safetensors>=0.4.0
 peft>=0.7.0
+bitsandbytes>=0.41.0  # Required for 4-bit/8-bit quantization
 inflect>=7.0.0
 contractions>=0.1.70
 WeTextProcessing>=1.0.3
@@ -60,9 +63,9 @@ websockets>=11.0.0
 ormsgpack>=1.4.0
 
 # STT for testing TTS output
-SpeechRecognition>=3.10.0
-openai-whisper>=20231117
-pyaudio>=0.2.11
+#SpeechRecognition>=3.10.0
+#openai-whisper>=20231117
+#pyaudio>=0.2.11
 
 # System monitoring
 psutil>=5.9.0
@@ -73,3 +76,4 @@ prometheus-client>=0.19.0
 # Development dependencies
 packaging>=21.0
 setuptools>=65.0
+

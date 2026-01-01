@@ -1,5 +1,18 @@
-# Use the official Python runtime as a parent image
-FROM python:3.11-slim
+# Use NVIDIA CUDA base image with Python for GPU support
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Install Python 3.11
+RUN apt-get update && apt-get install -y software-properties-common && \
+    add-apt-repository ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y \
+    python3.11 python3.11-venv python3.11-dev python3-pip && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -26,7 +39,16 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install torch first (required for flash-attn build)
+#RUN pip install torch>=2.0.0 torchaudio>=2.0.0
+
+# Install flash-attn separately (requires torch to be installed first)
+#RUN pip install packaging
+#RUN pip install ninja
+#RUN MAX_JOBS=16 pip install  flash-attn --no-build-isolation
+
+# Install remaining dependencies
+RUN pip install  -r requirements.txt
 
 # Copy the application code
 COPY app/ ./app/

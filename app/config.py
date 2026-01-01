@@ -83,7 +83,7 @@ class Settings(BaseModel):
     # STT API for voice transcription (used to get prompt_text)
     # Use host.docker.internal from inside Docker containers
     stt_api_url: str = Field(
-        default="http://host.docker.internal:8603/v1/audio/transcriptions",
+        default="http://192.168.1.196:8603/v1/audio/transcriptions",
         description="URL of STT API for voice transcription"
     )
     stt_api_key: str = Field(

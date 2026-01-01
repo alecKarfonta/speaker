@@ -14,8 +14,31 @@ services:
       - TRANSFORMERS_CACHE=/app/model_cache/transformers
       - NVIDIA_VISIBLE_DEVICES=all
       - COQUI_TOS_AGREED=1
+      - ORT_LOGGING_LEVEL=3  # Suppress ONNX fallback warnings (campplus model)
       # TTS Backend: "xtts" or "glm-tts"
-      - TTS_BACKEND=xtts
+      - TTS_BACKEND=glm-tts
+      #- GLM_TTS_QUANTIZATION=4bit  # Temporarily disabled to test GPU performance
+      #- GLM_TTS_ATTENTION=flash_attention_2
+      - GLM_TTS_FLOW_STEPS=6
+      #- GLM_TTS_SAMPLING=18
+      #- GLM_TTS_TORCH_COMPILE=true  # Disabled - causes CPU fallback issues
+      # GLM-TTS LLM Optimization (uncomment to customize):
+      # GLM_TTS_DTYPE: fp32, fp16, bf16 (default: fp16)
+      # - GLM_TTS_DTYPE=fp16
+      # GLM_TTS_QUANTIZATION: none, 4bit, 8bit (default: none) - 4bit ~3x faster
+      # - GLM_TTS_QUANTIZATION=4bit
+      # GLM_TTS_ATTENTION: eager, sdpa, flash_attention_2 (default: eager)
+      # - GLM_TTS_ATTENTION=sdpa
+      #
+      # Speed Tuning (uncomment to customize):
+      # GLM_TTS_FLOW_STEPS: 1-20, lower=faster (default: 10, try 5-8 for speed)
+      # - GLM_TTS_FLOW_STEPS=8
+      # GLM_TTS_SAMPLING: top-k sampling, lower=faster (default: 25, try 15-20)
+      # - GLM_TTS_SAMPLING=20
+      # GLM_TTS_TORCH_COMPILE: true/false - JIT compile for ~1.5x speedup (default: false)
+      # - GLM_TTS_TORCH_COMPILE=true
+      # GLM_TTS_MAX_TOKEN_RATIO: max audio tokens per text char (default: 20, try 15)
+      # - GLM_TTS_MAX_TOKEN_RATIO=15
     volumes:
       # Mount GLM-TTS model checkpoints (download separately: ~8GB)
       - ./GLM-TTS/ckpt:/app/GLM-TTS/ckpt:ro
