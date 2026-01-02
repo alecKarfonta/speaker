@@ -44,7 +44,7 @@ class VLLMGLMTTSWrapper:
         model_path: str,
         special_token_ids: Dict[str, int],
         dtype: str = "float16",
-        gpu_memory_utilization: float = 0.9,
+        gpu_memory_utilization: float = 0.3,  # Lower to leave room for Flow model + vocoder
         max_model_len: int = 4096,
         logger=None,
     ):
@@ -87,13 +87,20 @@ class VLLMGLMTTSWrapper:
             self.logger.info(f"Initializing vLLM engine with model: {model_path}")
             self.logger.info(f"vLLM config: dtype={vllm_dtype}, gpu_util={gpu_memory_utilization}")
         
+        # Note: Multi-GPU with VLLM_DEVICE is complex because vLLM spawns subprocesses.
+        # For now, use single GPU with lower gpu_memory_utilization.
+        # TODO: Implement proper multi-GPU by running vLLM in a separate process.
+        
         # Initialize vLLM engine
+        # skip_tokenizer_init=True because we provide prompt_token_ids directly
+        # (GLM-TTS uses custom speech tokens, not standard text tokenization)
         self.llm = LLM(
             model=model_path,
             dtype=vllm_dtype,
             gpu_memory_utilization=gpu_memory_utilization,
             max_model_len=max_model_len,
             trust_remote_code=True,
+            skip_tokenizer_init=True,  # We provide token IDs directly
             # Disable prefix caching for variable-length prompts
             enable_prefix_caching=False,
         )
@@ -117,7 +124,7 @@ class VLLMGLMTTSWrapper:
         spk: str = None,
         temperature: float = 1.0,
         top_p: float = 0.8,
-        repetition_penalty: float = 1.0,
+        repetition_penalty: float = 1.15,  # vLLM default: 1.0=no penalty, >1.0=penalize
     ) -> torch.Tensor:
         """
         Generate speech tokens using vLLM.
@@ -139,12 +146,24 @@ class VLLMGLMTTSWrapper:
             spk: Speaker key (not used in PRETRAIN mode)
             temperature: Sampling temperature
             top_p: Nucleus sampling threshold
-            repetition_penalty: Repetition penalty
+            repetition_penalty: Repetition penalty (vLLM: 1.0=none, >1.0=penalize)
             
         Returns:
             torch.Tensor: Generated audio tokens (shifted by ATS offset) [1, num_tokens]
         """
         device = text.device
+        
+        # IMPORTANT: vLLM uses multiplicative repetition_penalty where:
+        #   1.0 = no penalty, >1.0 = penalize repetition, <1.0 = ENCOURAGE repetition
+        # The transformers backend uses 0.1 as default (additive penalty).
+        # If we receive values <=1.0 (like 0.1 from transformers), remap to sensible vLLM value.
+        if repetition_penalty <= 1.0:
+            if self.logger:
+                self.logger.debug(
+                    f"Remapping repetition_penalty {repetition_penalty} -> 1.15 for vLLM "
+                    "(values <=1.0 encourage repetition in vLLM)"
+                )
+            repetition_penalty = 1.15  # Moderate penalty to prevent loops
         
         # 1. Preprocess Prompt Tokens (add ATS offset)
         if prompt_speech_token_len != 0 and prompt_text_len != 0:
@@ -191,7 +210,7 @@ class VLLMGLMTTSWrapper:
         # 6. Extract generated tokens
         generated_tokens = outputs[0].outputs[0].token_ids
         
-        # 7. Validate tokens are in audio range
+        # 7. Validate tokens are in audio range and clean degenerate patterns
         out_tokens = []
         for token in generated_tokens:
             if self.ats <= token <= self.ate:
@@ -204,9 +223,91 @@ class VLLMGLMTTSWrapper:
                         f"Token {token} outside audio range ({self.ats}, {self.ate})"
                     )
         
-        # 8. Return tokens relative to ATS (matching GLMTTS output format)
+        # 8. Apply additional validation to detect and fix degenerate outputs
+        out_tokens = self._validate_and_clean_tokens(out_tokens, text_length)
+        
+        # 9. Return tokens relative to ATS (matching GLMTTS output format)
         result = torch.tensor([out_tokens], dtype=torch.int64, device=device) - self.ats
         return result
+    
+    def _truncate_repetitions(self, tokens: List[int], max_consecutive: int = 20) -> List[int]:
+        """
+        Detect and truncate repetitive token sequences.
+        
+        Long runs of identical tokens indicate degenerate generation (stuck model).
+        This truncates output when such patterns are detected.
+        
+        Args:
+            tokens: List of audio tokens
+            max_consecutive: Maximum allowed consecutive identical tokens
+            
+        Returns:
+            Cleaned token list, truncated at first long repetition
+        """
+        if len(tokens) < max_consecutive:
+            return tokens
+        
+        consecutive_count = 1
+        last_token = tokens[0] if tokens else None
+        
+        for i, token in enumerate(tokens[1:], start=1):
+            if token == last_token:
+                consecutive_count += 1
+                if consecutive_count >= max_consecutive:
+                    if self.logger:
+                        self.logger.warning(
+                            f"Detected {consecutive_count} consecutive identical tokens "
+                            f"(token={token}) at position {i}. Truncating output."
+                        )
+                    # Return tokens up to where repetition started
+                    return tokens[:i - max_consecutive + 1]
+            else:
+                consecutive_count = 1
+                last_token = token
+        
+        return tokens
+    
+    def _validate_and_clean_tokens(self, tokens: List[int], text_length: int) -> List[int]:
+        """
+        Validate and clean generated tokens, removing degenerate patterns.
+        
+        Args:
+            tokens: List of raw audio tokens (already filtered to valid range)
+            text_length: Length of input text (for ratio validation)
+            
+        Returns:
+            Cleaned token list
+        """
+        if not tokens:
+            return tokens
+        
+        original_len = len(tokens)
+        
+        # 1. Truncate repetitive sequences (stuck generation)
+        tokens = self._truncate_repetitions(tokens, max_consecutive=20)
+        
+        # 2. Check token ratio (expected: 2x-15x text length for normal speech)
+        # Higher ratios often indicate garbage generation
+        MAX_SAFE_RATIO = 15.0
+        ratio = len(tokens) / max(text_length, 1)
+        
+        if ratio > MAX_SAFE_RATIO:
+            max_tokens = int(text_length * MAX_SAFE_RATIO)
+            if self.logger:
+                self.logger.warning(
+                    f"High token ratio {ratio:.1f}x (expected ≤{MAX_SAFE_RATIO}x). "
+                    f"Truncating from {len(tokens)} to {max_tokens} tokens."
+                )
+            tokens = tokens[:max_tokens]
+        
+        # Log if we modified the output
+        if len(tokens) != original_len and self.logger:
+            self.logger.info(
+                f"Token validation: {original_len} -> {len(tokens)} tokens "
+                f"({original_len - len(tokens)} removed)"
+            )
+        
+        return tokens
 
 
 def is_vllm_available() -> bool:

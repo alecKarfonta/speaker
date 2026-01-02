@@ -21,9 +21,9 @@ services:
       - GLM_TTS_ATTENTION=flash_attention_2
       - GLM_TTS_FLOW_STEPS=6
       - GLM_TTS_SAMPLING=18
-      - GLM_TTS_TORCH_COMPILE=true
-      # GLM_TTS_ENGINE: transformers (default) or vllm (high-performance, ~2x faster)
-      # - GLM_TTS_ENGINE=vllm
+      - GLM_TTS_TORCH_COMPILE=false  # Not needed with vLLM
+      # Use vLLM engine for high-performance inference
+      - GLM_TTS_ENGINE=vllm
       # GLM-TTS LLM Optimization (uncomment to customize):
       # GLM_TTS_DTYPE: fp32, fp16, bf16 (default: fp16)
       # - GLM_TTS_DTYPE=fp16

@@ -408,7 +408,7 @@ class GLMTTSBackend(TTSBackendBase):
             model_path=llama_path,
             special_token_ids=self.special_token_ids,
             dtype=self.llm_dtype,
-            gpu_memory_utilization=0.9,
+            gpu_memory_utilization=0.25,  # Low - shared with Flow model on same GPU
             max_model_len=4096,
             logger=self.logger,
         )
@@ -598,6 +598,103 @@ class GLMTTSBackend(TTSBackendBase):
         )
         return wav.detach().cpu(), full_mel
     
+    def _trim_trailing_silence(self, audio: np.ndarray, threshold_db: float = -40) -> np.ndarray:
+        """
+        Trim trailing silence or low-energy audio.
+        
+        Args:
+            audio: Audio samples as numpy array
+            threshold_db: Energy threshold in dB below which audio is considered silence
+            
+        Returns:
+            Audio with trailing silence removed
+        """
+        if len(audio) == 0:
+            return audio
+        
+        # Convert threshold from dB to amplitude
+        threshold_amp = 10 ** (threshold_db / 20)
+        
+        # Find last sample above threshold using a sliding window
+        window_size = int(self._sample_rate * 0.05)  # 50ms window
+        
+        # Scan from end to find where audio energy is above threshold
+        last_active = len(audio)
+        for i in range(len(audio) - window_size, 0, -window_size):
+            window = audio[max(0, i):i + window_size]
+            rms = np.sqrt(np.mean(window ** 2))
+            if rms > threshold_amp:
+                last_active = min(i + window_size + int(self._sample_rate * 0.1), len(audio))  # Keep 100ms buffer
+                break
+        
+        if last_active < len(audio):
+            self.logger.debug(
+                f"Trimmed {(len(audio) - last_active) / self._sample_rate:.2f}s of trailing silence"
+            )
+        
+        return audio[:last_active]
+    
+    def _validate_audio(self, audio: np.ndarray, text: str) -> np.ndarray:
+        """
+        Validate and clean audio based on expected speech characteristics.
+        
+        Uses speech rate bounds (120-180 WPM = 2-3 words/sec) to detect
+        abnormally long output that likely contains garbage audio.
+        
+        Args:
+            audio: Generated audio samples
+            text: Original input text
+            
+        Returns:
+            Validated (and possibly trimmed) audio
+        """
+        if len(audio) == 0:
+            return audio
+        
+        # Speech rate constants (based on human speaking rates)
+        # Normal: 120-180 WPM = 2-3 words/sec = 0.33-0.5 sec/word
+        MIN_SEC_PER_WORD = 0.33  # Fast speech (180 WPM)
+        MAX_SEC_PER_WORD = 0.50  # Slow speech (120 WPM)
+        GARBAGE_THRESHOLD = 0.75  # Beyond slow speech = likely garbage
+        
+        word_count = max(len(text.split()), 1)
+        actual_duration = len(audio) / self._sample_rate
+        sec_per_word = actual_duration / word_count
+        
+        original_duration = actual_duration
+        
+        # 1. Check if duration is within expected speech rate bounds
+        if sec_per_word > GARBAGE_THRESHOLD:
+            # Likely garbage at the end - trim to max expected duration
+            max_duration = word_count * MAX_SEC_PER_WORD
+            max_samples = int(max_duration * self._sample_rate)
+            self.logger.warning(
+                f"Audio too long: {sec_per_word:.2f}s/word (expected ≤{MAX_SEC_PER_WORD}s). "
+                f"Trimming from {actual_duration:.1f}s to {max_duration:.1f}s"
+            )
+            audio = audio[:max_samples]
+        elif sec_per_word < MIN_SEC_PER_WORD:
+            self.logger.warning(f"Suspiciously short audio: {sec_per_word:.2f}s/word")
+        
+        # 2. Trim trailing silence/low-energy sections
+        audio = self._trim_trailing_silence(audio, threshold_db=-40)
+        
+        # 3. RMS sanity check
+        if len(audio) > 0:
+            rms = np.sqrt(np.mean(audio ** 2))
+            if rms < 0.001:
+                self.logger.warning(f"Very low audio RMS: {rms:.4f}")
+        
+        # Log if we modified the output
+        final_duration = len(audio) / self._sample_rate
+        if abs(final_duration - original_duration) > 0.1:
+            self.logger.info(
+                f"Audio validation: {original_duration:.1f}s -> {final_duration:.1f}s "
+                f"({original_duration - final_duration:.1f}s removed)"
+            )
+        
+        return audio
+
     def generate_speech(
         self,
         text: str,
@@ -784,6 +881,11 @@ class GLMTTSBackend(TTSBackendBase):
         else:
             audio = np.zeros(int(self._sample_rate * 0.1), dtype=np.float32)
         timings['concat'] = time.perf_counter() - t0
+        
+        # === Audio Validation: Check speech rate and trim garbage ===
+        t0 = time.perf_counter()
+        audio = self._validate_audio(audio, text)
+        timings['validation'] = time.perf_counter() - t0
         
         # Calculate total and audio duration
         timings['total'] = time.perf_counter() - total_start
