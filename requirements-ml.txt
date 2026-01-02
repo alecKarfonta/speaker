@@ -1,0 +1,19 @@
+# GLM-TTS dependencies (from GLM-TTS requirements.txt)
+transformers==4.57.3
+sentencepiece>=0.1.99
+tiktoken>=0.6.0
+torchaudio>=2.3.0
+torchvision>=0.18.0  # Must be compatible with torch version
+torchcodec>=0.1.0  # Required by torchaudio.load()
+onnxruntime-gpu>=1.17.0
+peft>=0.7.0
+safetensors>=0.4.0
+einops>=0.8.0
+x_transformers>=1.40.0  # Required by GLM-TTS flow model
+
+# Quantization support (optional, for 4-bit/8-bit models)
+bitsandbytes>=0.41.0
+accelerate>=0.20.0
+
+# High-performance inference engine (optional, use GLM_TTS_ENGINE=vllm to enable)
+vllm>=0.6.0

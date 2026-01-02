@@ -92,6 +92,9 @@ class GLMTTSBackend(TTSBackendBase):
         # Flow model timesteps (lower = faster, quality tradeoff) - default 10, try 5-8 for speed
         self.flow_steps = int(os.environ.get("GLM_TTS_FLOW_STEPS", self.config.get("flow_steps", 10)))
         
+        # Inference engine selection: 'transformers' (default) or 'vllm' (high-performance)
+        self.llm_engine = os.environ.get("GLM_TTS_ENGINE", "transformers").lower()
+        
         # torch.compile for JIT optimization (requires PyTorch 2.0+)
         self.use_torch_compile = os.environ.get("GLM_TTS_TORCH_COMPILE", "").lower() in ("true", "1", "yes")
         
@@ -112,7 +115,7 @@ class GLMTTSBackend(TTSBackendBase):
         self.llm_attention = self._get_llm_attention()
         
         self.logger.info(f"Initializing GLMTTSBackend with model_path: {self._model_path}")
-        self.logger.info(f"LLM settings: dtype={self.llm_dtype}, quantization={self.llm_quantization}, attention={self.llm_attention}")
+        self.logger.info(f"LLM settings: dtype={self.llm_dtype}, quantization={self.llm_quantization}, attention={self.llm_attention}, engine={self.llm_engine}")
         self.logger.info(f"Speed settings: flow_steps={self.flow_steps}, sampling={self.sampling}, torch_compile={self.use_torch_compile}")
         self.logger.info(f"CUDA available: {torch.cuda.is_available()}, Device: {self.device}")
         if torch.cuda.is_available():
@@ -306,12 +309,39 @@ class GLMTTSBackend(TTSBackendBase):
         
         self.text_frontend = TextFrontEnd(self.use_phoneme)
         
-        # 3. Load LLM
+        # 3. Load LLM (with optional vLLM engine for high-performance inference)
         self.logger.debug("Loading LLM...")
         llama_path = str(model_path / "llm")
         
         # Get configs path
         configs_dir = GLM_TTS_DIR / "configs"
+        
+        # Get special token IDs first (needed for both engines)
+        self.special_token_ids = self._get_special_token_ids(tokenize_fn)
+        
+        # Choose inference engine based on GLM_TTS_ENGINE env var
+        if self.llm_engine == "vllm":
+            self._load_llm_vllm(llama_path)
+        else:
+            self._load_llm_transformers(llama_path, configs_dir)
+        
+        # 4. Load Flow model (Token2Wav)
+        self.logger.debug("Loading Flow model...")
+        flow_model = yaml_util.load_flow_model(
+            str(model_path / "flow" / "flow.pt"),
+            str(model_path / "flow" / "config.yaml"),
+            self.device
+        )
+        
+        # Load vocoder with absolute paths
+        self.logger.debug("Loading vocoder...")
+        self.flow = self._create_token2wav(flow_model, model_path)
+        
+        self.logger.info("GLM-TTS model initialization complete")
+    
+    def _load_llm_transformers(self, llama_path: str, configs_dir: Path) -> None:
+        """Load LLM using HuggingFace transformers (default engine)."""
+        self.logger.info("Using HuggingFace transformers engine")
         
         self.llm = GLMTTS(
             llama_cfg_path=os.path.join(llama_path, "config.json"),
@@ -347,20 +377,7 @@ class GLMTTSBackend(TTSBackendBase):
         self.llm.llama_embedding = self.llm.llama.model.embed_tokens
         
         # Set special token IDs
-        self.special_token_ids = self._get_special_token_ids(tokenize_fn)
         self.llm.set_runtime_vars(special_token_ids=self.special_token_ids)
-        
-        # 4. Load Flow model (Token2Wav)
-        self.logger.debug("Loading Flow model...")
-        flow_model = yaml_util.load_flow_model(
-            str(model_path / "flow" / "flow.pt"),
-            str(model_path / "flow" / "config.yaml"),
-            self.device
-        )
-        
-        # Load vocoder with absolute paths
-        self.logger.debug("Loading vocoder...")
-        self.flow = self._create_token2wav(flow_model, model_path)
         
         # Apply torch.compile if enabled (PyTorch 2.0+ JIT optimization)
         # Note: Use "default" mode, not "reduce-overhead" which uses CUDA graphs
@@ -373,8 +390,30 @@ class GLMTTSBackend(TTSBackendBase):
                 self.logger.info("torch.compile applied successfully (mode=default)")
             except Exception as e:
                 self.logger.warning(f"torch.compile failed: {e}. Continuing without compilation.")
+    
+    def _load_llm_vllm(self, llama_path: str) -> None:
+        """Load LLM using vLLM engine for high-performance inference."""
+        from app.backends.vllm_glmtts import VLLMGLMTTSWrapper, is_vllm_available
         
-        self.logger.info("GLM-TTS model initialization complete")
+        if not is_vllm_available():
+            self.logger.warning("vLLM not available, falling back to transformers engine")
+            self.llm_engine = "transformers"
+            configs_dir = Path(self._model_path).parent.parent / "GLM-TTS" / "configs"
+            return self._load_llm_transformers(llama_path, configs_dir)
+        
+        self.logger.info("Using vLLM engine for high-performance inference")
+        
+        # vLLM wrapper acts as drop-in replacement for GLMTTS
+        self.llm = VLLMGLMTTSWrapper(
+            model_path=llama_path,
+            special_token_ids=self.special_token_ids,
+            dtype=self.llm_dtype,
+            gpu_memory_utilization=0.9,
+            max_model_len=4096,
+            logger=self.logger,
+        )
+        
+        self.logger.info("vLLM engine loaded successfully")
     
     def _create_token2wav(self, flow_model, model_path: Path):
         """Create Token2Wav with proper absolute paths for vocoder"""

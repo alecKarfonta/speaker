@@ -1,25 +1,19 @@
+# syntax=docker/dockerfile:1.4
+# ^^^ Enable BuildKit features (cache mounts)
+
 # Use NVIDIA CUDA base image with Python for GPU support
-FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+FROM nvcr.io/nvidia/pytorch:24.01-py3
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
-
-# Install Python 3.11
-RUN apt-get update && apt-get install -y software-properties-common && \
-    add-apt-repository ppa:deadsnakes/ppa && \
-    apt-get update && apt-get install -y \
-    python3.11 python3.11-venv python3.11-dev python3-pip && \
-    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
-    rm -rf /var/lib/apt/lists/*
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/app:/app/GLM-TTS
 
-# Install system dependencies
+# Install system dependencies (rarely change - good cache layer)
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
@@ -35,22 +29,38 @@ RUN apt-get update && apt-get install -y \
 # Set the working directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# ===== STABLE DEPENDENCY LAYER =====
+# These rarely change, keep them cached separately
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install packaging ninja
 
-# Install Python dependencies
-# Install torch first (required for flash-attn build)
-#RUN pip install torch>=2.0.0 torchaudio>=2.0.0
+# Upgrade transformers before other requirements (NGC container has older version)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade --force-reinstall transformers==4.57.3
 
-# Install flash-attn separately (requires torch to be installed first)
-#RUN pip install packaging
-#RUN pip install ninja
-#RUN MAX_JOBS=16 pip install  flash-attn --no-build-isolation
+# ===== STABLE PYTHON DEPS (rarely change) =====
+COPY requirements-stable.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install "numpy<2.0" && pip install -r requirements-stable.txt
 
-# Install remaining dependencies
-RUN pip install  -r requirements.txt
+# ===== ML PYTHON DEPS (change more often) =====
+COPY requirements-ml.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements-ml.txt
 
-# Copy the application code
+# Clone GLM-TTS code (before flash-attn, rarely changes)
+RUN git clone --depth 1 https://github.com/zai-org/GLM-TTS.git GLM-TTS && \
+    rm -rf GLM-TTS/.git GLM-TTS/ckpt && \
+    mkdir -p /app/data/voices /app/logs
+
+# ===== FLASH-ATTN (BUILD FROM SOURCE) =====
+# Build AFTER all other deps to ensure ABI compatibility with final torch version
+# IMPORTANT: Use --no-cache-dir to prevent using a wheel built against wrong PyTorch!
+RUN MAX_JOBS=10 TORCH_CUDA_ARCH_LIST="8.6" pip install "flash-attn>=2.1.0" --no-build-isolation --no-cache-dir && \
+    python -c "import flash_attn; print('Flash Attention OK:', flash_attn.__version__)"
+
+# ===== APPLICATION CODE (LAST - changes frequently) =====
+# Copy application code AFTER flash-attn so code changes don't trigger rebuild
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 COPY config.yaml .
@@ -59,17 +69,8 @@ COPY start_api.sh .
 # Copy voice files into the container
 COPY data/voices/ ./data/voices/
 
-# Clone GLM-TTS code (without model checkpoints - mount those at runtime)
-RUN git clone --depth 1 https://github.com/zai-org/GLM-TTS.git GLM-TTS && \
-    rm -rf GLM-TTS/.git GLM-TTS/ckpt
-
 # Make scripts executable
-RUN chmod +x scripts/*.sh
-RUN chmod +x start_api.sh
-
-# Create necessary directories
-RUN mkdir -p /app/data/voices
-RUN mkdir -p /app/logs
+RUN chmod +x scripts/*.sh start_api.sh
 
 # Expose the port
 EXPOSE 8000
