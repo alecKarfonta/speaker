@@ -46,3 +46,4 @@ echo "   c. Add your repository with 'Write' role"
 echo "   d. Under 'Danger Zone', change visibility if needed"
 echo ""
 echo "After that, your GitHub Actions workflow should work!"
+

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Mic, Radio } from 'lucide-react';
+import { Mic, Radio, Music } from 'lucide-react';
 
 const Navigation: React.FC = () => {
   const location = useLocation();
@@ -8,6 +8,7 @@ const Navigation: React.FC = () => {
   const navItems = [
     { path: '/', label: 'TTS Generator', icon: Mic },
     { path: '/stream', label: 'Live Stream TTS', icon: Radio },
+    { path: '/voices', label: 'Voice Library', icon: Music },
   ];
 
   return (

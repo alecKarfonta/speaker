@@ -5,7 +5,7 @@ services:
     image: ghcr.io/aleckarfonta/speaker:latest
     build: .
     ports:
-      - "8010:8000"
+      - "8012:8000"
     environment:
       - ENVIRONMENT=development
       - PYTHONPATH=/app:/app/GLM-TTS
@@ -15,7 +15,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - COQUI_TOS_AGREED=1
       # TTS Backend: "xtts" or "glm-tts"
-      - TTS_BACKEND=xtts
+      - TTS_BACKEND=glm-tts
     volumes:
       # Mount GLM-TTS model checkpoints (download separately: ~8GB)
       - ./GLM-TTS/ckpt:/app/GLM-TTS/ckpt:ro
@@ -41,7 +41,7 @@ services:
     image: ghcr.io/aleckarfonta/speaker-frontend:latest
     build: ./frontend
     ports:
-      - "3010:80"
+      - "3012:80"
     depends_on:
       - tts-api
     networks:

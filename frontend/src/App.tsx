@@ -2,17 +2,12 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import TTSWorkspace from './components/tts/TTSWorkspace';
+import VoiceLibrary from './components/voices/VoiceLibrary';
 
 // Placeholder components for other routes
 const LiveStream: React.FC = () => (
   <div className="flex items-center justify-center h-screen bg-background text-text-secondary">
     Live Stream (Coming Soon)
-  </div>
-);
-
-const VoiceLibrary: React.FC = () => (
-  <div className="flex items-center justify-center h-screen bg-background text-text-secondary">
-    Voice Library (Coming Soon)
   </div>
 );
 

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, constr
 from fastapi import UploadFile, File, HTTPException, Depends, Request
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response, JSONResponse, FileResponse
 from fastapi.openapi.utils import get_openapi
 from prometheus_client import generate_latest, REGISTRY, CONTENT_TYPE_LATEST
 
@@ -270,6 +270,235 @@ async def get_voices():
     Returns a dictionary with available voice names that can be used for TTS generation.
     """
     return {"voices": tts_service.get_voices()}
+
+@app.get("/voices/{voice_name}/details")
+async def get_voice_details(voice_name: str):
+    """
+    Get detailed information about a specific voice including all its files.
+    
+    - **voice_name**: Name of the voice
+    
+    Returns detailed file information for the voice.
+    """
+    voice_dir = f"data/voices/{voice_name}"
+    
+    if not os.path.exists(voice_dir):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voice '{voice_name}' not found"
+        )
+    
+    files = []
+    total_size = 0
+    
+    for filename in os.listdir(voice_dir):
+        if filename.lower().endswith(('.wav', '.mp3')):
+            filepath = os.path.join(voice_dir, filename)
+            file_stat = os.stat(filepath)
+            
+            # Get audio duration
+            duration = None
+            try:
+                audio_data, sample_rate = sf.read(filepath)
+                duration = len(audio_data) / sample_rate
+            except:
+                pass
+            
+            files.append({
+                "name": filename,
+                "path": filepath,
+                "size": file_stat.st_size,
+                "duration": duration,
+                "modified": file_stat.st_mtime,
+            })
+            total_size += file_stat.st_size
+    
+    return {
+        "voice_name": voice_name,
+        "files": files,
+        "total_files": len(files),
+        "total_size": total_size,
+    }
+
+@app.get("/voices/{voice_name}/files/{filename}")
+async def download_voice_file(voice_name: str, filename: str):
+    """
+    Download a specific audio file from a voice.
+    
+    - **voice_name**: Name of the voice
+    - **filename**: Name of the file to download
+    """
+    voice_dir = f"data/voices/{voice_name}"
+    filepath = os.path.join(voice_dir, filename)
+    
+    # Security check: ensure the file is within the voice directory
+    if not os.path.abspath(filepath).startswith(os.path.abspath(voice_dir)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file path"
+        )
+    
+    if not os.path.exists(filepath):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File '{filename}' not found in voice '{voice_name}'"
+        )
+    
+    return FileResponse(
+        filepath,
+        media_type="application/octet-stream",
+        filename=filename
+    )
+
+@app.delete("/voices/{voice_name}/files/{filename}")
+async def delete_voice_file(voice_name: str, filename: str, request: Request):
+    """
+    Delete a specific audio file from a voice.
+    
+    - **voice_name**: Name of the voice
+    - **filename**: Name of the file to delete
+    """
+    check_rate_limit(request)
+    
+    voice_dir = f"data/voices/{voice_name}"
+    filepath = os.path.join(voice_dir, filename)
+    
+    # Security check: ensure the file is within the voice directory
+    if not os.path.abspath(filepath).startswith(os.path.abspath(voice_dir)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file path"
+        )
+    
+    if not os.path.exists(filepath):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File '{filename}' not found in voice '{voice_name}'"
+        )
+    
+    try:
+        os.remove(filepath)
+        
+        # Check if voice directory is empty and remove it if so
+        remaining_files = [f for f in os.listdir(voice_dir) if f.lower().endswith(('.wav', '.mp3'))]
+        if len(remaining_files) == 0:
+            import shutil
+            shutil.rmtree(voice_dir)
+        
+        # Reload voices
+        tts_service.load_voices()
+        
+        return {"message": f"File '{filename}' deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error deleting file: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete file: {str(e)}"
+        )
+
+@app.post("/voices/combine")
+async def combine_voice_files(
+    voice_name: str,
+    source_voices: List[str],
+    request: Request
+):
+    """
+    Combine audio files from multiple voices into a new voice.
+    
+    - **voice_name**: Name for the new combined voice
+    - **source_voices**: List of voice names to combine
+    """
+    check_rate_limit(request)
+    
+    if len(source_voices) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least 2 source voices are required to combine"
+        )
+    
+    # Validate voice name
+    if not voice_name.replace('_', '').isalnum():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Voice name must contain only letters, numbers, and underscores"
+        )
+    
+    # Check if target voice already exists
+    target_dir = f"data/voices/{voice_name}"
+    if os.path.exists(target_dir):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Voice '{voice_name}' already exists"
+        )
+    
+    try:
+        # Create target directory
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # Copy all files from source voices
+        file_index = 1
+        copied_files = []
+        
+        for source_voice in source_voices:
+            source_dir = f"data/voices/{source_voice}"
+            
+            if not os.path.exists(source_dir):
+                logger.warning(f"Source voice '{source_voice}' not found, skipping")
+                continue
+            
+            for filename in os.listdir(source_dir):
+                if filename.lower().endswith(('.wav', '.mp3')):
+                    source_path = os.path.join(source_dir, filename)
+                    file_extension = os.path.splitext(filename)[1]
+                    target_filename = f"{voice_name}_{str(file_index).zfill(2)}{file_extension}"
+                    target_path = os.path.join(target_dir, target_filename)
+                    
+                    import shutil
+                    shutil.copy2(source_path, target_path)
+                    copied_files.append(target_filename)
+                    file_index += 1
+        
+        if len(copied_files) == 0:
+            # Clean up empty directory
+            os.rmdir(target_dir)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No valid audio files found in source voices"
+            )
+        
+        # Reload voices
+        tts_service.load_voices()
+        
+        # Log for audit
+        client_ip = request.client.host if request.client else "unknown"
+        user_agent = request.headers.get("user-agent")
+        audit_logger.log_voice_upload(
+            voice_name, 
+            f"combined from {', '.join(source_voices)}", 
+            0, 
+            client_ip, 
+            user_agent
+        )
+        
+        return {
+            "message": f"Successfully combined {len(source_voices)} voices into '{voice_name}'",
+            "voice_name": voice_name,
+            "files_copied": len(copied_files),
+            "source_voices": source_voices
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error combining voices: {str(e)}", exc_info=True)
+        # Clean up on error
+        if os.path.exists(target_dir):
+            import shutil
+            shutil.rmtree(target_dir)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to combine voices: {str(e)}"
+        )
 
 @app.post("/voices", status_code=status.HTTP_201_CREATED, response_model=VoiceUploadResponse)
 async def add_voice(

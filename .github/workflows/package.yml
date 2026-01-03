@@ -9,6 +9,8 @@ env:
   REGISTRY: ghcr.io
   BACKEND_IMAGE_NAME: ghcr.io/aleckarfonta/speaker
   FRONTEND_IMAGE_NAME: ghcr.io/aleckarfonta/speaker-frontend
+  PROMETHEUS_IMAGE_NAME: ghcr.io/aleckarfonta/speaker-prometheus
+  GRAFANA_IMAGE_NAME: ghcr.io/aleckarfonta/speaker-grafana
 
 jobs:
   build-and-publish:
