@@ -27,16 +27,21 @@ if GLM_TTS_DIR.exists() and str(GLM_TTS_DIR) not in sys.path:
     sys.path.insert(0, str(GLM_TTS_DIR))
 
 # GLM-TTS specific imports
-try:
-    from transformers import AutoTokenizer, LlamaForCausalLM
-    from llm.glmtts import GLMTTS
-    from cosyvoice.cli.frontend import TTSFrontEnd, SpeechTokenizer, TextFrontEnd
-    from utils import tts_model_util, yaml_util
-    from utils.audio import mel_spectrogram
-    GLM_DEPS_AVAILABLE = True
-except ImportError as e:
-    GLM_DEPS_AVAILABLE = False
-    _import_error = str(e)
+#try:
+from transformers import AutoTokenizer, LlamaForCausalLM, BitsAndBytesConfig
+from llm.glmtts import GLMTTS
+from cosyvoice.cli.frontend import TTSFrontEnd, SpeechTokenizer, TextFrontEnd
+from utils import tts_model_util, yaml_util
+from utils.audio import mel_spectrogram
+GLM_DEPS_AVAILABLE = True
+#except ImportError as e:
+#    GLM_DEPS_AVAILABLE = False
+#    _import_error = str(e)
+
+# Environment variable configuration for LLM optimization:
+# GLM_TTS_DTYPE: fp32, fp16, bf16 (default: fp16)
+# GLM_TTS_QUANTIZATION: none, 4bit, 8bit (default: none)
+# GLM_TTS_ATTENTION: eager, sdpa, flash_attention_2 (default: eager)
 
 
 class GLMTTSBackend(TTSBackendBase):
@@ -80,13 +85,22 @@ class GLMTTSBackend(TTSBackendBase):
         
         # Inference parameters
         self.beam_size = self.config.get("beam_size", 1)
-        self.sampling = self.config.get("sampling", 25)
+        self.sampling = int(os.environ.get("GLM_TTS_SAMPLING", self.config.get("sampling", 25)))
         self.use_phoneme = self.config.get("use_phoneme", False)
         self.use_cache = self.config.get("use_cache", True)
         
+        # Flow model timesteps (lower = faster, quality tradeoff) - default 10, try 5-8 for speed
+        self.flow_steps = int(os.environ.get("GLM_TTS_FLOW_STEPS", self.config.get("flow_steps", 10)))
+        
+        # Inference engine selection: 'transformers' (default) or 'vllm' (high-performance)
+        self.llm_engine = os.environ.get("GLM_TTS_ENGINE", "transformers").lower()
+        
+        # torch.compile for JIT optimization (requires PyTorch 2.0+)
+        self.use_torch_compile = os.environ.get("GLM_TTS_TORCH_COMPILE", "").lower() in ("true", "1", "yes")
+        
         # Token generation limits (affects how much audio is generated per text)
-        self.max_token_text_ratio = self.config.get("max_token_text_ratio", 20.0)
-        self.min_token_text_ratio = self.config.get("min_token_text_ratio", 2.0)
+        self.max_token_text_ratio = float(os.environ.get("GLM_TTS_MAX_TOKEN_RATIO", self.config.get("max_token_text_ratio", 20.0)))
+        self.min_token_text_ratio = float(os.environ.get("GLM_TTS_MIN_TOKEN_RATIO", self.config.get("min_token_text_ratio", 2.0)))
         
         # Text chunking parameters
         self.max_text_len = self.config.get("max_text_len", 200)  # Increased from 60
@@ -95,7 +109,20 @@ class GLMTTSBackend(TTSBackendBase):
         # Device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
+        # LLM optimization settings (from env vars or config)
+        self.llm_dtype = self._get_llm_dtype()
+        self.llm_quantization = self._get_llm_quantization()
+        self.llm_attention = self._get_llm_attention()
+        
         self.logger.info(f"Initializing GLMTTSBackend with model_path: {self._model_path}")
+        self.logger.info(f"LLM settings: dtype={self.llm_dtype}, quantization={self.llm_quantization}, attention={self.llm_attention}, engine={self.llm_engine}")
+        self.logger.info(f"Speed settings: flow_steps={self.flow_steps}, sampling={self.sampling}, torch_compile={self.use_torch_compile}")
+        self.logger.info(f"CUDA available: {torch.cuda.is_available()}, Device: {self.device}")
+        if torch.cuda.is_available():
+            self.logger.info(f"GPU: {torch.cuda.get_device_name(0)}, Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
+            # Enable TensorFloat32 for better GPU performance on Ampere+ GPUs
+            torch.set_float32_matmul_precision('high')
+            self.logger.info("Enabled TensorFloat32 matmul precision for GPU acceleration")
         self.initialize_model()
         self.load_voices()
     
@@ -114,6 +141,67 @@ class GLMTTSBackend(TTSBackendBase):
     @property
     def supported_languages(self) -> List[str]:
         return self.SUPPORTED_LANGUAGES
+    
+    def _get_llm_dtype(self) -> str:
+        """Get LLM dtype from env var GLM_TTS_DTYPE or config. Options: fp32, fp16, bf16"""
+        dtype = os.environ.get("GLM_TTS_DTYPE", "").lower()
+        if not dtype:
+            dtype = self.config.get("llm_dtype", "fp16").lower()
+        
+        valid_dtypes = ["fp32", "fp16", "bf16"]
+        if dtype not in valid_dtypes:
+            self.logger.warning(f"Invalid GLM_TTS_DTYPE '{dtype}', defaulting to fp16. Valid: {valid_dtypes}")
+            dtype = "fp16"
+        return dtype
+    
+    def _get_llm_quantization(self) -> str:
+        """Get LLM quantization from env var GLM_TTS_QUANTIZATION or config. Options: none, 4bit, 8bit"""
+        quant = os.environ.get("GLM_TTS_QUANTIZATION", "").lower()
+        if not quant:
+            quant = self.config.get("llm_quantization", "none").lower()
+        
+        valid_quants = ["none", "4bit", "8bit"]
+        if quant not in valid_quants:
+            self.logger.warning(f"Invalid GLM_TTS_QUANTIZATION '{quant}', defaulting to none. Valid: {valid_quants}")
+            quant = "none"
+        return quant
+    
+    def _get_llm_attention(self) -> str:
+        """Get LLM attention impl from env var GLM_TTS_ATTENTION or config. Options: eager, sdpa, flash_attention_2"""
+        attn = os.environ.get("GLM_TTS_ATTENTION", "").lower()
+        if not attn:
+            attn = self.config.get("llm_attention", "eager").lower()
+        
+        valid_attns = ["eager", "sdpa", "flash_attention_2"]
+        if attn not in valid_attns:
+            self.logger.warning(f"Invalid GLM_TTS_ATTENTION '{attn}', defaulting to eager. Valid: {valid_attns}")
+            attn = "eager"
+        return attn
+    
+    def _get_torch_dtype(self):
+        """Convert string dtype to torch dtype"""
+        dtype_map = {
+            "fp32": torch.float32,
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+        }
+        return dtype_map[self.llm_dtype]
+    
+    def _get_quantization_config(self) -> Optional[BitsAndBytesConfig]:
+        """Create BitsAndBytesConfig based on quantization setting"""
+        if self.llm_quantization == "4bit":
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=self._get_torch_dtype(),
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True
+            )
+        elif self.llm_quantization == "8bit":
+            return BitsAndBytesConfig(
+                load_in_8bit=True,
+            )
+        return None
+
     
     def _get_special_token_ids(self, tokenize_fn):
         """Get special token IDs for GLM-TTS"""
@@ -221,28 +309,21 @@ class GLMTTSBackend(TTSBackendBase):
         
         self.text_frontend = TextFrontEnd(self.use_phoneme)
         
-        # 3. Load LLM
+        # 3. Load LLM (with optional vLLM engine for high-performance inference)
         self.logger.debug("Loading LLM...")
         llama_path = str(model_path / "llm")
         
         # Get configs path
         configs_dir = GLM_TTS_DIR / "configs"
         
-        self.llm = GLMTTS(
-            llama_cfg_path=os.path.join(llama_path, "config.json"),
-            mode="PRETRAIN",
-            lora_adapter_config=str(configs_dir / "lora_adapter_configV3.1.json"),
-            spk_prompt_dict_path=str(configs_dir / "spk_prompt_dict.yaml")
-        )
-        self.llm.llama = LlamaForCausalLM.from_pretrained(
-            llama_path,
-            torch_dtype=torch.float32
-        ).to(self.device)
-        self.llm.llama_embedding = self.llm.llama.model.embed_tokens
-        
-        # Set special token IDs
+        # Get special token IDs first (needed for both engines)
         self.special_token_ids = self._get_special_token_ids(tokenize_fn)
-        self.llm.set_runtime_vars(special_token_ids=self.special_token_ids)
+        
+        # Choose inference engine based on GLM_TTS_ENGINE env var
+        if self.llm_engine == "vllm":
+            self._load_llm_vllm(llama_path)
+        else:
+            self._load_llm_transformers(llama_path, configs_dir)
         
         # 4. Load Flow model (Token2Wav)
         self.logger.debug("Loading Flow model...")
@@ -257,6 +338,82 @@ class GLMTTSBackend(TTSBackendBase):
         self.flow = self._create_token2wav(flow_model, model_path)
         
         self.logger.info("GLM-TTS model initialization complete")
+    
+    def _load_llm_transformers(self, llama_path: str, configs_dir: Path) -> None:
+        """Load LLM using HuggingFace transformers (default engine)."""
+        self.logger.info("Using HuggingFace transformers engine")
+        
+        self.llm = GLMTTS(
+            llama_cfg_path=os.path.join(llama_path, "config.json"),
+            mode="PRETRAIN",
+            lora_adapter_config=str(configs_dir / "lora_adapter_configV3.1.json"),
+            spk_prompt_dict_path=str(configs_dir / "spk_prompt_dict.yaml")
+        )
+        
+        # Build LLM loading kwargs based on configuration
+        llm_kwargs = {
+            "torch_dtype": self._get_torch_dtype(),
+        }
+        
+        # Add attention implementation
+        if self.llm_attention != "eager":
+            llm_kwargs["attn_implementation"] = self.llm_attention
+            self.logger.debug(f"Using attention implementation: {self.llm_attention}")
+        
+        # Add quantization config if enabled
+        quant_config = self._get_quantization_config()
+        if quant_config:
+            llm_kwargs["quantization_config"] = quant_config
+            llm_kwargs["device_map"] = "auto"  # Required for quantization
+            self.logger.debug(f"Using quantization: {self.llm_quantization}")
+        
+        # Load the model
+        self.llm.llama = LlamaForCausalLM.from_pretrained(llama_path, **llm_kwargs)
+        
+        # Only manually move to device if not using quantization (which uses device_map)
+        if not quant_config:
+            self.llm.llama = self.llm.llama.to(self.device)
+        
+        self.llm.llama_embedding = self.llm.llama.model.embed_tokens
+        
+        # Set special token IDs
+        self.llm.set_runtime_vars(special_token_ids=self.special_token_ids)
+        
+        # Apply torch.compile if enabled (PyTorch 2.0+ JIT optimization)
+        # Note: Use "default" mode, not "reduce-overhead" which uses CUDA graphs
+        # that don't work well with autoregressive generation
+        if self.use_torch_compile:
+            self.logger.info("Applying torch.compile to LLM (first inference will be slow)...")
+            try:
+                # Use default mode - reduce-overhead causes CUDA graph issues with autoregressive gen
+                self.llm.llama = torch.compile(self.llm.llama, mode="default")
+                self.logger.info("torch.compile applied successfully (mode=default)")
+            except Exception as e:
+                self.logger.warning(f"torch.compile failed: {e}. Continuing without compilation.")
+    
+    def _load_llm_vllm(self, llama_path: str) -> None:
+        """Load LLM using vLLM engine for high-performance inference."""
+        from app.backends.vllm_glmtts import VLLMGLMTTSWrapper, is_vllm_available
+        
+        if not is_vllm_available():
+            self.logger.warning("vLLM not available, falling back to transformers engine")
+            self.llm_engine = "transformers"
+            configs_dir = Path(self._model_path).parent.parent / "GLM-TTS" / "configs"
+            return self._load_llm_transformers(llama_path, configs_dir)
+        
+        self.logger.info("Using vLLM engine for high-performance inference")
+        
+        # vLLM wrapper acts as drop-in replacement for GLMTTS
+        self.llm = VLLMGLMTTSWrapper(
+            model_path=llama_path,
+            special_token_ids=self.special_token_ids,
+            dtype=self.llm_dtype,
+            gpu_memory_utilization=0.25,  # Low - shared with Flow model on same GPU
+            max_model_len=4096,
+            logger=self.logger,
+        )
+        
+        self.logger.info("vLLM engine loaded successfully")
     
     def _create_token2wav(self, flow_model, model_path: Path):
         """Create Token2Wav with proper absolute paths for vocoder"""
@@ -325,6 +482,17 @@ class GLMTTSBackend(TTSBackendBase):
         voice.metadata["prompt_text"] = prompt_text
         self.logger.debug(f"Voice {voice_name} prompt_text: '{prompt_text[:50]}...'")
         
+        # Pre-extract and cache all prompt features to avoid re-extraction on each generation
+        # This runs the ONNX model once at load time, not on every request
+        prompt_speech_path = voice.file_paths[0]
+        self.logger.debug(f"Pre-extracting prompt features for {voice_name}...")
+        
+        voice.metadata["prompt_speech_token"] = self.frontend._extract_speech_token([prompt_speech_path])
+        voice.metadata["speech_feat"] = self.frontend._extract_speech_feat(prompt_speech_path, sample_rate=self._sample_rate)
+        voice.metadata["embedding"] = self.frontend._extract_spk_embedding(prompt_speech_path)
+        
+        self.logger.debug(f"Cached prompt features for {voice_name}")
+        
         self.voices[voice_name] = voice
         self.logger.debug(f"Loaded voice: {self.voices[voice_name]}")
     
@@ -360,18 +528,6 @@ class GLMTTSBackend(TTSBackendBase):
         except Exception as e:
             self.logger.warning(f"STT API error: {e}, falling back to local Whisper")
         
-        # Fallback to local Whisper
-        try:
-            import whisper
-            if not hasattr(self, '_whisper_model'):
-                self.logger.debug("Loading local Whisper model for voice transcription...")
-                self._whisper_model = whisper.load_model("base")
-            
-            result = self._whisper_model.transcribe(audio_path)
-            return result["text"].strip()
-        except Exception as e:
-            self.logger.warning(f"Failed to transcribe {audio_path}: {e}. Using empty prompt_text.")
-            return ""
     
     def _llm_forward(
         self,
@@ -435,12 +591,110 @@ class GLMTTSBackend(TTSBackendBase):
         """Run Flow forward pass to generate audio"""
         wav, full_mel = self.flow.token2wav_with_cache(
             token_list,
+            n_timesteps=self.flow_steps,  # Use configurable flow steps
             prompt_token=prompt_speech_tokens,
             prompt_feat=speech_feat,
             embedding=embedding,
         )
         return wav.detach().cpu(), full_mel
     
+    def _trim_trailing_silence(self, audio: np.ndarray, threshold_db: float = -40) -> np.ndarray:
+        """
+        Trim trailing silence or low-energy audio.
+        
+        Args:
+            audio: Audio samples as numpy array
+            threshold_db: Energy threshold in dB below which audio is considered silence
+            
+        Returns:
+            Audio with trailing silence removed
+        """
+        if len(audio) == 0:
+            return audio
+        
+        # Convert threshold from dB to amplitude
+        threshold_amp = 10 ** (threshold_db / 20)
+        
+        # Find last sample above threshold using a sliding window
+        window_size = int(self._sample_rate * 0.05)  # 50ms window
+        
+        # Scan from end to find where audio energy is above threshold
+        last_active = len(audio)
+        for i in range(len(audio) - window_size, 0, -window_size):
+            window = audio[max(0, i):i + window_size]
+            rms = np.sqrt(np.mean(window ** 2))
+            if rms > threshold_amp:
+                last_active = min(i + window_size + int(self._sample_rate * 0.1), len(audio))  # Keep 100ms buffer
+                break
+        
+        if last_active < len(audio):
+            self.logger.debug(
+                f"Trimmed {(len(audio) - last_active) / self._sample_rate:.2f}s of trailing silence"
+            )
+        
+        return audio[:last_active]
+    
+    def _validate_audio(self, audio: np.ndarray, text: str) -> np.ndarray:
+        """
+        Validate and clean audio based on expected speech characteristics.
+        
+        Uses speech rate bounds (120-180 WPM = 2-3 words/sec) to detect
+        abnormally long output that likely contains garbage audio.
+        
+        Args:
+            audio: Generated audio samples
+            text: Original input text
+            
+        Returns:
+            Validated (and possibly trimmed) audio
+        """
+        if len(audio) == 0:
+            return audio
+        
+        # Speech rate constants (based on human speaking rates)
+        # Normal: 120-180 WPM = 2-3 words/sec = 0.33-0.5 sec/word
+        MIN_SEC_PER_WORD = 0.33  # Fast speech (180 WPM)
+        MAX_SEC_PER_WORD = 0.50  # Slow speech (120 WPM)
+        GARBAGE_THRESHOLD = 0.75  # Beyond slow speech = likely garbage
+        
+        word_count = max(len(text.split()), 1)
+        actual_duration = len(audio) / self._sample_rate
+        sec_per_word = actual_duration / word_count
+        
+        original_duration = actual_duration
+        
+        # 1. Check if duration is within expected speech rate bounds
+        if sec_per_word > GARBAGE_THRESHOLD:
+            # Likely garbage at the end - trim to max expected duration
+            max_duration = word_count * MAX_SEC_PER_WORD
+            max_samples = int(max_duration * self._sample_rate)
+            self.logger.warning(
+                f"Audio too long: {sec_per_word:.2f}s/word (expected ≤{MAX_SEC_PER_WORD}s). "
+                f"Trimming from {actual_duration:.1f}s to {max_duration:.1f}s"
+            )
+            audio = audio[:max_samples]
+        elif sec_per_word < MIN_SEC_PER_WORD:
+            self.logger.warning(f"Suspiciously short audio: {sec_per_word:.2f}s/word")
+        
+        # 2. Trim trailing silence/low-energy sections
+        audio = self._trim_trailing_silence(audio, threshold_db=-40)
+        
+        # 3. RMS sanity check
+        if len(audio) > 0:
+            rms = np.sqrt(np.mean(audio ** 2))
+            if rms < 0.001:
+                self.logger.warning(f"Very low audio RMS: {rms:.4f}")
+        
+        # Log if we modified the output
+        final_duration = len(audio) / self._sample_rate
+        if abs(final_duration - original_duration) > 0.1:
+            self.logger.info(
+                f"Audio validation: {original_duration:.1f}s -> {final_duration:.1f}s "
+                f"({original_duration - final_duration:.1f}s removed)"
+            )
+        
+        return audio
+
     def generate_speech(
         self,
         text: str,
@@ -464,6 +718,10 @@ class GLMTTSBackend(TTSBackendBase):
         Returns:
             Tuple of (audio_data as numpy array, sample_rate)
         """
+        import time
+        timings = {}
+        total_start = time.perf_counter()
+        
         # Get per-request parameters or use defaults
         sampling = kwargs.get("sampling", self.sampling)
         min_token_text_ratio = kwargs.get("min_token_text_ratio", self.min_token_text_ratio)
@@ -497,18 +755,32 @@ class GLMTTSBackend(TTSBackendBase):
         if not prompt_text:
             self.logger.warning(f"Voice {voice_name} has no prompt_text - quality may be poor")
         
-        # Text normalization
+        # === PROFILING: Text normalization ===
+        t0 = time.perf_counter()
         prompt_text_normalized = self.text_frontend.text_normalize(prompt_text + " ") if prompt_text else " "
         synth_text_normalized = self.text_frontend.text_normalize(text)
         
         if self.use_phoneme:
             synth_text_normalized = self.text_frontend.g2p_infer(synth_text_normalized)
+        timings['text_normalize'] = time.perf_counter() - t0
         
-        # Extract tokens and features from prompt audio
+        # === PROFILING: Prompt feature extraction (use cached features) ===
+        t0 = time.perf_counter()
         prompt_text_token = self.frontend._extract_text_token(prompt_text_normalized)
-        prompt_speech_token = self.frontend._extract_speech_token([prompt_speech_path])
-        speech_feat = self.frontend._extract_speech_feat(prompt_speech_path, sample_rate=self._sample_rate)
-        embedding = self.frontend._extract_spk_embedding(prompt_speech_path)
+        
+        # Use cached features from voice loading (avoids ONNX re-extraction on each request)
+        prompt_speech_token = voice.metadata.get("prompt_speech_token")
+        speech_feat = voice.metadata.get("speech_feat")
+        embedding = voice.metadata.get("embedding")
+        
+        # Fallback to extraction if cache miss (shouldn't happen normally)
+        if prompt_speech_token is None or speech_feat is None or embedding is None:
+            self.logger.warning(f"Cache miss for voice {voice_name}, re-extracting features...")
+            prompt_speech_token = self.frontend._extract_speech_token([prompt_speech_path])
+            speech_feat = self.frontend._extract_speech_feat(prompt_speech_path, sample_rate=self._sample_rate)
+            embedding = self.frontend._extract_spk_embedding(prompt_speech_path)
+        
+        timings['prompt_extraction'] = time.perf_counter() - t0
         
         # Prepare for inference
         cache_speech_token = [prompt_speech_token.squeeze().tolist()]
@@ -529,7 +801,12 @@ class GLMTTSBackend(TTSBackendBase):
             "use_cache": self.use_cache,
         }
         
-        for tts_text in short_text_list:
+        # Track per-chunk timing
+        llm_total_time = 0.0
+        flow_total_time = 0.0
+        total_tokens_generated = 0
+        
+        for chunk_idx, tts_text in enumerate(short_text_list):
             # Process text
             tts_text_tn = self.text_frontend.text_normalize(tts_text)
             if self.use_phoneme:
@@ -547,7 +824,8 @@ class GLMTTSBackend(TTSBackendBase):
                 [cache_speech_token_list[0]], dtype=torch.int32
             ).to(self.device)
             
-            # LLM inference
+            # === PROFILING: LLM inference ===
+            t0 = time.perf_counter()
             token_list_res = self._llm_forward(
                 prompt_text_token=prompt_text_token_for_llm,
                 tts_text_token=tts_text_token,
@@ -561,18 +839,28 @@ class GLMTTSBackend(TTSBackendBase):
                 repetition_penalty=repetition_penalty,
                 sample_method=sample_method,
             )
+            llm_time = time.perf_counter() - t0
+            llm_total_time += llm_time
+            total_tokens_generated += len(token_list_res)
             
             self.logger.debug(
-                f"LLM generated {len(token_list_res)} tokens for {len(tts_text)} chars "
-                f"(ratio: {len(token_list_res)/len(tts_text):.1f})"
+                f"[Chunk {chunk_idx+1}/{len(short_text_list)}] LLM: {len(token_list_res)} tokens in {llm_time*1000:.1f}ms "
+                f"({len(token_list_res)/llm_time:.1f} tok/s)"
             )
             
-            # Flow inference
+            # === PROFILING: Flow inference ===
+            t0 = time.perf_counter()
             output, _ = self._flow_forward(
                 token_list=token_list_res,
                 prompt_speech_tokens=flow_prompt_token,
                 speech_feat=speech_feat,
                 embedding=embedding
+            )
+            flow_time = time.perf_counter() - t0
+            flow_total_time += flow_time
+            
+            self.logger.debug(
+                f"[Chunk {chunk_idx+1}/{len(short_text_list)}] Flow: {flow_time*1000:.1f}ms"
             )
             
             outputs.append(output)
@@ -582,11 +870,36 @@ class GLMTTSBackend(TTSBackendBase):
             cache["cache_text_token"].append(tts_text_token)
             cache["cache_speech_token"].append(token_list_res)
         
-        # Concatenate outputs
+        timings['llm_inference'] = llm_total_time
+        timings['flow_inference'] = flow_total_time
+        
+        # === PROFILING: Concatenation ===
+        t0 = time.perf_counter()
         if outputs:
             tts_speech = torch.concat(outputs, dim=1)
             audio = tts_speech.squeeze().numpy()
         else:
             audio = np.zeros(int(self._sample_rate * 0.1), dtype=np.float32)
+        timings['concat'] = time.perf_counter() - t0
+        
+        # === Audio Validation: Check speech rate and trim garbage ===
+        t0 = time.perf_counter()
+        audio = self._validate_audio(audio, text)
+        timings['validation'] = time.perf_counter() - t0
+        
+        # Calculate total and audio duration
+        timings['total'] = time.perf_counter() - total_start
+        audio_duration = len(audio) / self._sample_rate
+        rtf = timings['total'] / audio_duration if audio_duration > 0 else 0
+        
+        # Log comprehensive profiling summary
+        self.logger.info(
+            f"[TTS Profiling] Text: {len(text)} chars, Audio: {audio_duration:.2f}s, RTF: {rtf:.2f}x | "
+            f"Normalize: {timings['text_normalize']*1000:.1f}ms, "
+            f"Prompt: {timings['prompt_extraction']*1000:.1f}ms, "
+            f"LLM: {timings['llm_inference']*1000:.1f}ms ({total_tokens_generated} tokens, {total_tokens_generated/timings['llm_inference']:.1f} tok/s), "
+            f"Flow: {timings['flow_inference']*1000:.1f}ms, "
+            f"Total: {timings['total']*1000:.1f}ms"
+        )
         
         return audio, self._sample_rate

@@ -118,3 +118,9 @@ ckpt/
 output.wav
 *.wav
 GLM-TTS/
+
+# OAuth credentials and tokens
+notebooks/client_shh.json
+notebooks/token.pickle
+*.pickle
+client_shh.json

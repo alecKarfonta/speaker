@@ -622,7 +622,7 @@ async def generate_speech(
             emotion_tag = request.emotion if request.emotion.startswith('(') else f"({request.emotion})"
             text = f"{emotion_tag} {text}"
 
-        logger.info(
+        logger.debug(
             f"Generating speech: text='{text[:50]}...', "
             f"voice={request.voice_name}, language={request.language}"
         )
@@ -654,10 +654,10 @@ async def generate_speech(
         )
 
         # Debug logging
-        logger.debug(f"generate_speech(): {type(audio) = }")    
-        if len(audio) > 100:
-            random_start_index = random.randint(0, len(audio) - 100)
-            logger.debug(f"generate_speech(): {audio[random_start_index:random_start_index + 100] = }")
+        # logger.debug(f"generate_speech(): {type(audio) = }")    
+        # if len(audio) > 100:
+        #     random_start_index = random.randint(0, len(audio) - 100)
+        #     logger.debug(f"generate_speech(): {audio[random_start_index:random_start_index + 100] = }")
 
         if audio is None or len(audio) == 0:
             raise HTTPException(
@@ -680,7 +680,7 @@ async def generate_speech(
             audio_bytes = np.array(audio, dtype=np.float32).tobytes()
             media_type = "audio/pcm"
 
-        logger.debug(f"Successfully generated audio ({output_format}): {len(audio_bytes)} bytes")
+        # logger.debug(f"Successfully generated audio ({output_format}): {len(audio_bytes)} bytes")
         
         # Log for audit
         client_ip = http_request.client.host if http_request.client else "unknown"

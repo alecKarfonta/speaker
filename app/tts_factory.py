@@ -70,8 +70,8 @@ class TTSBackendFactory:
 def register_default_backends():
     """Register the default backends"""
     # Always register XTTS
-    from app.backends.xtts_backend import XTTSBackend
-    TTSBackendFactory.register_backend("xtts", XTTSBackend)
+    #from app.backends.xtts_backend import XTTSBackend
+    #TTSBackendFactory.register_backend("xtts", XTTSBackend)
     
     # Try to register GLM-TTS if dependencies are available
     try:
