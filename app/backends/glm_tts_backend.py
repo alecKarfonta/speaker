@@ -95,12 +95,26 @@ class GLMTTSBackend(TTSBackendBase):
         # Inference engine selection: 'transformers' (default) or 'vllm' (high-performance)
         self.llm_engine = os.environ.get("GLM_TTS_ENGINE", "transformers").lower()
         
+        # vLLM-specific quantization: 'fp8' (Ada/Hopper/Blackwell), 'awq', 'gptq', or 'none'
+        # This is separate from GLM_TTS_QUANTIZATION which is for BitsAndBytes (transformers engine)
+        self.vllm_quantization = os.environ.get("GLM_TTS_VLLM_QUANTIZATION", "none").lower()
+        if self.vllm_quantization == "none":
+            self.vllm_quantization = None
+        
         # torch.compile for JIT optimization (requires PyTorch 2.0+)
         self.use_torch_compile = os.environ.get("GLM_TTS_TORCH_COMPILE", "").lower() in ("true", "1", "yes")
         
         # Token generation limits (affects how much audio is generated per text)
         self.max_token_text_ratio = float(os.environ.get("GLM_TTS_MAX_TOKEN_RATIO", self.config.get("max_token_text_ratio", 20.0)))
         self.min_token_text_ratio = float(os.environ.get("GLM_TTS_MIN_TOKEN_RATIO", self.config.get("min_token_text_ratio", 2.0)))
+        
+        # Audio validation thresholds (post-processing to trim garbage audio)
+        # MAX_SEC_PER_WORD: Expected max seconds per word for slow speech (default: 0.65 = ~92 WPM)
+        # GARBAGE_THRESHOLD: Seconds per word above which audio is considered garbage (default: 1.0)
+        # SILENCE_THRESHOLD_DB: dB threshold for trailing silence detection (default: -40)
+        self.max_sec_per_word = float(os.environ.get("GLM_TTS_MAX_SEC_PER_WORD", self.config.get("max_sec_per_word", 0.65)))
+        self.garbage_threshold = float(os.environ.get("GLM_TTS_GARBAGE_THRESHOLD", self.config.get("garbage_threshold", 1.0)))
+        self.silence_threshold_db = float(os.environ.get("GLM_TTS_SILENCE_THRESHOLD_DB", self.config.get("silence_threshold_db", -40)))
         
         # Text chunking parameters
         self.max_text_len = self.config.get("max_text_len", 200)  # Increased from 60
@@ -117,6 +131,7 @@ class GLMTTSBackend(TTSBackendBase):
         self.logger.info(f"Initializing GLMTTSBackend with model_path: {self._model_path}")
         self.logger.info(f"LLM settings: dtype={self.llm_dtype}, quantization={self.llm_quantization}, attention={self.llm_attention}, engine={self.llm_engine}")
         self.logger.info(f"Speed settings: flow_steps={self.flow_steps}, sampling={self.sampling}, torch_compile={self.use_torch_compile}")
+        self.logger.info(f"Validation settings: max_sec_per_word={self.max_sec_per_word}, garbage_threshold={self.garbage_threshold}, silence_db={self.silence_threshold_db}")
         self.logger.info(f"CUDA available: {torch.cuda.is_available()}, Device: {self.device}")
         if torch.cuda.is_available():
             self.logger.info(f"GPU: {torch.cuda.get_device_name(0)}, Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
@@ -410,6 +425,7 @@ class GLMTTSBackend(TTSBackendBase):
             dtype=self.llm_dtype,
             gpu_memory_utilization=0.25,  # Low - shared with Flow model on same GPU
             max_model_len=4096,
+            quantization=self.vllm_quantization,  # fp8, awq, gptq, or None
             logger=self.logger,
         )
         
@@ -651,11 +667,9 @@ class GLMTTSBackend(TTSBackendBase):
         if len(audio) == 0:
             return audio
         
-        # Speech rate constants (based on human speaking rates)
-        # Normal: 120-180 WPM = 2-3 words/sec = 0.33-0.5 sec/word
-        MIN_SEC_PER_WORD = 0.33  # Fast speech (180 WPM)
-        MAX_SEC_PER_WORD = 0.50  # Slow speech (120 WPM)
-        GARBAGE_THRESHOLD = 0.75  # Beyond slow speech = likely garbage
+        # Use configurable thresholds (set in __init__ from env vars or config)
+        # MIN_SEC_PER_WORD: Fast speech threshold (180 WPM)
+        MIN_SEC_PER_WORD = 0.33
         
         word_count = max(len(text.split()), 1)
         actual_duration = len(audio) / self._sample_rate
@@ -664,12 +678,12 @@ class GLMTTSBackend(TTSBackendBase):
         original_duration = actual_duration
         
         # 1. Check if duration is within expected speech rate bounds
-        if sec_per_word > GARBAGE_THRESHOLD:
+        if sec_per_word > self.garbage_threshold:
             # Likely garbage at the end - trim to max expected duration
-            max_duration = word_count * MAX_SEC_PER_WORD
+            max_duration = word_count * self.max_sec_per_word
             max_samples = int(max_duration * self._sample_rate)
             self.logger.warning(
-                f"Audio too long: {sec_per_word:.2f}s/word (expected ≤{MAX_SEC_PER_WORD}s). "
+                f"Audio too long: {sec_per_word:.2f}s/word (threshold: {self.garbage_threshold}s). "
                 f"Trimming from {actual_duration:.1f}s to {max_duration:.1f}s"
             )
             audio = audio[:max_samples]
@@ -677,7 +691,7 @@ class GLMTTSBackend(TTSBackendBase):
             self.logger.warning(f"Suspiciously short audio: {sec_per_word:.2f}s/word")
         
         # 2. Trim trailing silence/low-energy sections
-        audio = self._trim_trailing_silence(audio, threshold_db=-40)
+        audio = self._trim_trailing_silence(audio, threshold_db=self.silence_threshold_db)
         
         # 3. RMS sanity check
         if len(audio) > 0:

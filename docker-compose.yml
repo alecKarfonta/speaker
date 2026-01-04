@@ -14,14 +14,15 @@ services:
       - TRANSFORMERS_CACHE=/app/model_cache/transformers
       - NVIDIA_VISIBLE_DEVICES=all
       - COQUI_TOS_AGREED=1
-      - ORT_LOGGING_LEVEL=3  # Suppress ONNX fallback warnings (campplus model)
+      - ORT_LOGGING_LEVEL=3 # Suppress ONNX fallback warnings (campplus model)
       # TTS Backend: "xtts" or "glm-tts"
       - TTS_BACKEND=glm-tts
-      - GLM_TTS_QUANTIZATION=none
+      #- GLM_TTS_QUANTIZATION=8bit
       - GLM_TTS_ATTENTION=flash_attention_2
       - GLM_TTS_FLOW_STEPS=6
       - GLM_TTS_SAMPLING=18
-      - GLM_TTS_TORCH_COMPILE=false  # Not needed with vLLM
+      - GLM_TTS_TORCH_COMPILE=false # Not needed with vLLM
+      - GLM_TTS_VLLM_QUANTIZATION=fp8
       # Use vLLM engine for high-performance inference
       - GLM_TTS_ENGINE=vllm
       # GLM-TTS LLM Optimization (uncomment to customize):
@@ -50,11 +51,11 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [ gpu ]
     command: >
       bash -c "./scripts/start.sh"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -72,7 +73,7 @@ services:
     networks:
       - tts-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      test: [ "CMD", "curl", "-f", "http://localhost:80" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -92,7 +93,7 @@ services:
     depends_on:
       - tts-api
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -112,7 +113,7 @@ services:
     depends_on:
       - prometheus
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:3000/api/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -121,6 +122,7 @@ services:
 volumes:
   prometheus_data:
   grafana_data:
+
 
 networks:
   tts-network:

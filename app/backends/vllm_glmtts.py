@@ -46,6 +46,7 @@ class VLLMGLMTTSWrapper:
         dtype: str = "float16",
         gpu_memory_utilization: float = 0.3,  # Lower to leave room for Flow model + vocoder
         max_model_len: int = 4096,
+        quantization: Optional[str] = None,  # 'fp8', 'awq', 'gptq', or None
         logger=None,
     ):
         """
@@ -57,6 +58,8 @@ class VLLMGLMTTSWrapper:
             dtype: Model dtype ('float16', 'bfloat16', 'float32')
             gpu_memory_utilization: Fraction of GPU memory for KV cache
             max_model_len: Maximum sequence length
+            quantization: Quantization method ('fp8' for on-the-fly FP8 on Ada/Hopper/Blackwell,
+                          'awq'/'gptq' for pre-quantized models, or None for no quantization)
             logger: Optional logger instance
         """
         if not VLLM_AVAILABLE:
@@ -85,25 +88,31 @@ class VLLMGLMTTSWrapper:
         
         if self.logger:
             self.logger.info(f"Initializing vLLM engine with model: {model_path}")
-            self.logger.info(f"vLLM config: dtype={vllm_dtype}, gpu_util={gpu_memory_utilization}")
+            self.logger.info(f"vLLM config: dtype={vllm_dtype}, gpu_util={gpu_memory_utilization}, quantization={quantization}")
         
         # Note: Multi-GPU with VLLM_DEVICE is complex because vLLM spawns subprocesses.
         # For now, use single GPU with lower gpu_memory_utilization.
         # TODO: Implement proper multi-GPU by running vLLM in a separate process.
         
+        # Build LLM kwargs
+        llm_kwargs = {
+            "model": model_path,
+            "dtype": vllm_dtype,
+            "gpu_memory_utilization": gpu_memory_utilization,
+            "max_model_len": max_model_len,
+            "trust_remote_code": True,
+            "skip_tokenizer_init": True,  # We provide token IDs directly
+            "enable_prefix_caching": False,  # Disable for variable-length prompts
+        }
+        
+        # Add quantization if specified (fp8 for Ada/Hopper/Blackwell, awq/gptq for pre-quantized)
+        if quantization and quantization.lower() != "none":
+            llm_kwargs["quantization"] = quantization.lower()
+            if self.logger:
+                self.logger.info(f"Enabling vLLM quantization: {quantization}")
+        
         # Initialize vLLM engine
-        # skip_tokenizer_init=True because we provide prompt_token_ids directly
-        # (GLM-TTS uses custom speech tokens, not standard text tokenization)
-        self.llm = LLM(
-            model=model_path,
-            dtype=vllm_dtype,
-            gpu_memory_utilization=gpu_memory_utilization,
-            max_model_len=max_model_len,
-            trust_remote_code=True,
-            skip_tokenizer_init=True,  # We provide token IDs directly
-            # Disable prefix caching for variable-length prompts
-            enable_prefix_caching=False,
-        )
+        self.llm = LLM(**llm_kwargs)
         
         if self.logger:
             self.logger.info("vLLM engine initialized successfully")
@@ -286,16 +295,17 @@ class VLLMGLMTTSWrapper:
         # 1. Truncate repetitive sequences (stuck generation)
         tokens = self._truncate_repetitions(tokens, max_consecutive=20)
         
-        # 2. Check token ratio (expected: 2x-15x text length for normal speech)
+        # 2. Check token ratio (expected: 2x-20x text length for normal speech)
         # Higher ratios often indicate garbage generation
-        MAX_SAFE_RATIO = 15.0
+        # Configurable via GLM_TTS_MAX_TOKEN_RATIO env var (default: 20.0)
+        max_safe_ratio = float(os.environ.get("GLM_TTS_MAX_TOKEN_RATIO", "20.0"))
         ratio = len(tokens) / max(text_length, 1)
         
-        if ratio > MAX_SAFE_RATIO:
-            max_tokens = int(text_length * MAX_SAFE_RATIO)
+        if ratio > max_safe_ratio:
+            max_tokens = int(text_length * max_safe_ratio)
             if self.logger:
                 self.logger.warning(
-                    f"High token ratio {ratio:.1f}x (expected ≤{MAX_SAFE_RATIO}x). "
+                    f"High token ratio {ratio:.1f}x (expected ≤{max_safe_ratio}x). "
                     f"Truncating from {len(tokens)} to {max_tokens} tokens."
                 )
             tokens = tokens[:max_tokens]
