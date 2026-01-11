@@ -1,0 +1,176 @@
+[
+    {
+        "name": "baseline_optimal",
+        "GLM_TTS_FLOW_STEPS": "10",
+        "GLM_TTS_SAMPLING": "5",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "_comment": "=== FLOW STEPS: try neighbors ==="
+    },
+    {
+        "name": "flow_steps_8",
+        "GLM_TTS_FLOW_STEPS": "8",
+        "GLM_TTS_SAMPLING": "5",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "name": "flow_steps_12",
+        "GLM_TTS_FLOW_STEPS": "12",
+        "GLM_TTS_SAMPLING": "5",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "name": "flow_steps_15",
+        "GLM_TTS_FLOW_STEPS": "15",
+        "GLM_TTS_SAMPLING": "5",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "_comment": "=== SAMPLING: try neighbors ==="
+    },
+    {
+        "name": "sampling_3",
+        "GLM_TTS_FLOW_STEPS": "10",
+        "GLM_TTS_SAMPLING": "3",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "name": "sampling_8",
+        "GLM_TTS_FLOW_STEPS": "10",
+        "GLM_TTS_SAMPLING": "8",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "name": "sampling_10",
+        "GLM_TTS_FLOW_STEPS": "10",
+        "GLM_TTS_SAMPLING": "10",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "_comment": "=== CFG_RATE: fine-tune ==="
+    },
+    {
+        "name": "cfg_0.6",
+        "GLM_TTS_FLOW_STEPS": "10",
+        "GLM_TTS_SAMPLING": "5",
+        "GLM_TTS_CFG_RATE": "0.6",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "name": "cfg_0.8",
+        "GLM_TTS_FLOW_STEPS": "10",
+        "GLM_TTS_SAMPLING": "5",
+        "GLM_TTS_CFG_RATE": "0.8",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "_comment": "=== Try fp16 flow (faster?) ==="
+    },
+    {
+        "name": "flow_fp16",
+        "GLM_TTS_FLOW_STEPS": "10",
+        "GLM_TTS_SAMPLING": "5",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp16",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "_comment": "=== Try vLLM fp8 quantization ==="
+    },
+    {
+        "name": "vllm_fp8",
+        "GLM_TTS_FLOW_STEPS": "10",
+        "GLM_TTS_SAMPLING": "5",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "fp8",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "_comment": "=== Combined tweaks ==="
+    },
+    {
+        "name": "speed_push_fs8_s3",
+        "GLM_TTS_FLOW_STEPS": "8",
+        "GLM_TTS_SAMPLING": "3",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "fp8",
+        "GLM_TTS_FLOW_DTYPE": "fp16",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    },
+    {
+        "name": "quality_push_fs15_s10",
+        "GLM_TTS_FLOW_STEPS": "15",
+        "GLM_TTS_SAMPLING": "10",
+        "GLM_TTS_CFG_RATE": "0.7",
+        "GLM_TTS_QUANTIZATION": "4bit",
+        "GLM_TTS_ATTENTION": "flash_attention_2",
+        "GLM_TTS_VLLM_QUANTIZATION": "none",
+        "GLM_TTS_FLOW_DTYPE": "fp32",
+        "GLM_TTS_COMPILE_FLOW": "true",
+        "GLM_TTS_COMPILE_VOCODER": "true"
+    }
+]

@@ -706,20 +706,37 @@ async def generate_speech(
         )
         
         filename = "speech.wav" if output_format == "wav" else "speech.pcm"
+        
+        # Build response headers with profiling data
+        headers = {
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Length": str(len(audio_bytes)),
+            "X-Sample-Rate": str(sample_rate),
+            "X-Audio-Duration": str(len(audio)/sample_rate),
+            "X-Audio-Format": output_format,
+            "X-Model": tts_service.model_name,
+            "X-Voice": request.voice_name,
+            "X-Language": request.language,
+            "X-Text-Length": str(len(request.text))
+        }
+        
+        # Add profiling headers if available (GLM-TTS backend)
+        if hasattr(tts_service, 'get_last_timings'):
+            timings = tts_service.get_last_timings()
+            if timings:
+                headers["X-Timing-Total-Ms"] = str(round(timings.get('total', 0) * 1000, 1))
+                headers["X-Timing-LLM-Ms"] = str(round(timings.get('llm_inference', 0) * 1000, 1))
+                headers["X-Timing-Flow-Ms"] = str(round(timings.get('flow_inference', 0) * 1000, 1))
+                headers["X-Timing-Normalize-Ms"] = str(round(timings.get('text_normalize', 0) * 1000, 1))
+                headers["X-Timing-Prompt-Ms"] = str(round(timings.get('prompt_extraction', 0) * 1000, 1))
+                headers["X-Timing-Validation-Ms"] = str(round(timings.get('validation', 0) * 1000, 1))
+                headers["X-Tokens-Generated"] = str(timings.get('tokens_generated', 0))
+                headers["X-RTF"] = str(round(timings.get('rtf', 0), 2))
+        
         return Response(
             content=audio_bytes,
             media_type=media_type,
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": str(len(audio_bytes)),
-                "X-Sample-Rate": str(sample_rate),
-                "X-Audio-Duration": str(len(audio)/sample_rate),
-                "X-Audio-Format": output_format,
-                "X-Model": tts_service.model_name,
-                "X-Voice": request.voice_name,
-                "X-Language": request.language,
-                "X-Text-Length": str(len(request.text))
-            }
+            headers=headers
         )
 
     except HTTPException:

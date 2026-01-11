@@ -41,7 +41,13 @@ GLM_DEPS_AVAILABLE = True
 # Environment variable configuration for LLM optimization:
 # GLM_TTS_DTYPE: fp32, fp16, bf16 (default: fp16)
 # GLM_TTS_QUANTIZATION: none, 4bit, 8bit (default: none)
-# GLM_TTS_ATTENTION: eager, sdpa, flash_attention_2 (default: eager)
+# GLM_TTS_ATTENTION: eager, sdpa, flash_attention_2, flash_attention_3 (default: eager)
+#
+# Flow/DiT optimization:
+# GLM_TTS_FLOW_DTYPE: fp32, fp16, bf16 (default: fp16) 
+# GLM_TTS_CFG_RATE: 0.0-1.0 (default: 0.7, 0=disabled for 2x speedup)
+# GLM_TTS_COMPILE_FLOW: true/false (default: false) - torch.compile for DiT
+# GLM_TTS_COMPILE_VOCODER: true/false (default: false) - torch.compile for HiFT
 
 
 class GLMTTSBackend(TTSBackendBase):
@@ -103,6 +109,16 @@ class GLMTTSBackend(TTSBackendBase):
         
         # torch.compile for JIT optimization (requires PyTorch 2.0+)
         self.use_torch_compile = os.environ.get("GLM_TTS_TORCH_COMPILE", "").lower() in ("true", "1", "yes")
+        self.compile_flow = os.environ.get("GLM_TTS_COMPILE_FLOW", "").lower() in ("true", "1", "yes")
+        self.compile_vocoder = os.environ.get("GLM_TTS_COMPILE_VOCODER", "").lower() in ("true", "1", "yes")
+        
+        # Vocoder engine selection: 'pytorch' (default) or 'tensorrt' (2-3x faster)
+        self.vocoder_engine = os.environ.get("GLM_TTS_VOCODER_ENGINE", "pytorch").lower()
+        self.tensorrt_engine_path = os.environ.get("GLM_TTS_TENSORRT_ENGINE_PATH", "/app/data/hift.engine")
+        
+        # Flow model optimization settings
+        self.flow_dtype = self._get_flow_dtype()
+        self.cfg_rate = float(os.environ.get("GLM_TTS_CFG_RATE", "0.7"))
         
         # Token generation limits (affects how much audio is generated per text)
         self.max_token_text_ratio = float(os.environ.get("GLM_TTS_MAX_TOKEN_RATIO", self.config.get("max_token_text_ratio", 20.0)))
@@ -130,6 +146,8 @@ class GLMTTSBackend(TTSBackendBase):
         
         self.logger.info(f"Initializing GLMTTSBackend with model_path: {self._model_path}")
         self.logger.info(f"LLM settings: dtype={self.llm_dtype}, quantization={self.llm_quantization}, attention={self.llm_attention}, engine={self.llm_engine}")
+        self.logger.info(f"Flow settings: dtype={self.flow_dtype}, cfg_rate={self.cfg_rate}, compile_flow={self.compile_flow}")
+        self.logger.info(f"Vocoder settings: engine={self.vocoder_engine}, compile_vocoder={self.compile_vocoder}")
         self.logger.info(f"Speed settings: flow_steps={self.flow_steps}, sampling={self.sampling}, torch_compile={self.use_torch_compile}")
         self.logger.info(f"Validation settings: max_sec_per_word={self.max_sec_per_word}, garbage_threshold={self.garbage_threshold}, silence_db={self.silence_threshold_db}")
         self.logger.info(f"CUDA available: {torch.cuda.is_available()}, Device: {self.device}")
@@ -187,11 +205,36 @@ class GLMTTSBackend(TTSBackendBase):
         if not attn:
             attn = self.config.get("llm_attention", "eager").lower()
         
-        valid_attns = ["eager", "sdpa", "flash_attention_2"]
+        valid_attns = ["eager", "sdpa", "flash_attention_2", "flash_attention_3"]
         if attn not in valid_attns:
             self.logger.warning(f"Invalid GLM_TTS_ATTENTION '{attn}', defaulting to eager. Valid: {valid_attns}")
             attn = "eager"
         return attn
+    
+    def _get_flow_dtype(self) -> str:
+        """Get Flow model dtype from env var GLM_TTS_FLOW_DTYPE. Options: fp32, fp16, bf16
+        
+        Note: GLM-TTS source is patched (via patch_glm_tts.py) to handle dtype
+        consistency, so FP16 is safe and recommended for performance.
+        """
+        dtype = os.environ.get("GLM_TTS_FLOW_DTYPE", "").lower()
+        if not dtype:
+            dtype = self.config.get("flow_dtype", "fp16").lower()  # FP16 default (patched source)
+        
+        valid_dtypes = ["fp32", "fp16", "bf16"]
+        if dtype not in valid_dtypes:
+            self.logger.warning(f"Invalid GLM_TTS_FLOW_DTYPE '{dtype}', defaulting to fp16. Valid: {valid_dtypes}")
+            dtype = "fp16"
+        return dtype
+    
+    def _get_flow_torch_dtype(self):
+        """Convert flow dtype string to torch dtype"""
+        dtype_map = {
+            "fp32": torch.float32,
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+        }
+        return dtype_map[self.flow_dtype]
     
     def _get_torch_dtype(self):
         """Convert string dtype to torch dtype"""
@@ -348,6 +391,27 @@ class GLMTTSBackend(TTSBackendBase):
             self.device
         )
         
+        # Always convert Flow model to the target dtype (defaults to FP32)
+        # This is necessary because the checkpoint may be saved in FP16, but GLM-TTS
+        # internally creates timestep tensors as FP32, causing dtype mismatch errors.
+        flow_torch_dtype = self._get_flow_torch_dtype()
+        self.logger.info(f"Setting Flow model to {self.flow_dtype} ({flow_torch_dtype})")
+        flow_model = flow_model.to(flow_torch_dtype)
+        
+        # Set CFG rate on the flow model (controls classifier-free guidance, 0=disabled for 2x speedup)
+        if hasattr(flow_model, 'inference_cfg_rate'):
+            flow_model.inference_cfg_rate = self.cfg_rate
+            self.logger.info(f"Set Flow CFG rate to {self.cfg_rate}" + (" (CFG disabled for 2x speedup)" if self.cfg_rate == 0 else ""))
+        
+        # Apply torch.compile to Flow model for additional speedup
+        if self.compile_flow:
+            self.logger.info("Applying torch.compile to Flow model (first inference will be slow)...")
+            try:
+                flow_model = torch.compile(flow_model, mode="max-autotune")
+                self.logger.info("torch.compile applied to Flow model successfully (mode=max-autotune)")
+            except Exception as e:
+                self.logger.warning(f"torch.compile for Flow failed: {e}. Continuing without compilation.")
+        
         # Load vocoder with absolute paths
         self.logger.debug("Loading vocoder...")
         self.flow = self._create_token2wav(flow_model, model_path)
@@ -435,16 +499,55 @@ class GLMTTSBackend(TTSBackendBase):
         """Create Token2Wav with proper absolute paths for vocoder"""
         from utils.hift_util import HiFTInference
         
+        # Capture outer scope vars for inner class
+        compile_vocoder = self.compile_vocoder
+        logger = self.logger
+        flow_dtype = self._get_flow_torch_dtype()  # Capture dtype for inner class
+        vocoder_engine = self.vocoder_engine
+        tensorrt_engine_path = self.tensorrt_engine_path
+        
+        # Load TensorRT vocoder if configured
+        trt_vocoder = None
+        if vocoder_engine == "tensorrt":
+            try:
+                from app.backends.hift_tensorrt import HiFTTensorRT, is_tensorrt_available
+                if not is_tensorrt_available():
+                    logger.warning("TensorRT not available, falling back to PyTorch vocoder")
+                elif not os.path.exists(tensorrt_engine_path):
+                    logger.warning(f"TensorRT engine not found at {tensorrt_engine_path}, falling back to PyTorch vocoder")
+                    logger.info("Build engine with: python scripts/export_hift_tensorrt.py")
+                else:
+                    logger.info(f"Loading TensorRT vocoder from {tensorrt_engine_path}...")
+                    trt_vocoder = HiFTTensorRT(tensorrt_engine_path, device=str(self.device))
+                    logger.info("TensorRT vocoder loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to load TensorRT vocoder: {e}, falling back to PyTorch")
+        
         class Token2WavWrapper:
-            def __init__(self, flow, sample_rate: int, device: str, hift_path: str):
+            def __init__(self, flow, sample_rate: int, device: str, hift_path: str, dtype, trt_vocoder=None):
                 self.device = device
+                self.dtype = dtype  # Store dtype for casting float tensors
                 self.flow = flow
                 self.input_frame_rate = flow.input_frame_rate
                 self.sample_rate = sample_rate
                 self.hop_size = 480 if sample_rate == 24000 else 640
+                self.trt_vocoder = trt_vocoder
                 
-                # Load HiFT vocoder with absolute path
-                self.vocoder = HiFTInference(hift_path, device=device)
+                # Load HiFT vocoder with absolute path (skip if using TensorRT)
+                if trt_vocoder is not None:
+                    self.vocoder = trt_vocoder
+                    logger.info("Using TensorRT accelerated vocoder")
+                else:
+                    self.vocoder = HiFTInference(hift_path, device=device)
+                    # Apply torch.compile to vocoder for speedup
+                    # Vocoder is non-autoregressive so benefits from reduce-overhead mode
+                    if compile_vocoder:
+                        logger.info("Applying torch.compile to HiFT vocoder...")
+                        try:
+                            self.vocoder.model = torch.compile(self.vocoder.model, mode="reduce-overhead")
+                            logger.info("torch.compile applied to vocoder successfully (mode=reduce-overhead)")
+                        except Exception as e:
+                            logger.warning(f"torch.compile for vocoder failed: {e}")
             
             def token2wav_with_cache(self, token_bt, n_timesteps=10, 
                                      prompt_token=torch.zeros(1, 0, dtype=torch.int32),
@@ -455,19 +558,24 @@ class GLMTTSBackend(TTSBackendBase):
                     token_bt = torch.tensor(token_bt, dtype=torch.long)[None]
                 
                 assert prompt_token.shape[1] != 0 and prompt_feat.shape[1] != 0
+                
+                # GLM-TTS source is patched to handle dtype consistently
+                # Cast inputs to model dtype for safety
                 mel, _ = self.flow.inference_with_cache(
                     token=token_bt.to(self.device),
                     prompt_token=prompt_token.to(self.device),
-                    prompt_feat=prompt_feat.to(self.device),
-                    embedding=embedding.to(self.device),
+                    prompt_feat=prompt_feat.to(device=self.device, dtype=self.dtype),
+                    embedding=embedding.to(device=self.device, dtype=self.dtype),
                     n_timesteps=n_timesteps,
                 )
                 
+                # Cast mel to FP32 for vocoder (HiFT is always FP32)
+                mel = mel.float()
                 wav = self.vocoder(mel)
                 return wav, mel
         
         hift_path = str(model_path / "hift" / "hift.pt")
-        return Token2WavWrapper(flow_model, self._sample_rate, self.device, hift_path)
+        return Token2WavWrapper(flow_model, self._sample_rate, self.device, hift_path, flow_dtype, trt_vocoder)
     
     def load_voice(self, voice_name: str, voice_path: str) -> None:
         """
@@ -906,6 +1014,12 @@ class GLMTTSBackend(TTSBackendBase):
         audio_duration = len(audio) / self._sample_rate
         rtf = timings['total'] / audio_duration if audio_duration > 0 else 0
         
+        # Store timings for access by API layer (exposed via headers)
+        timings['audio_duration'] = audio_duration
+        timings['tokens_generated'] = total_tokens_generated
+        timings['rtf'] = rtf
+        self._last_timings = timings
+        
         # Log comprehensive profiling summary
         self.logger.info(
             f"[TTS Profiling] Text: {len(text)} chars, Audio: {audio_duration:.2f}s, RTF: {rtf:.2f}x | "
@@ -917,3 +1031,8 @@ class GLMTTSBackend(TTSBackendBase):
         )
         
         return audio, self._sample_rate
+    
+    def get_last_timings(self) -> dict:
+        """Get profiling timings from the last generate_speech call."""
+        return getattr(self, '_last_timings', {})
+

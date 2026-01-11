@@ -1,0 +1,12 @@
+Original:    Hello world, this is a simple test.
+Transcribed: Hello world, this is a simple test.
+Similarity:  100.0%
+
+Original:    The quick brown fox jumps over the lazy dog.
+Transcribed: The quick brown fox jumps over the lazy dog.
+Similarity:  100.0%
+
+Original:    Testing one two three four five.
+Transcribed: Testing 1, 2, 3, 4, 5.
+Similarity:  48.1%
+

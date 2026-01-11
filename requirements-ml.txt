@@ -5,6 +5,7 @@ tiktoken>=0.6.0
 torchaudio>=2.3.0
 torchvision>=0.18.0  # Must be compatible with torch version
 torchcodec>=0.1.0  # Required by torchaudio.load()
+onnx>=1.15.0  # ONNX export for TensorRT vocoder
 onnxruntime-gpu>=1.17.0
 peft>=0.7.0
 safetensors>=0.4.0
@@ -15,3 +16,7 @@ x_transformers>=1.40.0  # Required by GLM-TTS flow model
 # Quantization support (optional, for 4-bit/8-bit models)
 bitsandbytes>=0.41.0
 accelerate>=0.20.0
+
+# TensorRT for vocoder acceleration (optional, 2-3x faster vocoder)
+# Note: Engines are GPU architecture-specific; must be built on target hardware
+tensorrt>=10.0.0

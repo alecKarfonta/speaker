@@ -55,11 +55,17 @@ RUN git clone --depth 1 https://github.com/zai-org/GLM-TTS.git GLM-TTS && \
     rm -rf GLM-TTS/.git GLM-TTS/ckpt && \
     mkdir -p /app/data/voices /app/logs
 
+# Patch GLM-TTS for dtype consistency (fixes FP16/FP32 matmul errors)
+COPY scripts/patch_glm_tts.py /tmp/patch_glm_tts.py
+RUN python3 /tmp/patch_glm_tts.py /app/GLM-TTS
+
 # ===== FLASH-ATTN (BUILD FROM SOURCE) =====
-# Build for 3090 Ti (compute capability 8.6)
+# Build for multiple GPU architectures:
+# - 8.6: RTX 3090/3090 Ti (Ampere)
+# - 12.0: RTX 5090 (Blackwell sm_120)
 # vLLM already has flash-attn, but we ensure latest for GLM-TTS
 RUN --mount=type=cache,target=/root/.cache/pip \
-    MAX_JOBS=10 TORCH_CUDA_ARCH_LIST="8.6" pip install "flash-attn>=2.1.0" --no-build-isolation --no-cache-dir && \
+    MAX_JOBS=10 TORCH_CUDA_ARCH_LIST="8.6;12.0" pip install "flash-attn>=2.7.0" --no-build-isolation --no-cache-dir && \
     python3 -c "import flash_attn; print('Flash Attention OK:', flash_attn.__version__)"
 
 # Verify vLLM is available
