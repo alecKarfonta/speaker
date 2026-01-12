@@ -229,10 +229,28 @@ def run_validation():
     # 2. Performance Tests with Profiling Breakdown
     print_section("2. PERFORMANCE METRICS")
     perf_tests = [
-        ("Short", "Hello."),
-        ("Medium", "This is a medium length sentence for testing."),
-        ("Long", "This is a longer paragraph that contains multiple sentences. It should take more time to process but still complete within reasonable bounds."),
-        ("Very Long", "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump! The five boxing wizards jump quickly. Sphinx of black quartz, judge my vow."),
+        # === LENGTH VARIATIONS ===
+        ("Tiny", "biden", "Hi."),
+        ("Short", "biden", "Hello, how are you today?"),
+        ("Medium", "biden", "This is a medium length sentence for testing the text to speech system."),
+        ("Long", "biden", "This is a longer paragraph that contains multiple sentences. It should take more time to process but still complete within reasonable bounds. The quality should remain consistent."),
+        ("Very Long", "biden", "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump! The five boxing wizards jump quickly. Sphinx of black quartz, judge my vow. A wizard's job is to vex chumps quickly in fog."),
+        ("Paragraph", "biden", "In the heart of the bustling city, where skyscrapers reached toward the heavens and streets hummed with the rhythm of countless footsteps, there existed a small coffee shop that time seemed to have forgotten. Its weathered wooden sign creaked gently in the breeze, while the aroma of freshly ground beans drifted through the air, beckoning passersby to step inside and leave the chaos of the world behind them."),
+        
+        # === VOICE VARIATIONS ===
+        ("Loli Short", "loli", "Hello! This is so fun and exciting!"),
+        ("Loli Medium", "loli", "I really love playing games and having adventures with my friends. It's the best thing ever!"),
+        ("Batman Short", "batman", "I am vengeance. I am the night."),
+        ("Batman Medium", "batman", "The criminal underworld will learn to fear me. Gotham needs a guardian, and I will be that shadow in the darkness."),
+        
+        # === CONTENT TYPES ===
+        ("Technical", "biden", "The API returns JSON with status codes two hundred for success and four hundred for client errors."),
+        ("Emotional", "biden", "Oh my goodness, I can't believe this is actually happening! This is the most incredible moment of my entire life!"),
+        ("Questions", "biden", "What time is it? Where are you going? How did this happen? Why would anyone do that?"),
+        ("Numbers", "biden", "The meeting is scheduled for three thirty PM on January fifteenth, twenty twenty six."),
+        
+        # === STRESS TESTS ===
+        ("Rapid Fire", "biden", "Go! Run! Stop! Wait! Now! Yes! No! Here! There! Quick!"),
     ]
     
     perf_results = []
@@ -241,12 +259,12 @@ def run_validation():
     total_llm = 0
     total_flow = 0
     
-    log(f"\n  {'Label':<12} {'Chars':>6} {'Audio':>8} {'Speed':>8} | {'LLM':>8} {'Flow':>8} {'Other':>8}")
-    log(f"  {'-'*12} {'-'*6} {'-'*8} {'-'*8} | {'-'*8} {'-'*8} {'-'*8}")
+    log(f"\n  {'Label':<14} {'Voice':<8} {'Chars':>5} {'Audio':>7} {'Speed':>7} | {'LLM':>7} {'Flow':>7} {'Other':>7}")
+    log(f"  {'-'*14} {'-'*8} {'-'*5} {'-'*7} {'-'*7} | {'-'*7} {'-'*7} {'-'*7}")
     
-    for label, text in perf_tests:
+    for label, voice, text in perf_tests:
         try:
-            pcm_bytes, latency, metadata = call_tts_api(text)
+            pcm_bytes, latency, metadata = call_tts_api(text, voice)
             metrics = analyze_audio(pcm_bytes, metadata["sample_rate"])
             speed = metrics["duration"] / latency if latency > 0 else 0
             
@@ -258,6 +276,7 @@ def run_validation():
             
             perf_results.append({
                 "label": label,
+                "voice": voice,
                 "chars": len(text),
                 "latency": latency,
                 "duration": metrics["duration"],
@@ -273,7 +292,7 @@ def run_validation():
             total_llm += llm_ms
             total_flow += flow_ms
             
-            log(f"  {label:<12} {len(text):>6} {metrics['duration']:>7.2f}s {speed:>7.2f}x | {llm_ms:>7.0f}ms {flow_ms:>7.0f}ms {other_ms:>7.0f}ms")
+            log(f"  {label:<14} {voice:<8} {len(text):>5} {metrics['duration']:>6.2f}s {speed:>6.2f}x | {llm_ms:>6.0f}ms {flow_ms:>6.0f}ms {other_ms:>6.0f}ms")
             
             # Save audio
             wav_bytes = pcm_to_wav(pcm_bytes, metadata["sample_rate"])
@@ -281,7 +300,7 @@ def run_validation():
                 f.write(wav_bytes)
                 
         except Exception as e:
-            log(f"  {label:<12} ❌ FAILED: {e}")
+            log(f"  {label:<14} {voice:<8} ❌ FAILED: {e}")
             all_passed = False
     
     overall_speed = total_audio / total_compute if total_compute > 0 else 0
