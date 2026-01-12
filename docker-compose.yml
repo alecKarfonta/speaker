@@ -13,6 +13,8 @@ services:
       - TORCH_HOME=/app/model_cache/torch
       - TRANSFORMERS_CACHE=/app/model_cache/transformers
       - NVIDIA_VISIBLE_DEVICES=all
+      - STT_API_URL=http://192.168.1.196:8603/v1/audio/transcriptions
+      - STT_API_KEY=your-api-key
       - COQUI_TOS_AGREED=1
       - ORT_LOGGING_LEVEL=3 # Suppress ONNX fallback warnings (campplus model)
       # TTS Backend: "xtts" or "glm-tts"
