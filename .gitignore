@@ -124,3 +124,6 @@ notebooks/client_shh.json
 notebooks/token.pickle
 *.pickle
 client_shh.json
+
+
+tests/output/
