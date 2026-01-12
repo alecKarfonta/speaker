@@ -21,7 +21,7 @@ services:
       # Best balanced: 5.95x speed, 91.6% accuracy
       - GLM_TTS_QUANTIZATION=4bit
       - GLM_TTS_ATTENTION=flash_attention_2
-      - GLM_TTS_FLOW_STEPS=15
+      - GLM_TTS_FLOW_STEPS=13
       - GLM_TTS_SAMPLING=10
       - GLM_TTS_TORCH_COMPILE=false # Not needed with vLLM
       - GLM_TTS_VLLM_QUANTIZATION=none
