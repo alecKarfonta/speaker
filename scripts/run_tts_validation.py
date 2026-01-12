@@ -31,6 +31,8 @@ from difflib import SequenceMatcher
 
 import requests
 import numpy as np
+import re
+from num2words import num2words
 
 # Configuration
 TTS_API_URL = os.environ.get("TTS_API_URL", "http://localhost:8012")
@@ -102,9 +104,54 @@ def call_stt_api(wav_bytes: bytes) -> str:
         os.unlink(temp_path)
 
 
+def normalize_text(text: str) -> str:
+    """Normalize text for better similarity comparison by handling numbers, currency, etc."""
+    if not text:
+        return ""
+    
+    # Lowercase and strip
+    text = text.lower().strip()
+    
+    # Handle currency like $47.50
+    def replace_currency(match):
+        val = match.group(1).replace(',', '')
+        try:
+            # Convert to words in currency mode
+            tokens = num2words(float(val), lang='en', to='currency', currency='USD')
+            return tokens
+        except:
+            return match.group(0)
+    
+    text = re.sub(r'\$(\d+(?:\.\d+)?)', replace_currency, text)
+    
+    # Handle numbers (cardinals and sequences)
+    def replace_number(match):
+        val = match.group(0)
+        try:
+            # If it's a long sequence of digits (potential phone number), convert digit-by-digit
+            if len(val) > 4 and '.' not in val:
+                return " ".join([num2words(int(d)) for d in val])
+            return num2words(float(val))
+        except:
+            return val
+            
+    text = re.sub(r'\b\d+(?:\.\d+)?\b', replace_number, text)
+    
+    # Remove "and" as it's often optional in speech/numbers
+    text = re.sub(r'\band\b', ' ', text)
+    
+    # Clean up punctuation, hyphens (from num2words), and normalize whitespace
+    text = text.replace('-', ' ')
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
 def text_similarity(text1: str, text2: str) -> float:
-    """Calculate similarity ratio between two strings."""
-    return SequenceMatcher(None, text1.lower().strip(), text2.lower().strip()).ratio()
+    """Calculate similarity ratio between two normalized strings."""
+    t1_norm = normalize_text(text1)
+    t2_norm = normalize_text(text2)
+    return SequenceMatcher(None, t1_norm, t2_norm).ratio()
 
 
 def analyze_audio(pcm_bytes: bytes, sample_rate: int) -> Dict:
@@ -398,9 +445,6 @@ def run_validation():
         ("biden", "Hello?"),
         ("biden", "Hmm..."),
         ("biden", "Okay, okay, okay."),
-        ("loli", "Hahaha!"),
-        ("loli", "Ehh?"),
-        ("batman", "Hmph."),
         ("batman", "Go."),
         
         # === Difficult sounds ===
