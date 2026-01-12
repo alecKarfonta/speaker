@@ -1,137 +1,78 @@
-# 🎙️ Speaker: Advanced Generative TTS & Voice Cloning
+# Speaker: High-Performance Generative Speech Synthesis
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Docker: Supported](https://img.shields.io/badge/Docker-Supported-blue.svg)](https://www.docker.com/)
-[![CUDA: 12.0+](https://img.shields.io/badge/CUDA-12.0+-green.svg)](https://developer.nvidia.com/cuda-toolkit)
+Speaker is a specialized platform for ultra-realistic Text-to-Speech synthesis and zero-shot voice cloning. It is designed around the philosophy that speech should feel natural, identity should be portable, and inference should be fast enough for real-time applications.
 
-**Speaker** is a state-of-the-art Generative Text-to-Speech (TTS) platform delivering ultra-realistic, low-latency speech synthesis. Powered by **GLM-TTS**, it supports high-fidelity zero-shot voice cloning with as little as 3 seconds of audio.
-
-<!-- [PLACEHOLDER: Main Demo GIF showing voice cloning process] -->
-![Speaker Hero Architecture](./docs/images/architecture_hero.png)
+At its core, Speaker uses the GLM-TTS architecture—a two-stage generative model combining a Llama-based language model for semantic understanding with a flow-matching diffusion transformer for acoustic synthesis. This combination allows for capturing the nuance of a human voice with as little as 3 seconds of reference audio.
 
 ---
 
-## ✨ Core Features
+## Technical Foundation
 
-*   **🎭 Zero-Shot Voice Cloning**: Clone any voice perfectly using a brief (3-10s) audio sample.
-*   **⚡ Extreme Performance**: Integrated with **vLLM** and **TensorRT** for real-time speedups (up to 6x+ real-time).
-*   **🌈 Emotion & Style Control**: RL-enhanced models for expressive speech across various emotions and styles.
-*   **🌍 Multi-Language Support**: Optimized for English and Chinese, with multi-dataset support.
-*   **📈 Full Stack Monitoring**: Built-in Prometheus metrics and Grafana dashboards for hardware and inference telemetry.
-*   **🛠️ Developer-First API**: Fully async FastAPI backend with OpenAPI/Swagger documentation.
-*   **🔋 Production Ready**: Pre-configured for Docker, Kubernetes, and NVIDIA Blackwell (RTX 5090) hardware.
+Most TTS solutions are built as black boxes. Speaker is designed with visibility and high-performance hardware in mind.
 
----
+### The Inference Pipeline
+The synthesis process is split into distinct, optimized stages:
+1.  **Frontend**: Text is normalized and converted into semantic tokens.
+2.  **LLM (Llama)**: Semantic tokens are transformed into speech tokens. We utilize **vLLM** for this stage, leveraging PagedAttention to achieve high throughput and low latency.
+3.  **Flow Matching (DiT)**: Acoustic tokens are generated via a diffusion process. On Blackwell hardware (RTX 5090), this process is optimized with specialized dtypes and torch.compile.
+4.  **Vocoder (HiFT)**: Mel-spectrograms are converted into high-fidelity audio. We use a **TensorRT** implementation of the HiFT vocoder, which provides a 3x speedup over standard PyTorch execution.
 
-## 🚀 Tech Stack & Optimizations
-
-| Component | Technology | Description |
-| :--- | :--- | :--- |
-| **Primary Backend** | **GLM-TTS** | Llama-based LLM + Flow Matching DiT |
-| **Inference Engine** | **vLLM** | High-throughput LLM serving via PagedAttention |
-| **Vocoder** | **HiFT (TensorRT)** | 3x faster spectrogram-to-audio conversion |
-| **API Framework** | **FastAPI** | High-performance asynchronous REST API |
-| **Hardware Ops** | **NVIDIA Blackwell** | Optimized for BF16 and FP8 precision |
-| **Monitoring** | **Grafana/Prometheus** | Real-time hardware & inference tracking |
+### Hardware Optimization (NVIDIA Blackwell)
+Speaker is preconfigured to take full advantage of modern GPU architectures. This includes:
+*   **Precision**: Support for FP8 and BF16 dtypes to maximize throughput on Ada and Blackwell architectures.
+*   **JIT Optimization**: Aggressive use of torch.compile for non-autoregressive components.
+*   **Quantization**: Built-in 4-bit and 8-bit quantization modes for the LLM stage to minimize VRAM footprint without sacrificing synthesis quality.
 
 ---
 
-## 🛠️ Quick Start
+## Performance Telemetry
 
-### 1. Using Docker Compose (Recommended)
+Understanding the "black box" of generative speech is critical. Speaker includes a first-class monitoring stack based on Prometheus and Grafana.
 
-Start the entire stack including the API, Frontend, and Monitoring suite:
+Instead of generic health checks, we track the engine's cognitive load:
+*   **Real-Time Factor (RTF)**: The ratio of generated audio duration to inference time.
+*   **Latency Breakdown**: Per-stage millisecond tracking for the LLM, Flow, and Vocoder.
+*   **VRAM Allocation**: Real-time tracking of memory usage, essential for balancing multiple models on a single GPU.
+
+---
+
+## Validation and Reliability
+
+To ensure consistent output quality, we maintain an automated validation suite (`scripts/run_tts_validation.py`) that performs round-trip STT (Speech-to-Text) verification.
+
+A unique challenge in TTS validation is "orthographic drift"—where numbers or symbols are spoken correctly but transcribed differently (e.g., "$47.50" vs "forty-seven dollars and fifty cents"). Our validation engine utilizes `num2words` to normalize these discrepancies, ensuring that similarity scores reflect actual synthesis accuracy rather than formatting variations.
+
+---
+
+## Deployment
+
+### Docker Environment
+The simplest way to stand up the full stack is via Docker Compose:
 
 ```bash
 docker-compose up -d
 ```
 
-| Service | Endpoint |
-| :--- | :--- |
-| **Frontend UI** | [http://localhost:3012](http://localhost:3012) |
-| **API Docs (Swagger)** | [http://localhost:8012/docs](http://localhost:8012/docs) |
-| **Grafana Dashboard** | [http://localhost:3333](http://localhost:3333) (admin/admin123) |
-| **Prometheus** | [http://localhost:9199](http://localhost:9199) |
+Service mapping:
+*   **Web Interface**: Port 3012
+*   **API (OpenAPI)**: Port 8012
+*   **Monitoring (Grafana)**: Port 3333
 
-### 2. Manual Development Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/alecKarfonta/speaker.git
-cd speaker
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements-ml.txt
-pip install -r requirements-dev.txt
-
-# Start the API
-./scripts/start_api.sh
-```
+### Component Configuration
+Advanced engine settings are managed through environment variables in the compose file. Key toggles include switching between Transformers and vLLM engines, enabling TensorRT vocoders, and adjusting flow-matching steps.
 
 ---
 
-## 🧪 Performance & Validation
+## Project Structure
 
-We include a comprehensive validation suite to ensure both speed and transcription accuracy.
-
-<!-- [PLACEHOLDER: Terminal recording of run_tts_validation.py execution] -->
-
-```bash
-# Run full performance and STT round-trip validation
-STT_API_URL=http://<stt-host>:8603/v1/audio/transcriptions ./venv/bin/python3 scripts/run_tts_validation.py
-```
-
-### Validation Features:
-*   **Numeric Normalization**: Uses `num2words` to correctly validate spoken currency, digits, and dates.
-*   **Latency Profiling**: Detailed breakdown of LLM vs. Flow Matching stages.
-*   **Real-time Tracking**: Measures RTF (Real-Time Factor) across varying text lengths.
+*   `app/`: Core FastAPI application and backend implementations.
+*   `GLM-TTS/`: Model definitions and weights.
+*   `frontend/`: React-based management UI.
+*   `k8s/`: Kubernetes manifest for at-scale deployment.
+*   `scripts/`: Utility scripts for validation, metrics, and benchmarking.
 
 ---
 
-## 🖥️ Monitoring (Grafana)
+## License
 
-Speaker provides a deep-dive Grafana dashboard for hardware and inference monitoring.
-
-<!-- [PLACEHOLDER: Screenshot of Grafana Dashboard showing RTF and VRAM usage] -->
-
-**Key Metrics Tracked:**
-*   **RTF (Real-Time Factor)**: Audio duration / Inference time.
-*   **VRAM Utilization**: Broken down by LLM (vLLM) and Flow (DiT) models.
-*   **Stage Breakdown**: Millisecond-level latency for LLM, Flow, Phonemizer, and Vocoder.
-
----
-
-## 🔧 Hardware Configuration
-
-Optimized for **NVIDIA RTX 5090 (Blackwell)**. Configure optimizations in `docker-compose.yml`:
-
-```yaml
-environment:
-  - GLM_TTS_ENGINE=vllm           # Use vLLM for high performance
-  - GLM_TTS_QUANTIZATION=4bit    # Enable 4-bit quantization
-  - GLM_TTS_VOCODER_ENGINE=tensorrt # 3x faster vocoder
-  - GLM_TTS_COMPILE_FLOW=true     # torch.compile for DiT
-```
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please see [VOICE_LIBRARY_IMPLEMENTATION.md](VOICE_LIBRARY_IMPLEMENTATION.md) for details on adding new backends or optimizing existing ones.
-
-1.  Fork the Repo
-2.  Create a Feature Branch (`git checkout -b feature/AmazingFeature`)
-3.  Commit Changes (`git commit -m 'Add Features'`)
-4.  Push to Branch (`git push origin feature/AmazingFeature`)
-5.  Open a Pull Request
-
----
-
-## 📄 License
-
-Distributed under the MIT License. See `LICENSE` for more information.
+This project is licensed under the MIT License. Contributions focused on model optimization or hardware acceleration are always welcome.
