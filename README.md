@@ -50,7 +50,7 @@ A unique challenge in TTS validation is "orthographic drift"—where numbers or 
 The simplest way to stand up the full stack is via Docker Compose:
 
 ```bash
-docker-compose up -d
+docker compose up -d --build
 ```
 
 Service mapping:
