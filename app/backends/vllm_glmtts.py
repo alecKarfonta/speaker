@@ -44,7 +44,7 @@ class VLLMGLMTTSWrapper:
         model_path: str,
         special_token_ids: Dict[str, int],
         dtype: str = "float16",
-        gpu_memory_utilization: float = 0.3,  # Lower to leave room for Flow model + vocoder
+        gpu_memory_utilization: float = 0.45,  # Lower to leave room for Flow model + vocoder
         max_model_len: int = 4096,
         quantization: Optional[str] = None,  # 'fp8', 'awq', 'gptq', or None
         logger=None,

@@ -487,7 +487,7 @@ class GLMTTSBackend(TTSBackendBase):
             model_path=llama_path,
             special_token_ids=self.special_token_ids,
             dtype=self.llm_dtype,
-            gpu_memory_utilization=0.25,  # Low - shared with Flow model on same GPU
+            gpu_memory_utilization=0.45,  # Low - shared with Flow model on same GPU
             max_model_len=4096,
             quantization=self.vllm_quantization,  # fp8, awq, gptq, or None
             logger=self.logger,
@@ -603,8 +603,11 @@ class GLMTTSBackend(TTSBackendBase):
         
         # Auto-transcribe to get prompt_text (crucial for GLM-TTS quality!)
         prompt_text = self._transcribe_voice(voice.file_paths[0])
-        voice.metadata["prompt_text"] = prompt_text
-        self.logger.debug(f"Voice {voice_name} prompt_text: '{prompt_text[:50]}...'")
+        voice.metadata["prompt_text"] = prompt_text or ""
+        if prompt_text:
+            self.logger.debug(f"Voice {voice_name} prompt_text: '{prompt_text[:50]}...'")
+        else:
+            self.logger.warning(f"Voice {voice_name} has no prompt_text - transcription failed")
         
         # Pre-extract and cache all prompt features to avoid re-extraction on each generation
         # This runs the ONNX model once at load time, not on every request
@@ -652,6 +655,10 @@ class GLMTTSBackend(TTSBackendBase):
         except Exception as e:
             self.logger.warning(f"STT API error: {e}, falling back to local Whisper")
         
+        # Fallback: return empty string if STT unavailable
+        # Note: Local Whisper fallback could be implemented here if needed
+        self.logger.warning(f"No transcription available for {audio_path}, returning empty prompt_text")
+        return ""
     
     def _llm_forward(
         self,
