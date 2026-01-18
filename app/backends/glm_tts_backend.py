@@ -487,7 +487,7 @@ class GLMTTSBackend(TTSBackendBase):
             model_path=llama_path,
             special_token_ids=self.special_token_ids,
             dtype=self.llm_dtype,
-            gpu_memory_utilization=0.45,  # Low - shared with Flow model on same GPU
+            gpu_memory_utilization=0.50,  # Low - shared with Flow model on same GPU
             max_model_len=4096,
             quantization=self.vllm_quantization,  # fp8, awq, gptq, or None
             logger=self.logger,
@@ -1042,4 +1042,182 @@ class GLMTTSBackend(TTSBackendBase):
     def get_last_timings(self) -> dict:
         """Get profiling timings from the last generate_speech call."""
         return getattr(self, '_last_timings', {})
+    
+    def generate_speech_streaming(
+        self,
+        text: str,
+        voice_name: str,
+        language: str = "zh",
+        **kwargs
+    ):
+        """
+        Stream speech generation chunk-by-chunk.
+        
+        Instead of waiting for all chunks to complete, this generator yields
+        each audio chunk immediately after it's generated, enabling streaming
+        playback with significantly reduced time-to-first-audio.
+        
+        Args:
+            text: Text to convert to speech
+            voice_name: Name of voice to use for cloning
+            language: Language code ('zh' or 'en')
+            **kwargs: Additional parameters (same as generate_speech)
+            
+        Yields:
+            Tuple of (audio_chunk as numpy array, sample_rate, metadata dict)
+            metadata contains: chunk_index, total_chunks, chunk_text, is_final
+        """
+        import time
+        total_start = time.perf_counter()
+        
+        # Get per-request parameters or use defaults
+        sampling = kwargs.get("sampling", self.sampling)
+        min_token_text_ratio = kwargs.get("min_token_text_ratio", self.min_token_text_ratio)
+        max_token_text_ratio = kwargs.get("max_token_text_ratio", self.max_token_text_ratio)
+        beam_size = kwargs.get("beam_size", self.beam_size)
+        temperature = kwargs.get("temperature", self.config.get("temperature", 1.0))
+        top_p = kwargs.get("top_p", self.config.get("top_p", 0.8))
+        repetition_penalty = kwargs.get("repetition_penalty", self.config.get("repetition_penalty", 0.1))
+        sample_method = kwargs.get("sample_method", self.config.get("sample_method", "ras"))
+        
+        # Validate inputs
+        text = self.validate_text(text)
+        self.validate_voice(voice_name)
+        
+        if language not in self.SUPPORTED_LANGUAGES:
+            self.logger.warning(
+                f"Language '{language}' may not be fully supported. "
+                f"GLM-TTS primarily supports: {self.SUPPORTED_LANGUAGES}"
+            )
+        
+        self.logger.info(f"[STREAMING] Starting chunked generation: '{text[:50]}...' with voice {voice_name}")
+        
+        # Get voice prompt path and transcription
+        voice = self.voices[voice_name]
+        prompt_speech_path = voice.file_paths[0]
+        prompt_text = voice.metadata.get("prompt_text", "")
+        
+        # Text normalization
+        prompt_text_normalized = self.text_frontend.text_normalize(prompt_text + " ") if prompt_text else " "
+        synth_text_normalized = self.text_frontend.text_normalize(text)
+        
+        if self.use_phoneme:
+            synth_text_normalized = self.text_frontend.g2p_infer(synth_text_normalized)
+        
+        # Prompt feature extraction (use cached features)
+        prompt_text_token = self.frontend._extract_text_token(prompt_text_normalized)
+        prompt_speech_token = voice.metadata.get("prompt_speech_token")
+        speech_feat = voice.metadata.get("speech_feat")
+        embedding = voice.metadata.get("embedding")
+        
+        # Fallback if cache miss
+        if prompt_speech_token is None or speech_feat is None or embedding is None:
+            self.logger.warning(f"Cache miss for voice {voice_name}, re-extracting features...")
+            prompt_speech_token = self.frontend._extract_speech_token([prompt_speech_path])
+            speech_feat = self.frontend._extract_speech_feat(prompt_speech_path, sample_rate=self._sample_rate)
+            embedding = self.frontend._extract_spk_embedding(prompt_speech_path)
+        
+        # Prepare for inference
+        cache_speech_token = [prompt_speech_token.squeeze().tolist()]
+        flow_prompt_token = torch.tensor(cache_speech_token, dtype=torch.int32).to(self.device)
+        
+        # Split text into chunks
+        short_text_list = self.text_frontend.split_by_len(
+            synth_text_normalized,
+            min_text_len=self.min_text_len,
+            max_text_len=self.max_text_len
+        )
+        
+        total_chunks = len(short_text_list)
+        self.logger.info(f"[STREAMING] Split into {total_chunks} chunks")
+        
+        cache = {
+            "cache_text": [prompt_text_normalized],
+            "cache_text_token": [prompt_text_token],
+            "cache_speech_token": cache_speech_token,
+            "use_cache": self.use_cache,
+        }
+        
+        for chunk_idx, tts_text in enumerate(short_text_list):
+            chunk_start = time.perf_counter()
+            
+            # Process text
+            tts_text_tn = self.text_frontend.text_normalize(tts_text)
+            if self.use_phoneme:
+                tts_text_tn = self.text_frontend.g2p_infer(tts_text_tn)
+            
+            tts_text_token = self.frontend._extract_text_token(tts_text_tn)
+            
+            # Get prompt from cache
+            cache_text_token = cache["cache_text_token"]
+            cache_speech_token_list = cache["cache_speech_token"]
+            
+            prompt_text_token_for_llm = cache_text_token[0].to(self.device)
+            prompt_speech_token_for_llm = torch.tensor(
+                [cache_speech_token_list[0]], dtype=torch.int32
+            ).to(self.device)
+            
+            # LLM inference
+            llm_start = time.perf_counter()
+            token_list_res = self._llm_forward(
+                prompt_text_token=prompt_text_token_for_llm,
+                tts_text_token=tts_text_token,
+                prompt_speech_token=prompt_speech_token_for_llm,
+                sampling=sampling,
+                min_token_text_ratio=min_token_text_ratio,
+                max_token_text_ratio=max_token_text_ratio,
+                beam_size=beam_size,
+                temperature=temperature,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                sample_method=sample_method,
+            )
+            llm_ms = (time.perf_counter() - llm_start) * 1000
+            
+            # Flow inference - produces audio
+            flow_start = time.perf_counter()
+            output, _ = self._flow_forward(
+                token_list=token_list_res,
+                prompt_speech_tokens=flow_prompt_token,
+                speech_feat=speech_feat,
+                embedding=embedding
+            )
+            flow_ms = (time.perf_counter() - flow_start) * 1000
+            
+            # Convert to numpy
+            chunk_audio = output.squeeze().cpu().numpy()
+            
+            # Validate and trim chunk audio
+            chunk_audio = self._validate_audio(chunk_audio, tts_text)
+            
+            chunk_duration = len(chunk_audio) / self._sample_rate
+            chunk_ms = (time.perf_counter() - chunk_start) * 1000
+            
+            self.logger.info(
+                f"[STREAMING] Chunk {chunk_idx+1}/{total_chunks}: "
+                f"{len(tts_text)} chars -> {chunk_duration:.2f}s audio | "
+                f"LLM: {llm_ms:.0f}ms, Flow: {flow_ms:.0f}ms, Total: {chunk_ms:.0f}ms"
+            )
+            
+            # Update cache
+            cache["cache_text"].append(tts_text_tn)
+            cache["cache_text_token"].append(tts_text_token)
+            cache["cache_speech_token"].append(token_list_res)
+            
+            # Yield chunk immediately
+            metadata = {
+                'chunk_index': chunk_idx,
+                'total_chunks': total_chunks,
+                'chunk_text': tts_text,
+                'chunk_duration': chunk_duration,
+                'is_final': chunk_idx == total_chunks - 1,
+                'llm_ms': llm_ms,
+                'flow_ms': flow_ms,
+                'chunk_ms': chunk_ms
+            }
+            
+            yield chunk_audio, self._sample_rate, metadata
+        
+        total_ms = (time.perf_counter() - total_start) * 1000
+        self.logger.info(f"[STREAMING] Complete: {total_chunks} chunks in {total_ms:.0f}ms")
 

@@ -748,6 +748,143 @@ async def generate_speech(
             detail=f"Internal server error: {str(e)}"
         )
 
+from fastapi.responses import StreamingResponse
+import struct
+import json
+
+@app.post("/tts/stream")
+async def generate_speech_stream(
+    request: TTSRequest,
+    http_request: Request
+):
+    """
+    Stream TTS audio chunks as they're generated.
+    
+    This endpoint streams audio chunks in real-time, reducing time-to-first-audio
+    by up to 1500ms compared to the regular /tts endpoint.
+    
+    - **text**: Text to convert to speech (1-2000 characters)
+    - **voice_name**: Name of the voice to use
+    - **language**: Two-letter language code
+    
+    Returns a chunked binary stream with framing:
+    - Each chunk: 4-byte audio_len + 4-byte metadata_len + audio_bytes + metadata_json
+    
+    Response headers include:
+    - X-Streaming: true
+    - X-Sample-Rate: 24000
+    """
+    check_rate_limit(http_request)
+    
+    # Validate voice exists
+    available_voices = tts_service.get_voices()
+    if request.voice_name not in available_voices:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voice '{request.voice_name}' not found. Available voices: {', '.join(available_voices)}"
+        )
+    
+    # Check if backend supports streaming
+    if not hasattr(tts_service, 'generate_speech_streaming'):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="This TTS backend does not support streaming. Use /tts instead."
+        )
+    
+    # Prepare text with emotion tags if provided
+    text = request.text
+    if request.emotion:
+        emotion_tag = request.emotion if request.emotion.startswith('(') else f"({request.emotion})"
+        text = f"{emotion_tag} {text}"
+    
+    logger.info(f"[STREAMING] Starting stream for: '{text[:50]}...' voice={request.voice_name}")
+    
+    # Build kwargs for optional GLM-TTS parameters
+    glm_kwargs = {}
+    if request.sampling is not None:
+        glm_kwargs["sampling"] = request.sampling
+    if request.min_token_text_ratio is not None:
+        glm_kwargs["min_token_text_ratio"] = request.min_token_text_ratio
+    if request.max_token_text_ratio is not None:
+        glm_kwargs["max_token_text_ratio"] = request.max_token_text_ratio
+    if request.beam_size is not None:
+        glm_kwargs["beam_size"] = request.beam_size
+    if request.temperature is not None:
+        glm_kwargs["temperature"] = request.temperature
+    if request.top_p is not None:
+        glm_kwargs["top_p"] = request.top_p
+    if request.repetition_penalty is not None:
+        glm_kwargs["repetition_penalty"] = request.repetition_penalty
+    if request.sample_method is not None:
+        glm_kwargs["sample_method"] = request.sample_method
+    
+    def audio_generator():
+        """Generator that yields framed audio chunks"""
+        try:
+            for chunk_audio, sample_rate, metadata in tts_service.generate_speech_streaming(
+                text=text,
+                voice_name=request.voice_name,
+                language=request.language.value if hasattr(request.language, 'value') else request.language,
+                **glm_kwargs
+            ):
+                # Encode audio as float32 bytes (or convert to WAV if requested)
+                if request.output_format and request.output_format.value == "wav":
+                    wav_buffer = io.BytesIO()
+                    sf.write(wav_buffer, chunk_audio, sample_rate, format='WAV', subtype='PCM_16')
+                    wav_buffer.seek(0)
+                    audio_bytes = wav_buffer.read()
+                else:
+                    audio_bytes = chunk_audio.astype(np.float32).tobytes()
+                
+                # Encode metadata as JSON
+                metadata_bytes = json.dumps(metadata).encode('utf-8')
+                
+                # Frame: 4-byte audio_len (little-endian) + 4-byte metadata_len + audio + metadata
+                header = struct.pack('<II', len(audio_bytes), len(metadata_bytes))
+                
+                yield header + audio_bytes + metadata_bytes
+                
+                logger.debug(
+                    f"[STREAMING] Yielded chunk {metadata.get('chunk_index', 0)+1}/"
+                    f"{metadata.get('total_chunks', 1)}: {len(audio_bytes)} bytes"
+                )
+                
+        except Exception as e:
+            logger.error(f"[STREAMING] Error during generation: {str(e)}", exc_info=True)
+            # Yield error as final chunk
+            error_metadata = {
+                'error': str(e),
+                'is_final': True
+            }
+            error_bytes = json.dumps(error_metadata).encode('utf-8')
+            header = struct.pack('<II', 0, len(error_bytes))
+            yield header + error_bytes
+    
+    # Log for audit
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    user_agent = http_request.headers.get("user-agent")
+    audit_logger.log_tts_generation(
+        request.voice_name,
+        len(request.text),
+        request.language.value if hasattr(request.language, 'value') else request.language,
+        client_ip,
+        user_agent
+    )
+    
+    return StreamingResponse(
+        audio_generator(),
+        media_type="application/octet-stream",
+        headers={
+            "X-Streaming": "true",
+            "X-Sample-Rate": str(tts_service.sample_rate),
+            "X-Model": tts_service.model_name,
+            "X-Voice": request.voice_name,
+            "Cache-Control": "no-cache",
+            "Transfer-Encoding": "chunked"
+        }
+    )
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """

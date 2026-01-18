@@ -1,116 +1,113 @@
-Timestamp: 2026-01-12T20:57:09.448407
+Timestamp: 2026-01-12T03:53:57.621825
 TTS API: http://localhost:8012
-STT API: http://192.168.1.196:8603/v1/audio/transcriptions
+STT API: http://192.168.1.77:8603/v1/audio/transcriptions
 Voice: biden
-  Status: healthy
-  Model: GLM-TTS
-  Voices: 10
-  ✅ PASSED
+  ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /health (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
 
-  Label         Chars    Audio    Speed |      LLM     Flow    Other
-  ------------ ------ -------- -------- | -------- -------- --------
-  Short             6    0.55s    0.56x |     113ms     653ms     112ms
-  Medium           45    2.55s    1.98x |     413ms     631ms     134ms
-  Long            141    9.06s    3.92x |    1333ms     631ms     219ms
-  Very Long       198   18.30s    5.02x |    2511ms     645ms     284ms
+  Label          Voice    Chars   Audio   Speed |     LLM    Flow   Other
+  -------------- -------- ----- ------- ------- | ------- ------- -------
+  Tiny           biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Short          biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Medium         biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Long           biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Very Long      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Paragraph      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Loli Short     loli     ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Loli Medium    loli     ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Batman Short   batman   ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Batman Medium  batman   ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Technical      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Emotional      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Questions      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Numbers        biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Rapid Fire     biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
 
   Summary:
-    • Overall Speed: 3.70x real-time
-    • Total Audio: 30.46s in 8.23s compute
-    • Stage Breakdown: LLM 4370ms (63%) | Flow 2561ms (37%)
+    • Overall Speed: 0.00x real-time
+    • Total Audio: 0.00s in 0.00s compute
+    • Stage Breakdown: LLM 0ms (0%) | Flow 0ms (0%)
   ✅ Performance test passed
 
     # Voice       Sim Diagnosis                    Text
   --- -------- ------ ---------------------------- ------------------------------
-    1 biden     100% ✅ OK                         Hello world, this is a simple ...
-    2 biden     100% ✅ OK                         The quick brown fox jumps over...
-    3 biden     100% ✅ OK                         Good morning, how are you toda...
-    4 biden     100% ✅ OK                         Thank you very much for your h...
-    5 biden      89% ✅ OK                         The meeting is at three thirty...
-    6 biden      81% ✅ OK                         She was born on July fourth, n...
-    7 biden     100% ✅ OK                         The total comes to forty seven...
-    8 biden      87% ✅ OK                         Call me at five five five, one...
-    9 biden     100% ✅ OK                         What time does the movie start...
-   10 biden     100% ✅ OK                         Have you ever been to Paris be...
-   11 biden     100% ✅ OK                         Would you like some coffee or ...
-   12 biden     100% ✅ OK                         Why did the chicken cross the ...
-   13 biden     100% ✅ OK                         That's absolutely incredible! ...
-   14 biden     100% ✅ OK                         Oh my goodness, I can't believ...
-   15 biden     100% ✅ OK                         Congratulations on your promot...
-   16 biden     100% ✅ OK                         What a beautiful sunset we're ...
-   17 biden     100% ✅ OK                         I'm going to the store, I'll b...
-   18 biden     100% ✅ OK                         They're planning to move next ...
-   19 biden     100% ✅ OK                         We've been waiting for hours a...
-   20 biden     100% ✅ OK                         It's not that I don't care, it...
-   21 biden     100% ✅ OK                         The algorithm optimizes perfor...
-   22 biden     100% ✅ OK                         Cryptocurrency and blockchain ...
-   23 biden     100% ✅ OK                         The pharmaceutical company ann...
-   24 biden     100% ✅ OK                         Artificial neural networks pro...
-   25 biden     100% ✅ OK                         President Abraham Lincoln gave...
-   26 biden     100% ✅ OK                         The Amazon River flows through...
-   27 biden      90% ✅ OK                         Doctor Martin Luther King Juni...
-   28 biden     100% ✅ OK                         The Eiffel Tower in Paris is t...
-   29 biden     100% ✅ OK                         Please close the door when you...
-   30 biden     100% ✅ OK                         Take the first left and then g...
-   31 biden     100% ✅ OK                         Remember to save your work bef...
-   32 biden      96% ✅ OK                         Don't forget to call your moth...
-   33 loli      100% ✅ OK                         Hi there! This is so exciting!
-   34 loli      100% ✅ OK                         I really love this new game, i...
-   35 loli       93% ✅ OK                         Can we go to the park? Pretty ...
-   36 loli      100% ✅ OK                         Wow, look at all the pretty fl...
-   37 loli      100% ✅ OK                         Yay! That's my favorite song e...
-   38 loli      100% ✅ OK                         Oh no, what happened here? Are...
-   39 loli      100% ✅ OK                         I want ice cream! Chocolate pl...
-   40 loli      100% ✅ OK                         Let's play hide and seek toget...
-   41 batman     98% ✅ OK                         I am vengeance. I am the night...
-   42 batman    100% ✅ OK                         The criminal underworld will f...
-   43 batman     88% ✅ OK                         Justice will be served. No exc...
-   44 batman    100% ✅ OK                         Gotham needs a hero. Someone h...
-   45 batman    100% ✅ OK                         This ends tonight. I will find...
-   46 batman    100% ✅ OK                         I made a promise to protect th...
-   47 batman     92% ✅ OK                         The shadows are my domain.
-   48 batman    100% ✅ OK                         Every criminal in this city kn...
-   49 biden     100% ✅ OK                         This is a longer passage desig...
-   50 biden     100% ✅ OK                         The weather forecast for today...
-   51 loli      100% ✅ OK                         Once upon a time, there was a ...
-   52 batman    100% ✅ OK                         In the shadows of Gotham City,...
-   53 biden     100% ✅ OK                         One.
-   54 biden     100% ✅ OK                         Yes.
-   55 biden     100% ✅ OK                         Hello?
-   56 biden     100% ✅ OK                         Hmm...
-   57 biden     100% ✅ OK                         Okay, okay, okay.
-   58 loli       53% ⚠️ MINOR mismatch            Hahaha!
-   59 loli        0% 💀 SEVERE mismatch (likely garbage) Ehh?
-   60 batman      0% ❓ EMPTY (no transcription)   Hmph.
-   61 batman    100% ✅ OK                         Go.
-   62 biden     100% ✅ OK                         She sells seashells by the sea...
-   63 biden     100% ✅ OK                         Peter Piper picked a peck of p...
-   64 biden      89% ✅ OK                         How much wood would a woodchuc...
-   65 biden     100% ✅ OK                         Unique New York, unique New Yo...
+    1 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    2 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    3 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    4 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    5 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    6 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    7 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    8 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    9 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   10 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   11 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   12 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   13 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   14 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   15 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   16 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   17 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   18 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   19 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   20 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   21 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   22 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   23 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   24 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   25 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   26 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   27 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   28 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   29 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   30 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   31 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   32 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   33 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   34 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   35 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   36 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   37 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   38 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   39 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   40 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   41 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   42 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   43 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   44 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   45 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   46 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   47 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   48 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   49 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   50 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   51 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   52 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   53 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   54 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   55 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   56 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   57 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   58 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   59 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   60 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   61 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   62 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   63 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   64 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   65 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
 
-  Average Similarity: 94.7%
-
-  ⚠️ Failed Tests (3):
-
-    ⚠️ MINOR mismatch:
-      • [loli] "Hahaha!..." -> "Haaaaaaah!..." (53%)
-
-    💀 SEVERE mismatch (likely garbage):
-      • [loli] "Ehh?..." -> "and..." (0%)
-
-    ❓ EMPTY (no transcription):
-      • [batman] "Hmph...." -> "..." (0%)
+  Average Similarity: 0.0%
 
   Performance:
-    • Overall Speed: 3.70x real-time
-    • Total Audio Generated: 30.46s
-    • Total Compute Time: 8.23s
-    • Stage Breakdown: LLM 63% | Flow 37%
+    • Overall Speed: 0.00x real-time
+    • Total Audio Generated: 0.00s
+    • Total Compute Time: 0.00s
+    • Stage Breakdown: LLM 0% | Flow 0%
 
   Quality:
     • STT Round-Trip Tests: 65
-    • Average Accuracy: 94.7%
-    • Tests Passed: 62/65
-    • Tests Failed: 3
+    • Average Accuracy: 0.0%
+    • Tests Passed: 0/0
+    • Tests Failed: 0
 
   ❌ SOME TESTS FAILED
