@@ -35,7 +35,7 @@ import argparse
 DOCKER_COMPOSE_PATH = Path(__file__).parent.parent / "docker-compose.yml"
 OUTPUT_DIR = Path(__file__).parent.parent / "tests" / "output"
 TTS_API_URL = os.environ.get("TTS_API_URL", "http://localhost:8012")
-STT_API_URL = os.environ.get("STT_API_URL", "http://192.168.1.77:8603/v1/audio/transcriptions")
+STT_API_URL = os.environ.get("STT_API_URL", "http://192.168.1.196:8603/v1/audio/transcriptions")
 STT_API_KEY = os.environ.get("STT_API_KEY", "stt-api-key")
 
 # Health check settings
@@ -475,7 +475,8 @@ def generate_charts(results: List[Dict[str, Any]], output_dir: Path) -> None:
     # Analyze parameter impact on speed
     param_impacts = {}
     key_params = ['GLM_TTS_FLOW_STEPS', 'GLM_TTS_CFG_RATE', 'GLM_TTS_SAMPLING', 
-                  'GLM_TTS_QUANTIZATION', 'GLM_TTS_COMPILE_FLOW']
+                  'GLM_TTS_QUANTIZATION', 'GLM_TTS_COMPILE_FLOW', 'GLM_TTS_DTYPE',
+                  'GLM_TTS_MAX_TOKEN_RATIO', 'GLM_TTS_GARBAGE_THRESHOLD']
     
     for param in key_params:
         param_values = {}
@@ -982,8 +983,13 @@ PARAM_SPACE = {
     "GLM_TTS_ATTENTION": ["flash_attention_2", "sdpa", "eager"],
     "GLM_TTS_VLLM_QUANTIZATION": ["fp8", "none"],
     "GLM_TTS_FLOW_DTYPE": ["fp16", "fp32"],
+    "GLM_TTS_DTYPE": ["fp16", "bf16", "fp32"],
     "GLM_TTS_COMPILE_FLOW": ["true", "false"],
     "GLM_TTS_COMPILE_VOCODER": ["true", "false"],
+    "GLM_TTS_MAX_TOKEN_RATIO": ["15.0", "20.0", "30.0"],
+    "GLM_TTS_MAX_SEC_PER_WORD": ["0.5", "0.65", "0.8", "1.2"],
+    "GLM_TTS_GARBAGE_THRESHOLD": ["0.8", "1.0", "1.5", "2.0"],
+    "GLM_TTS_SILENCE_THRESHOLD_DB": ["-30", "-40", "-50"],
 }
 
 # Baseline config for focused sweeps (OPTIMAL from parameter sweep)
