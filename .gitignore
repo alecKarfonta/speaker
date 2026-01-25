@@ -126,5 +126,4 @@ notebooks/token.pickle
 client_shh.json
 
 
-tests/output/
-tests/output/
+tests/output/*
