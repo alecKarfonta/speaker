@@ -1,0 +1,85 @@
+# syntax=docker/dockerfile:1.4
+# Qwen3-TTS Dockerfile - Minimal build without GLM-TTS dependencies
+# Use this for Qwen-only TTS deployments
+
+FROM vllm/vllm-openai:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
+
+# Install system dependencies for audio processing
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    gcc \
+    git \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ===== PYTHON DEPENDENCIES =====
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install packaging ninja
+
+# Minimal dependencies for Qwen TTS (no torchcodec, no GLM-TTS dependencies)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install \
+    fastapi>=0.109.0 \
+    uvicorn>=0.27.0 \
+    pydantic>=2.0.0 \
+    python-multipart>=0.0.6 \
+    soundfile>=0.12.0 \
+    scipy>=1.10.0 \
+    numpy>=1.24.0 \
+    librosa>=0.10.0 \
+    aiofiles>=23.0.0 \
+    pyyaml>=6.0 \
+    transformers>=4.40.0
+
+# Flash attention for Qwen3-TTS performance
+RUN --mount=type=cache,target=/root/.cache/pip \
+    MAX_JOBS=10 TORCH_CUDA_ARCH_LIST="8.6;12.0" pip install "flash-attn>=2.7.0" --no-build-isolation --no-cache-dir && \
+    python3 -c "import flash_attn; print('Flash Attention OK:', flash_attn.__version__)"
+
+# Verify vLLM is available
+RUN python3 -c "import vllm; print('vLLM OK:', vllm.__version__)"
+
+# Install qwen-tts from PyPI
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -U qwen-tts && \
+    python3 -c "from qwen_tts import Qwen3TTSModel; print('qwen-tts OK')"
+
+# Pre-download Qwen 0.6B model (smaller/faster)
+ARG PRELOAD_QWEN_MODELS=true
+RUN if [ "$PRELOAD_QWEN_MODELS" = "true" ]; then \
+    python3 -c "from qwen_tts import Qwen3TTSModel; \
+               print('Downloading Qwen3-TTS-0.6B-Base...'); \
+               Qwen3TTSModel.from_pretrained('Qwen/Qwen3-TTS-12Hz-0.6B-Base')"; \
+    fi
+
+# ===== APPLICATION CODE =====
+COPY app/ ./app/
+COPY scripts/ ./scripts/
+COPY config.yaml .
+COPY start_api.sh .
+
+# Create voice directories
+RUN mkdir -p /app/data/voices /app/logs
+
+# Copy voice files if they exist
+COPY data/voices/ ./data/voices/
+
+RUN chmod +x scripts/*.sh start_api.sh
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+ENTRYPOINT []
+CMD ["python3", "-m", "app.main"]
