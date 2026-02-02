@@ -53,6 +53,55 @@ class OutputFormat(str, Enum):
     RAW = "raw"  # Raw float32 PCM bytes (default, backward compatible)
     WAV = "wav"  # Proper WAV file with headers
 
+class OpenAIAudioFormat(str, Enum):
+    """OpenAI-compatible audio output formats"""
+    MP3 = "mp3"
+    OPUS = "opus"
+    AAC = "aac"
+    FLAC = "flac"
+    WAV = "wav"
+    PCM = "pcm"
+
+class OpenAISpeechRequest(BaseModel):
+    """
+    OpenAI-compatible TTS request model.
+    
+    Matches the OpenAI /v1/audio/speech API specification.
+    """
+    input: str = Field(
+        description="The text to generate audio for",
+        min_length=1,
+        max_length=4096
+    )
+    model: str = Field(
+        default="tts-1",
+        description="TTS model to use (tts-1, tts-1-hd accepted for compatibility)"
+    )
+    voice: str = Field(
+        description="Voice to use - OpenAI names (alloy, echo, etc.) or Speaker voice names"
+    )
+    response_format: OpenAIAudioFormat = Field(
+        default=OpenAIAudioFormat.MP3,
+        description="Audio output format: mp3, opus, aac, flac, wav, or pcm"
+    )
+    speed: float = Field(
+        default=1.0,
+        ge=0.25,
+        le=4.0,
+        description="Speed of the generated audio (0.25 to 4.0)"
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "input": "Hello, this is a test of the text to speech system.",
+                "model": "tts-1",
+                "voice": "alloy",
+                "response_format": "mp3",
+                "speed": 1.0
+            }
+        }
+
 # Request Models
 class TTSRequest(BaseModel):
     """Request model for TTS generation"""

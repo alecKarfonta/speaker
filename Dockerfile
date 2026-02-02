@@ -3,7 +3,7 @@
 
 # Use vLLM official image - already has vLLM + numpy 2.x + PyTorch
 # This provides ~2x faster LLM inference via PagedAttention
-FROM vllm/vllm-openai:latest
+FROM  vllm/vllm-openai:v0.13.0
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -60,13 +60,11 @@ COPY scripts/patch_glm_tts.py /tmp/patch_glm_tts.py
 RUN python3 /tmp/patch_glm_tts.py /app/GLM-TTS
 
 # ===== FLASH-ATTN (BUILD FROM SOURCE) =====
-# Build for multiple GPU architectures:
-# - 8.6: RTX 3090/3090 Ti (Ampere)
-# - 12.0: RTX 5090 (Blackwell sm_120)
-# vLLM already has flash-attn, but we ensure latest for GLM-TTS
+# Build for Blackwell GPUs (RTX 5070/5080/5090) - compute capability 12.0
+# Note: MAX_JOBS=4 to prevent OOM during compilation (flash-attn is memory-hungry)
+# Skip import verification during build - CUDA runtime not available.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    MAX_JOBS=10 TORCH_CUDA_ARCH_LIST="8.6;12.0" pip install "flash-attn>=2.7.0" --no-build-isolation --no-cache-dir && \
-    python3 -c "import flash_attn; print('Flash Attention OK:', flash_attn.__version__)"
+    MAX_JOBS=4 TORCH_CUDA_ARCH_LIST="12.0" pip install "flash-attn>=2.7.0" --no-build-isolation --no-cache-dir
 
 # Verify vLLM is available
 RUN python3 -c "import vllm; print('vLLM OK:', vllm.__version__)"

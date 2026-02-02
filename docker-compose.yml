@@ -52,7 +52,7 @@ services:
       # GLM_TTS_MAX_TOKEN_RATIO: max audio tokens per text char (default: 20, try 15)
       # - GLM_TTS_MAX_TOKEN_RATIO=15
 
-      - GLM_TTS_MAX_SEC_PER_WORD=2.0 # Max seconds per word for slow speech
+      - GLM_TTS_MAX_SEC_PER_WORD=4.0 # Max seconds per word for slow speech
       - GLM_TTS_GARBAGE_THRESHOLD=1.5 # Threshold above which audio is trimmed
       - GLM_TTS_SILENCE_THRESHOLD_DB=-40 # dB threshold for trailing silence
       - GLM_TTS_MAX_TOKEN_RATIO=30.0 # Max audio tokens per text character

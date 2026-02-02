@@ -624,10 +624,26 @@ class GLMTTSBackend(TTSBackendBase):
         self.logger.debug(f"Loaded voice: {self.voices[voice_name]}")
     
     def _transcribe_voice(self, audio_path: str) -> str:
-        """Transcribe voice sample to get prompt_text for GLM-TTS."""
+        """Transcribe voice sample to get prompt_text for GLM-TTS.
+        
+        First checks for a .txt file with the same name as the audio file.
+        If found, uses that text. Otherwise, calls the STT API.
+        """
         import requests
         
-        # Try external STT API first (faster, better quality)
+        # Check for manual transcription file first (priority over STT)
+        transcription_path = os.path.splitext(audio_path)[0] + ".txt"
+        if os.path.exists(transcription_path):
+            try:
+                with open(transcription_path, 'r', encoding='utf-8') as f:
+                    text = f.read().strip()
+                if text:
+                    self.logger.info(f"Using manual transcription from {transcription_path}")
+                    return text
+            except Exception as e:
+                self.logger.warning(f"Failed to read transcription file {transcription_path}: {e}")
+        
+        # Try external STT API (faster, better quality)
         stt_api_url = self.config.get("stt_api_url", "http://localhost:8603/v1/audio/transcriptions")
         stt_api_key = self.config.get("stt_api_key", "stt-api-key")
         
