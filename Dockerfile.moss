@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1.4
+# MOSS-TTS Container — Standalone inference for MossTTSDelay-8B
+# Requires: NVIDIA GPU, CUDA 12.8, ~16GB+ VRAM
+#
+# Build:  docker compose build moss-tts
+# Run:    docker compose run --rm moss-tts
+
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# ===== System dependencies =====
+RUN apt-get update && apt-get install -y \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    curl \
+    wget \
+    gcc \
+    g++ \
+    git \
+    git-lfs \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python
+
+WORKDIR /app
+
+# ===== Python packaging =====
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --break-system-packages --upgrade pip setuptools wheel packaging ninja
+
+# ===== Clone MOSS-TTS and install =====
+RUN git clone --depth 1 --recurse-submodules https://github.com/OpenMOSS/MOSS-TTS.git /app/MOSS-TTS
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    cd /app/MOSS-TTS && \
+    pip install --break-system-packages \
+        --extra-index-url https://download.pytorch.org/whl/cu128 \
+        -e .
+
+# ===== FlashAttention 2 (optional, improves speed) =====
+# Build for Blackwell (12.0) + Ampere/Ada (8.6)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    MAX_JOBS=4 TORCH_CUDA_ARCH_LIST="8.6;12.0" \
+    pip install --break-system-packages \
+        "flash-attn>=2.7.0" --no-build-isolation --no-cache-dir \
+    || echo "⚠️  FlashAttention build failed — falling back to SDPA"
+
+# ===== Verify core imports =====
+RUN python3 -c "import torch; print('PyTorch:', torch.__version__)" && \
+    python3 -c "import transformers; print('Transformers:', transformers.__version__)" && \
+    python3 -c "import torchaudio; print('Torchaudio:', torchaudio.__version__)"
+
+# ===== Copy test script =====
+COPY scripts/test_moss_tts.py /app/test_moss_tts.py
+
+# ===== Output directory =====
+RUN mkdir -p /app/output
+
+ENV PYTHONPATH=/app:/app/MOSS-TTS
+ENV OUTPUT_DIR=/app/output
+
+ENTRYPOINT []
+CMD ["python3", "/app/test_moss_tts.py"]

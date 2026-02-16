@@ -77,6 +77,29 @@ services:
     networks:
       - tts-network
 
+  moss-tts:
+    build:
+      context: .
+      dockerfile: Dockerfile.moss
+    profiles:
+      - moss
+    environment:
+      - MOSS_MODEL_ID=OpenMOSS-Team/MOSS-TTS
+      - OUTPUT_DIR=/app/output
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      - ./output:/app/output
+      - moss_hf_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+    networks:
+      - tts-network
+
   frontend:
     image: ghcr.io/aleckarfonta/speaker-frontend:latest
     build: ./frontend
@@ -136,6 +159,7 @@ services:
 volumes:
   prometheus_data:
   grafana_data:
+  moss_hf_cache:
 
 
 networks:
