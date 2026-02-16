@@ -241,7 +241,7 @@ class MetricsCollector:
             SYSTEM_MEMORY_USAGE.set(memory.used)
             
             # CPU usage
-            cpu_percent = psutil.cpu_percent(interval=0.1)
+            cpu_percent = psutil.cpu_percent(interval=None)
             SYSTEM_CPU_USAGE.set(cpu_percent)
             
             # Active voices
@@ -346,7 +346,7 @@ class HealthMonitor:
         """Get current system health metrics"""
         try:
             # CPU usage
-            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_percent = psutil.cpu_percent(interval=None)
             
             # Memory usage
             memory = psutil.virtual_memory()
