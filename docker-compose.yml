@@ -87,6 +87,7 @@ services:
       - "8013:8000"
     environment:
       - MOSS_MODEL_ID=OpenMOSS-Team/MOSS-TTS
+      - MOSS_QUANTIZE=4bit
       - VOICES_DIR=/app/data/voices
       - HF_HOME=/root/.cache/huggingface
     volumes:

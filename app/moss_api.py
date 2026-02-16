@@ -29,6 +29,7 @@ logger = logging.getLogger("moss-tts")
 MODEL_ID = os.environ.get("MOSS_MODEL_ID", "OpenMOSS-Team/MOSS-TTS")
 VOICES_DIR = Path(os.environ.get("VOICES_DIR", "/app/data/voices"))
 VOICES_DIR.mkdir(parents=True, exist_ok=True)
+QUANTIZE = os.environ.get("MOSS_QUANTIZE", "4bit")  # "4bit", "8bit", or "none"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
@@ -74,13 +75,51 @@ def load_model():
     processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
     processor.audio_tokenizer = processor.audio_tokenizer.to(DEVICE)
 
-    logger.info(f"Loading model from {MODEL_ID} (attn={ATTN_IMPL}, dtype={DTYPE}) ...")
-    model = AutoModel.from_pretrained(
-        MODEL_ID,
-        trust_remote_code=True,
-        attn_implementation=ATTN_IMPL,
-        torch_dtype=DTYPE,
-    ).to(DEVICE)
+    if DEVICE == "cuda":
+        mem_after_tokenizer = torch.cuda.memory_allocated() / 1e9
+        logger.info(f"Audio tokenizer loaded: {mem_after_tokenizer:.2f} GB used")
+
+    # Build model kwargs
+    model_kwargs = {
+        "trust_remote_code": True,
+        "attn_implementation": ATTN_IMPL,
+    }
+
+    # Configure quantization based on available VRAM
+    if QUANTIZE == "4bit" and DEVICE == "cuda":
+        try:
+            from transformers import BitsAndBytesConfig
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=DTYPE,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            )
+            model_kwargs["device_map"] = "auto"
+            logger.info("Using 4-bit quantization (NF4) with device_map=auto")
+        except ImportError:
+            logger.warning("bitsandbytes not available, falling back to no quantization")
+            model_kwargs["torch_dtype"] = DTYPE
+    elif QUANTIZE == "8bit" and DEVICE == "cuda":
+        try:
+            from transformers import BitsAndBytesConfig
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            model_kwargs["device_map"] = "auto"
+            logger.info("Using 8-bit quantization with device_map=auto")
+        except ImportError:
+            logger.warning("bitsandbytes not available, falling back to no quantization")
+            model_kwargs["torch_dtype"] = DTYPE
+    else:
+        model_kwargs["torch_dtype"] = DTYPE
+        logger.info(f"No quantization — loading in {DTYPE}")
+
+    logger.info(f"Loading model from {MODEL_ID} (attn={ATTN_IMPL}) ...")
+    model = AutoModel.from_pretrained(MODEL_ID, **model_kwargs)
+
+    # If not using device_map, manually move to GPU
+    if "device_map" not in model_kwargs:
+        model = model.to(DEVICE)
+
     model.eval()
 
     sample_rate = processor.model_config.sampling_rate
@@ -88,7 +127,8 @@ def load_model():
 
     if DEVICE == "cuda":
         mem_gb = torch.cuda.max_memory_allocated() / 1e9
-        logger.info(f"GPU memory used: {mem_gb:.2f} GB")
+        total_gb = torch.cuda.get_device_properties(0).total_mem / 1e9
+        logger.info(f"GPU memory: {mem_gb:.2f} / {total_gb:.2f} GB")
 
 
 # ── FastAPI app ──
