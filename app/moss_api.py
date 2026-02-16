@@ -1,6 +1,7 @@
 """
 MOSS-TTS FastAPI Service
-Exposes voice generation, voice cloning, and streaming TTS endpoints.
+Exposes voice generation, voice cloning, voice design, and streaming TTS endpoints.
+Includes API shim for frontend compatibility (GLM/Qwen endpoint shapes).
 """
 
 import asyncio
@@ -16,9 +17,9 @@ from typing import Optional
 
 import torch
 import torchaudio
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 # ── Logging ──
@@ -27,6 +28,8 @@ logger = logging.getLogger("moss-tts")
 
 # ── Config ──
 MODEL_ID = os.environ.get("MOSS_MODEL_ID", "OpenMOSS-Team/MOSS-TTS")
+VOICE_GEN_MODEL_ID = os.environ.get("MOSS_VOICE_GEN_MODEL", "OpenMOSS-Team/MOSS-VoiceGenerator")
+ENABLE_VOICE_GEN = os.environ.get("MOSS_ENABLE_VOICE_GEN", "true").lower() == "true"
 VOICES_DIR = Path(os.environ.get("VOICES_DIR", "/app/data/voices"))
 VOICES_DIR.mkdir(parents=True, exist_ok=True)
 QUANTIZE = os.environ.get("MOSS_QUANTIZE", "4bit")  # "4bit", "8bit", or "none"
@@ -59,6 +62,12 @@ model = None
 processor = None
 sample_rate = None
 model_device = None  # actual device for input tensors (may differ from DEVICE with device_map)
+
+# ── VoiceGenerator model (loaded separately for voice design) ──
+voice_gen_model = None
+voice_gen_processor = None
+voice_gen_device = None
+voice_gen_sample_rate = None
 
 
 def load_model():
@@ -137,11 +146,97 @@ def load_model():
     sample_rate = processor.model_config.sampling_rate
     logger.info(f"Model loaded. Sample rate: {sample_rate} Hz")
 
+    _log_gpu_memory()
+
+
+def _log_gpu_memory():
+    """Log GPU memory usage for all visible devices."""
     if DEVICE == "cuda":
         for i in range(torch.cuda.device_count()):
             mem_gb = torch.cuda.memory_allocated(i) / 1e9
             total_gb = torch.cuda.get_device_properties(i).total_memory / 1e9
             logger.info(f"GPU {i}: {mem_gb:.2f} / {total_gb:.2f} GB")
+
+
+def load_voice_generator():
+    """Load MOSS-VoiceGenerator model on a separate GPU for voice design."""
+    global voice_gen_model, voice_gen_processor, voice_gen_device, voice_gen_sample_rate
+    from transformers import AutoModel, AutoProcessor
+
+    # Determine which GPU to use (second available GPU, or CPU)
+    num_gpus = torch.cuda.device_count() if DEVICE == "cuda" else 0
+    if num_gpus >= 2:
+        vg_gpu = 1  # container's second GPU
+    elif num_gpus == 1:
+        vg_gpu = 0  # share with TTS model (may be tight)
+        logger.warning("Only 1 GPU available — VoiceGenerator will share GPU 0 with TTS")
+    else:
+        vg_gpu = None
+
+    logger.info(f"Loading VoiceGenerator processor from {VOICE_GEN_MODEL_ID} ...")
+    voice_gen_processor = AutoProcessor.from_pretrained(
+        VOICE_GEN_MODEL_ID, trust_remote_code=True, normalize_inputs=True,
+    )
+
+    vg_device = torch.device(f"cuda:{vg_gpu}") if vg_gpu is not None else torch.device("cpu")
+    vg_dtype = torch.bfloat16 if vg_device.type == "cuda" else torch.float32
+
+    # Resolve attention impl for this device
+    vg_attn = None
+    if vg_device.type == "cuda":
+        if importlib.util.find_spec("flash_attn") is not None and vg_dtype in {torch.float16, torch.bfloat16}:
+            major, _ = torch.cuda.get_device_capability(vg_device)
+            if major >= 8:
+                vg_attn = "flash_attention_2"
+        if vg_attn is None:
+            vg_attn = "sdpa"
+    else:
+        vg_attn = "eager"
+
+    model_kwargs = {
+        "trust_remote_code": True,
+        "attn_implementation": vg_attn,
+    }
+
+    # Apply same quantization strategy
+    if QUANTIZE == "4bit" and vg_device.type == "cuda":
+        try:
+            from transformers import BitsAndBytesConfig
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=vg_dtype,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            )
+            model_kwargs["device_map"] = {"": vg_gpu}
+            model_kwargs["low_cpu_mem_usage"] = True
+            logger.info(f"VoiceGenerator: 4-bit NF4 on GPU {vg_gpu}")
+        except ImportError:
+            model_kwargs["torch_dtype"] = vg_dtype
+    else:
+        model_kwargs["torch_dtype"] = vg_dtype
+
+    logger.info(f"Loading VoiceGenerator model from {VOICE_GEN_MODEL_ID} (attn={vg_attn}) ...")
+    voice_gen_model = AutoModel.from_pretrained(VOICE_GEN_MODEL_ID, **model_kwargs)
+
+    if "device_map" not in model_kwargs:
+        voice_gen_model = voice_gen_model.to(vg_device)
+
+    voice_gen_model.eval()
+
+    # Detect actual device
+    if hasattr(voice_gen_model, 'hf_device_map'):
+        first_dev = next(iter(voice_gen_model.hf_device_map.values()))
+        voice_gen_device = torch.device(f"cuda:{first_dev}" if isinstance(first_dev, int) else first_dev)
+    else:
+        voice_gen_device = next(voice_gen_model.parameters()).device
+
+    if hasattr(voice_gen_processor, 'audio_tokenizer'):
+        voice_gen_processor.audio_tokenizer = voice_gen_processor.audio_tokenizer.to(voice_gen_device)
+
+    voice_gen_sample_rate = getattr(voice_gen_processor.model_config, 'sampling_rate', 24000)
+    logger.info(f"VoiceGenerator loaded on {voice_gen_device}. Sample rate: {voice_gen_sample_rate} Hz")
+    _log_gpu_memory()
 
 
 # ── FastAPI app ──
@@ -163,18 +258,49 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     load_model()
+    if ENABLE_VOICE_GEN:
+        try:
+            load_voice_generator()
+        except Exception as e:
+            logger.error(f"Failed to load VoiceGenerator: {e}")
+            logger.warning("Voice design endpoint will be unavailable")
 
 
 # ── Request / Response models ──
 
 class TTSRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000, description="Text to synthesize")
+    voice_name: Optional[str] = Field(None, description="Voice name for cloning (uses saved reference)")
     language: Optional[str] = Field("en", description="Language code (informational)")
+    output_format: Optional[str] = Field("wav", description="Output format (wav)")
     max_new_tokens: int = Field(4096, ge=256, le=16384, description="Max audio tokens to generate")
     audio_temperature: Optional[float] = Field(None, description="Sampling temperature for audio tokens")
     audio_top_p: Optional[float] = Field(None, description="Top-p sampling for audio tokens")
     audio_top_k: Optional[int] = Field(None, description="Top-k sampling for audio tokens")
     tokens: Optional[int] = Field(None, description="Target duration in tokens (for duration control)")
+    # GLM-TTS compat params (silently accepted, not used)
+    sampling: Optional[int] = Field(None, description="(GLM compat) Ignored")
+    temperature: Optional[float] = Field(None, description="(GLM compat) Maps to audio_temperature")
+    top_p: Optional[float] = Field(None, description="(GLM compat) Maps to audio_top_p")
+    beam_size: Optional[int] = Field(None, description="(GLM compat) Ignored")
+    repetition_penalty: Optional[float] = Field(None, description="(GLM compat) Ignored")
+    sample_method: Optional[str] = Field(None, description="(GLM compat) Ignored")
+    min_token_text_ratio: Optional[float] = Field(None, description="(GLM compat) Ignored")
+    max_token_text_ratio: Optional[float] = Field(None, description="(GLM compat) Ignored")
+
+
+class VoiceDesignRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=10000, description="Text to synthesize")
+    instruction: Optional[str] = Field(None, description="Voice description instruction")
+    instruct: Optional[str] = Field(None, description="Voice description (Qwen compat alias)")
+    mode: Optional[str] = Field(None, description="Mode: 'voice_design' or 'custom_voice' (Qwen compat)")
+    speaker: Optional[str] = Field(None, description="Speaker name for custom_voice mode (Qwen compat)")
+    language: Optional[str] = Field("en", description="Language code (informational)")
+    max_new_tokens: int = Field(4096, ge=256, le=16384, description="Max audio tokens")
+    audio_temperature: Optional[float] = Field(1.5, description="Sampling temperature")
+    audio_top_p: Optional[float] = Field(0.6, description="Top-p sampling")
+    audio_top_k: Optional[int] = Field(50, description="Top-k sampling")
+    audio_repetition_penalty: Optional[float] = Field(1.1, description="Repetition penalty")
 
 
 class HealthResponse(BaseModel):
@@ -263,9 +389,9 @@ async def health_check():
     )
 
 
-@app.get("/voices", response_model=list[VoiceInfo])
-async def list_voices():
-    """List available reference voices."""
+@app.get("/voices")
+async def list_voices(format: Optional[str] = Query(None, description="'flat' for name-only list")):
+    """List available reference voices. Default returns flat list for frontend compat."""
     voices = []
     if VOICES_DIR.exists():
         for voice_dir in sorted(VOICES_DIR.iterdir()):
@@ -274,14 +400,32 @@ async def list_voices():
                          if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")]
                 if files:
                     voices.append(VoiceInfo(name=voice_dir.name, files=sorted(files)))
-    return voices
+    # Default: return flat list of names (frontend expects ["name1", "name2"])
+    if format == "detailed":
+        return voices
+    return JSONResponse(content=[v.name for v in voices])
 
 
 @app.post("/tts")
 async def generate_speech(request: TTSRequest):
-    """Generate speech from text. Returns WAV audio."""
+    """Generate speech from text. If voice_name is provided, auto-routes to cloning."""
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
+
+    # Map GLM compat params
+    audio_temp = request.audio_temperature or request.temperature
+    audio_tp = request.audio_top_p or request.top_p
+
+    # Auto-route to voice cloning if voice_name provided
+    ref_path = None
+    if request.voice_name:
+        voice_dir = VOICES_DIR / request.voice_name
+        if voice_dir.exists():
+            audio_files = [f for f in voice_dir.iterdir()
+                           if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")]
+            if audio_files:
+                ref_path = str(audio_files[0])
+                logger.info(f"[TTS] Auto-cloning with voice '{request.voice_name}': {ref_path}")
 
     logger.info(f"[TTS] Generating: '{request.text[:80]}...'")
     t0 = time.perf_counter()
@@ -291,10 +435,11 @@ async def generate_speech(request: TTSRequest):
             audio, sr = await asyncio.to_thread(
                 _generate_audio,
                 text=request.text,
+                reference_path=ref_path,
                 max_new_tokens=request.max_new_tokens,
                 tokens=request.tokens,
-                audio_temperature=request.audio_temperature,
-                audio_top_p=request.audio_top_p,
+                audio_temperature=audio_temp,
+                audio_top_p=audio_tp,
                 audio_top_k=request.audio_top_k,
             )
     except Exception as e:
@@ -442,6 +587,17 @@ async def upload_voice(
     return {"voice_name": voice_name, "filename": filename, "size_bytes": len(content)}
 
 
+# ── Frontend compatibility shim: POST /voices?voice_name=X ──
+@app.post("/voices")
+async def upload_voice_compat(
+    voice_name: str = Query(..., description="Voice name"),
+    file: UploadFile = File(..., description="Audio file for voice reference"),
+    transcription: Optional[str] = Form(None, description="(GLM compat) Transcription text, ignored"),
+):
+    """Frontend-compatible voice upload (query param style)."""
+    return await upload_voice(voice_name=voice_name, file=file)
+
+
 @app.post("/tts/clone/{voice_name}")
 async def clone_from_saved_voice(
     voice_name: str,
@@ -498,9 +654,158 @@ async def clone_from_saved_voice(
     )
 
 
+# ── Voice Design (MOSS-VoiceGenerator) ──
+
+def _generate_voice_design(text: str, instruction: str,
+                           max_new_tokens: int = 4096, **gen_kwargs) -> tuple[torch.Tensor, int]:
+    """Generate speech from voice description — runs in thread pool."""
+    conversation = [voice_gen_processor.build_user_message(text=text, instruction=instruction)]
+    batch = voice_gen_processor([conversation], mode="generation")
+
+    input_ids = batch["input_ids"].to(voice_gen_device)
+    attention_mask = batch["attention_mask"].to(voice_gen_device)
+
+    generate_kwargs = {"max_new_tokens": max_new_tokens}
+    for k in ("audio_temperature", "audio_top_p", "audio_top_k", "audio_repetition_penalty"):
+        if k in gen_kwargs and gen_kwargs[k] is not None:
+            generate_kwargs[k] = gen_kwargs[k]
+
+    with torch.no_grad():
+        outputs = voice_gen_model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **generate_kwargs,
+        )
+
+    messages = list(voice_gen_processor.decode(outputs))
+    if not messages or not messages[0].audio_codes_list:
+        raise RuntimeError("VoiceGenerator returned no audio")
+
+    audio = messages[0].audio_codes_list[0]
+    return audio, voice_gen_sample_rate
+
+
+@app.post("/tts/design")
+async def design_voice(request: VoiceDesignRequest):
+    """Generate speech using voice description (no reference audio needed)."""
+    if voice_gen_model is None:
+        raise HTTPException(status_code=503, detail="VoiceGenerator not loaded")
+
+    instruction = request.instruction or request.instruct
+    if not instruction:
+        raise HTTPException(status_code=400, detail="instruction or instruct is required")
+
+    logger.info(f"[Design] Text: '{request.text[:80]}...', instruction: '{instruction[:80]}...'")
+    t0 = time.perf_counter()
+
+    try:
+        async with inference_semaphore:
+            audio, sr = await asyncio.to_thread(
+                _generate_voice_design,
+                text=request.text,
+                instruction=instruction,
+                max_new_tokens=request.max_new_tokens,
+                audio_temperature=request.audio_temperature,
+                audio_top_p=request.audio_top_p,
+                audio_top_k=request.audio_top_k,
+                audio_repetition_penalty=request.audio_repetition_penalty,
+            )
+    except Exception as e:
+        logger.error(f"[Design] Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    wav_bytes = _audio_to_wav_bytes(audio, sr)
+    duration = audio.shape[-1] / sr
+    gen_time = time.perf_counter() - t0
+
+    logger.info(f"[Design] Done: {duration:.1f}s audio in {gen_time:.1f}s")
+
+    return Response(
+        content=wav_bytes,
+        media_type="audio/wav",
+        headers={
+            "X-Audio-Duration": f"{duration:.2f}",
+            "X-Generation-Time": f"{gen_time:.2f}",
+            "X-Sample-Rate": str(sr),
+        },
+    )
+
+
+# ── Qwen-compatible alias routes (frontend VoiceStudio) ──
+
+@app.post("/api/v1/qwen/synthesize")
+async def qwen_synthesize_compat(request: VoiceDesignRequest):
+    """Frontend-compatible synthesize endpoint (Qwen API shape).
+    Routes based on mode:
+    - 'custom_voice' + speaker: clone from saved voice
+    - 'voice_design' + instruct: generate with VoiceGenerator
+    """
+    mode = request.mode or ""
+    instruct = request.instruction or request.instruct or ""
+
+    if mode == "custom_voice" and request.speaker:
+        # Route to TTS with voice cloning using saved speaker
+        # Map speaker display name back to directory name
+        voice_name = request.speaker.lower().replace(" ", "_")
+        tts_request = TTSRequest(
+            text=request.text,
+            voice_name=voice_name,
+            language=request.language or "en",
+            max_new_tokens=request.max_new_tokens,
+            audio_temperature=request.audio_temperature,
+            audio_top_p=request.audio_top_p,
+            audio_top_k=request.audio_top_k,
+        )
+        return await generate_speech(tts_request)
+    else:
+        # Route to voice design (VoiceGenerator)
+        return await design_voice(request)
+
+
+@app.post("/api/v1/qwen/clone")
+async def qwen_clone_compat(
+    text: str = Query(..., description="Text to synthesize"),
+    language: str = Query("en", description="Language code"),
+    use_xvector_only: str = Query("false", description="(Qwen compat) Ignored"),
+    ref_audio: UploadFile = File(..., description="Reference audio file"),
+):
+    """Frontend-compatible voice cloning endpoint (Qwen API shape)."""
+    return await clone_voice(text=text, reference=ref_audio)
+
+
+@app.post("/api/v1/qwen/voices/create-prompt")
+async def qwen_create_prompt_compat(
+    voice_id: str = Query(..., description="Voice name/ID"),
+    ref_audio: UploadFile = File(..., description="Reference audio file"),
+):
+    """Frontend-compatible voice creation endpoint (Qwen API shape)."""
+    return await upload_voice(voice_name=voice_id, file=ref_audio)
+
+
+@app.get("/api/v1/qwen/speakers")
+async def qwen_speakers_compat():
+    """Frontend-compatible speakers list (Qwen API shape)."""
+    voices = []
+    if VOICES_DIR.exists():
+        for voice_dir in sorted(VOICES_DIR.iterdir()):
+            if voice_dir.is_dir():
+                audio_files = [f for f in voice_dir.iterdir()
+                               if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")]
+                if audio_files:
+                    voices.append({
+                        "id": voice_dir.name,
+                        "name": voice_dir.name.replace("_", " ").title(),
+                        "description": f"Cloned voice ({len(audio_files)} reference files)",
+                        "native_language": "English",
+                        "gender": "unknown",
+                    })
+    return {"speakers": voices}
+
+
 # ── Entrypoint ──
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+

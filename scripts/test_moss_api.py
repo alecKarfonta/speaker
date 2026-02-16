@@ -46,8 +46,12 @@ def test_voices(base_url: str) -> bool:
         voices = r.json()
         print(f"   Status: {r.status_code}")
         print(f"   Voices found: {len(voices)}")
+        # Voices may be flat list ["name", ...] or detailed [{name, files}, ...]
         for v in voices:
-            print(f"     - {v['name']}: {v['files']}")
+            if isinstance(v, str):
+                print(f"     - {v}")
+            else:
+                print(f"     - {v['name']}: {v.get('files', [])}")
         print("   ✅ Voices endpoint OK")
         return r.status_code == 200
     except Exception as e:
@@ -233,6 +237,75 @@ def test_clone_saved_voice(base_url: str) -> bool:
         return False
 
 
+def test_voice_design(base_url: str) -> bool:
+    """Test POST /tts/design — voice design from instruction"""
+    print("\n🎨 Testing POST /tts/design ...")
+    payload = {
+        "text": "Hello, welcome to our tavern. What can I get you today?",
+        "instruction": "Hearty, jovial tavern owner's voice, loud and welcoming with a friendly tone in American English.",
+        "max_new_tokens": 4096,
+    }
+    try:
+        t0 = time.perf_counter()
+        r = requests.post(f"{base_url}/tts/design", json=payload, timeout=120)
+        elapsed = time.perf_counter() - t0
+
+        print(f"   Status:      {r.status_code}")
+        print(f"   Time:        {elapsed:.1f}s")
+        print(f"   Audio size:  {len(r.content)} bytes")
+        print(f"   Duration:    {r.headers.get('X-Audio-Duration', '?')}s")
+
+        if r.status_code == 200 and len(r.content) > 1000:
+            out_path = os.path.join(OUTPUT_DIR, "design_test.wav")
+            with open(out_path, "wb") as f:
+                f.write(r.content)
+            print(f"   💾 Saved: {out_path}")
+            print("   ✅ Voice design passed")
+            return True
+        elif r.status_code == 503:
+            print("   ⚠️  VoiceGenerator not loaded (skipping)")
+            return True  # Not a failure, just not available
+        else:
+            print(f"   ❌ Unexpected: {r.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"   ❌ Failed: {e}")
+        return False
+
+
+def test_tts_with_voice_name(base_url: str) -> bool:
+    """Test POST /tts with voice_name — auto-route to clone"""
+    print("\n🔄 Testing POST /tts with voice_name ...")
+    payload = {
+        "text": "This should use a cloned voice via the voice_name parameter.",
+        "voice_name": "test_voice",
+        "language": "en",
+        "output_format": "wav",
+    }
+    try:
+        t0 = time.perf_counter()
+        r = requests.post(f"{base_url}/tts", json=payload, timeout=120)
+        elapsed = time.perf_counter() - t0
+
+        print(f"   Status:      {r.status_code}")
+        print(f"   Time:        {elapsed:.1f}s")
+        print(f"   Audio size:  {len(r.content)} bytes")
+
+        if r.status_code == 200 and len(r.content) > 1000:
+            out_path = os.path.join(OUTPUT_DIR, "tts_voice_name_test.wav")
+            with open(out_path, "wb") as f:
+                f.write(r.content)
+            print(f"   💾 Saved: {out_path}")
+            print("   ✅ TTS with voice_name passed")
+            return True
+        else:
+            print(f"   ❌ Unexpected: {r.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"   ❌ Failed: {e}")
+        return False
+
+
 def wait_for_ready(base_url: str, timeout: int = 600) -> bool:
     """Wait for the service to be ready (model loaded)."""
     print(f"⏳ Waiting for MOSS-TTS service at {base_url} ...")
@@ -260,7 +333,7 @@ def main():
     parser.add_argument("--url", default=DEFAULT_URL, help="Base URL of the MOSS-TTS API")
     parser.add_argument("--ref", help="Path to reference audio for clone test")
     parser.add_argument("--skip-wait", action="store_true", help="Skip waiting for service readiness")
-    parser.add_argument("--test", choices=["health", "voices", "tts", "stream", "clone", "all"],
+    parser.add_argument("--test", choices=["health", "voices", "tts", "stream", "clone", "design", "shim", "all"],
                         default="all", help="Which test to run")
     args = parser.parse_args()
 
@@ -294,6 +367,12 @@ def main():
         results["clone_upload"] = test_clone_upload(args.url, args.ref)
         results["voice_upload"] = test_voice_upload(args.url)
         results["clone_saved"] = test_clone_saved_voice(args.url)
+
+    if args.test in ("design", "all"):
+        results["voice_design"] = test_voice_design(args.url)
+
+    if args.test in ("shim", "all"):
+        results["tts_voice_name"] = test_tts_with_voice_name(args.url)
 
     # Summary
     print("\n" + "=" * 60)

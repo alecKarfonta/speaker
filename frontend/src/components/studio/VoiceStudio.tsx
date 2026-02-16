@@ -440,7 +440,7 @@ const VoiceStudio: React.FC = () => {
                         </div>
                         <div>
                             <h1 className="text-2xl font-bold text-text-primary">Voice Studio</h1>
-                            <p className="text-sm text-text-secondary">Create, design, and clone voices with Qwen3-TTS</p>
+                            <p className="text-sm text-text-secondary">Create, design, and clone voices with MOSS-TTS</p>
                         </div>
                     </div>
                 </div>

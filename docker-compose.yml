@@ -87,6 +87,8 @@ services:
       - "8013:8000"
     environment:
       - MOSS_MODEL_ID=OpenMOSS-Team/MOSS-TTS
+      - MOSS_VOICE_GEN_MODEL=OpenMOSS-Team/MOSS-VoiceGenerator
+      - MOSS_ENABLE_VOICE_GEN=true
       - MOSS_QUANTIZE=4bit
       - VOICES_DIR=/app/data/voices
       - HF_HOME=/root/.cache/huggingface
@@ -118,6 +120,12 @@ services:
     build: ./frontend
     ports:
       - "3012:80"
+    environment:
+      # TTS backend to proxy to. Options:
+      #   tts-api:8000    → GLM-TTS (default profile)
+      #   moss-tts:8000   → MOSS-TTS (moss profile)
+      #   qwen-tts:8000   → Qwen3-TTS (qwen profile)
+      - TTS_BACKEND_HOST=moss-tts:8000
     depends_on:
       - tts-api
     networks:

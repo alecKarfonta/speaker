@@ -1,16 +1,17 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Mic, 
-  Radio, 
-  Users, 
-  Settings, 
-  ChevronLeft, 
+import {
+  Mic,
+  Radio,
+  Users,
+  Settings,
+  ChevronLeft,
   ChevronRight,
   Waves,
   Sparkles,
-  Zap
+  Zap,
+  Wand2
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useTTSStore } from '../../stores/ttsStore';
@@ -24,6 +25,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { path: '/', label: 'Text to Speech', icon: Mic, gradient: 'from-violet-500 to-purple-500' },
+  { path: '/studio', label: 'Voice Studio', icon: Wand2, gradient: 'from-cyan-500 to-blue-500' },
   { path: '/stream', label: 'Live Stream', icon: Radio, gradient: 'from-emerald-500 to-teal-500' },
   { path: '/voices', label: 'Voice Library', icon: Users, gradient: 'from-orange-500 to-pink-500' },
 ];
@@ -41,11 +43,11 @@ const Sidebar: React.FC = () => {
     >
       {/* Gradient line on the right */}
       <div className="absolute right-0 top-0 bottom-0 w-px bg-gradient-to-b from-accent/50 via-purple-500/30 to-transparent" />
-      
+
       {/* Logo */}
       <div className="p-5 border-b border-white/5">
         <Link to="/" className="flex items-center gap-4">
-          <motion.div 
+          <motion.div
             whileHover={{ scale: 1.05, rotate: 5 }}
             whileTap={{ scale: 0.95 }}
             className="relative"
@@ -56,7 +58,7 @@ const Sidebar: React.FC = () => {
               <Waves className="w-6 h-6 text-white" />
             </div>
           </motion.div>
-          
+
           <AnimatePresence mode="wait">
             {!sidebarCollapsed && (
               <motion.div
@@ -82,7 +84,7 @@ const Sidebar: React.FC = () => {
           {navItems.map((item, index) => {
             const isActive = location.pathname === item.path;
             const Icon = item.icon;
-            
+
             return (
               <motion.div
                 key={item.path}
@@ -97,13 +99,13 @@ const Sidebar: React.FC = () => {
                     isActive && 'sidebar-nav-item-active'
                   )}
                 >
-                  <motion.div 
+                  <motion.div
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     className={cn(
                       'w-11 h-11 rounded-xl flex items-center justify-center shrink-0 transition-all duration-300',
-                      isActive 
-                        ? `bg-gradient-to-br ${item.gradient} shadow-lg` 
+                      isActive
+                        ? `bg-gradient-to-br ${item.gradient} shadow-lg`
                         : 'bg-white/5 group-hover:bg-white/10'
                     )}
                     style={isActive ? {
@@ -115,7 +117,7 @@ const Sidebar: React.FC = () => {
                       isActive ? 'text-white' : 'text-text-tertiary'
                     )} />
                   </motion.div>
-                  
+
                   <AnimatePresence mode="wait">
                     {!sidebarCollapsed && (
                       <motion.div
@@ -133,7 +135,7 @@ const Sidebar: React.FC = () => {
                       </motion.div>
                     )}
                   </AnimatePresence>
-                  
+
                   {isActive && !sidebarCollapsed && (
                     <motion.div
                       initial={{ scale: 0 }}
@@ -167,7 +169,7 @@ const Sidebar: React.FC = () => {
               </div>
               <div className="flex items-center gap-2">
                 <Zap className="w-4 h-4 text-yellow-400" />
-                <span className="text-xs text-text-tertiary">GLM-TTS Active</span>
+                <span className="text-xs text-text-tertiary">MOSS-TTS Active</span>
               </div>
             </div>
           </motion.div>

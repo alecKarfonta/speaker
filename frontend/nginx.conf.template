@@ -14,9 +14,9 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # Proxy /tts requests to the MOSS-TTS API
+    # Proxy /tts requests to the TTS backend
     location /tts {
-        set $upstream_tts moss-tts:8000;
+        set $upstream_tts ${TTS_BACKEND_HOST};
         proxy_pass http://$upstream_tts;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -42,9 +42,9 @@ server {
         }
     }
 
-    # Proxy /voices requests to the MOSS-TTS API
+    # Proxy /voices requests to the TTS backend
     location /voices {
-        set $upstream_tts moss-tts:8000;
+        set $upstream_tts ${TTS_BACKEND_HOST};
         proxy_pass http://$upstream_tts;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -69,9 +69,17 @@ server {
         }
     }
 
-    # Proxy /api/v1/qwen requests to the MOSS-TTS API (VoiceStudio compat)
+    # Proxy /health requests to the TTS backend
+    location /health {
+        set $upstream_tts ${TTS_BACKEND_HOST};
+        proxy_pass http://$upstream_tts;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    # Proxy /api/v1/qwen requests to the TTS backend (VoiceStudio compat)
     location /api/v1/qwen {
-        set $upstream_tts moss-tts:8000;
+        set $upstream_tts ${TTS_BACKEND_HOST};
         proxy_pass http://$upstream_tts;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
