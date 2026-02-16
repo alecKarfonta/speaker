@@ -32,40 +32,51 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# ===== Python packaging =====
+# ===== Python venv (avoids Debian pip conflicts) =====
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python3 -m pip install --break-system-packages --upgrade pip setuptools wheel packaging ninja
+    pip install --upgrade pip setuptools wheel packaging ninja
 
 # ===== Clone MOSS-TTS and install =====
 RUN git clone --depth 1 --recurse-submodules https://github.com/OpenMOSS/MOSS-TTS.git /app/MOSS-TTS
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     cd /app/MOSS-TTS && \
-    pip install --break-system-packages \
-        --extra-index-url https://download.pytorch.org/whl/cu128 \
-        -e .
+    pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e .
 
 # ===== FlashAttention 2 (optional, improves speed) =====
 # Build for Blackwell (12.0) + Ampere/Ada (8.6)
 RUN --mount=type=cache,target=/root/.cache/pip \
     MAX_JOBS=4 TORCH_CUDA_ARCH_LIST="8.6;12.0" \
-    pip install --break-system-packages \
-        "flash-attn>=2.7.0" --no-build-isolation --no-cache-dir \
+    pip install "flash-attn>=2.7.0" --no-build-isolation --no-cache-dir \
     || echo "⚠️  FlashAttention build failed — falling back to SDPA"
+
+# ===== Web framework dependencies =====
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install fastapi uvicorn python-multipart aiofiles
 
 # ===== Verify core imports =====
 RUN python3 -c "import torch; print('PyTorch:', torch.__version__)" && \
     python3 -c "import transformers; print('Transformers:', transformers.__version__)" && \
-    python3 -c "import torchaudio; print('Torchaudio:', torchaudio.__version__)"
+    python3 -c "import torchaudio; print('Torchaudio:', torchaudio.__version__)" && \
+    python3 -c "import fastapi; print('FastAPI:', fastapi.__version__)"
 
-# ===== Copy test script =====
-COPY scripts/test_moss_tts.py /app/test_moss_tts.py
+# ===== Application code =====
+COPY app/moss_api.py /app/app/moss_api.py
+COPY scripts/test_moss_tts.py /app/scripts/test_moss_tts.py
 
-# ===== Output directory =====
-RUN mkdir -p /app/output
+RUN mkdir -p /app/data/voices /app/output
 
 ENV PYTHONPATH=/app:/app/MOSS-TTS
-ENV OUTPUT_DIR=/app/output
+ENV VOICES_DIR=/app/data/voices
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
 ENTRYPOINT []
-CMD ["python3", "/app/test_moss_tts.py"]
+CMD ["python3", "-m", "app.moss_api"]
+

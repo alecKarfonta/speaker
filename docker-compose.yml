@@ -83,12 +83,15 @@ services:
       dockerfile: Dockerfile.moss
     profiles:
       - moss
+    ports:
+      - "8013:8000"
     environment:
       - MOSS_MODEL_ID=OpenMOSS-Team/MOSS-TTS
-      - OUTPUT_DIR=/app/output
+      - VOICES_DIR=/app/data/voices
       - HF_HOME=/root/.cache/huggingface
     volumes:
       - ./output:/app/output
+      - ./data/voices:/app/data/voices
       - moss_hf_cache:/root/.cache/huggingface
     deploy:
       resources:
@@ -97,6 +100,12 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [ gpu ]
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
     networks:
       - tts-network
 
