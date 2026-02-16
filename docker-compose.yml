@@ -90,6 +90,9 @@ services:
       - MOSS_QUANTIZE=4bit
       - VOICES_DIR=/app/data/voices
       - HF_HOME=/root/.cache/huggingface
+      - NVIDIA_VISIBLE_DEVICES=1,3
+      - CUDA_VISIBLE_DEVICES=0,1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     volumes:
       - ./output:/app/output
       - ./data/voices:/app/data/voices
@@ -99,7 +102,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ["1", "3"]
               capabilities: [ gpu ]
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]

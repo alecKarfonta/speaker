@@ -58,6 +58,7 @@ inference_semaphore = asyncio.Semaphore(1)
 model = None
 processor = None
 sample_rate = None
+model_device = None  # actual device for input tensors (may differ from DEVICE with device_map)
 
 
 def load_model():
@@ -73,11 +74,8 @@ def load_model():
 
     logger.info(f"Loading processor from {MODEL_ID} ...")
     processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
-    processor.audio_tokenizer = processor.audio_tokenizer.to(DEVICE)
-
-    if DEVICE == "cuda":
-        mem_after_tokenizer = torch.cuda.memory_allocated() / 1e9
-        logger.info(f"Audio tokenizer loaded: {mem_after_tokenizer:.2f} GB used")
+    # NOTE: audio_tokenizer stays on CPU here — moved to GPU AFTER model loads
+    # to avoid OOM during quantized model loading (peak memory is higher than settled)
 
     # Build model kwargs
     model_kwargs = {
@@ -95,8 +93,9 @@ def load_model():
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
             )
-            model_kwargs["device_map"] = "auto"
-            logger.info("Using 4-bit quantization (NF4) with device_map=auto")
+            model_kwargs["device_map"] = {"": 0}  # Force all layers on GPU 0
+            model_kwargs["low_cpu_mem_usage"] = True
+            logger.info("Using 4-bit quantization (NF4) on single GPU")
         except ImportError:
             logger.warning("bitsandbytes not available, falling back to no quantization")
             model_kwargs["torch_dtype"] = DTYPE
@@ -122,13 +121,27 @@ def load_model():
 
     model.eval()
 
+    # Detect the actual device for input tensors
+    global model_device
+    if hasattr(model, 'hf_device_map'):
+        first_device = next(iter(model.hf_device_map.values()))
+        model_device = torch.device(f"cuda:{first_device}" if isinstance(first_device, int) else first_device)
+    else:
+        model_device = next(model.parameters()).device
+    logger.info(f"Model input device: {model_device}")
+
+    # Now move audio tokenizer to GPU (deferred to avoid OOM during model loading)
+    processor.audio_tokenizer = processor.audio_tokenizer.to(model_device)
+    logger.info(f"Audio tokenizer moved to {model_device}")
+
     sample_rate = processor.model_config.sampling_rate
     logger.info(f"Model loaded. Sample rate: {sample_rate} Hz")
 
     if DEVICE == "cuda":
-        mem_gb = torch.cuda.max_memory_allocated() / 1e9
-        total_gb = torch.cuda.get_device_properties(0).total_mem / 1e9
-        logger.info(f"GPU memory: {mem_gb:.2f} / {total_gb:.2f} GB")
+        for i in range(torch.cuda.device_count()):
+            mem_gb = torch.cuda.memory_allocated(i) / 1e9
+            total_gb = torch.cuda.get_device_properties(i).total_memory / 1e9
+            logger.info(f"GPU {i}: {mem_gb:.2f} / {total_gb:.2f} GB")
 
 
 # ── FastAPI app ──
@@ -193,8 +206,8 @@ def _generate_audio(text: str, reference_path: Optional[str] = None,
     conversation = [processor.build_user_message(text=text, **kwargs)]
     batch = processor([conversation], mode="generation")
 
-    input_ids = batch["input_ids"].to(DEVICE)
-    attention_mask = batch["attention_mask"].to(DEVICE)
+    input_ids = batch["input_ids"].to(model_device)
+    attention_mask = batch["attention_mask"].to(model_device)
 
     generate_kwargs = {"max_new_tokens": max_new_tokens}
     # Add optional generation hyperparameters if provided
@@ -219,10 +232,17 @@ def _generate_audio(text: str, reference_path: Optional[str] = None,
 
 def _audio_to_wav_bytes(audio: torch.Tensor, sr: int) -> bytes:
     """Convert audio tensor to WAV bytes."""
-    buf = io.BytesIO()
-    torchaudio.save(buf, audio.unsqueeze(0).cpu(), sr, format="wav")
-    buf.seek(0)
-    return buf.read()
+    import tempfile
+    # torchaudio's torchcodec backend doesn't support BytesIO,
+    # so we write to a temp file instead
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        torchaudio.save(tmp_path, audio.unsqueeze(0).cpu(), sr, format="wav")
+        with open(tmp_path, "rb") as f:
+            return f.read()
+    finally:
+        os.unlink(tmp_path)
 
 
 # ── Endpoints ──

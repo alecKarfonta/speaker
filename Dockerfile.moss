@@ -55,7 +55,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ===== Web framework + quantization dependencies =====
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install fastapi uvicorn python-multipart aiofiles bitsandbytes
+    pip install fastapi uvicorn python-multipart aiofiles bitsandbytes accelerate
 
 # ===== Verify core imports =====
 RUN python3 -c "import torch; print('PyTorch:', torch.__version__)" && \
