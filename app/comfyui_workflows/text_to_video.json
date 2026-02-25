@@ -14,7 +14,7 @@
             "title": "Load Gemma CLIP for LTX-2"
         },
         "inputs": {
-            "gemma_path": "ltx_gemma_3_12B_it/model.safetensors",
+            "gemma_path": "gemma-3-12b-it/model-00001-of-00005.safetensors",
             "ltxv_path": "LTX-2/ltx-2-19b-distilled-fp8.safetensors",
             "max_length": 256
         }

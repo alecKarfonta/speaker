@@ -65,6 +65,7 @@ services:
       - COMFYUI_VISUAL_MODE=image
       - COMFYUI_IMAGE_WIDTH=1920
       - COMFYUI_IMAGE_HEIGHT=1080
+      - COMFYUI_VIDEO_FPS=10
     volumes:
       # Mount GLM-TTS model checkpoints (download separately: ~8GB)
       - ./GLM-TTS/ckpt:/app/GLM-TTS/ckpt:ro

@@ -801,6 +801,7 @@ async def generate_segment_visual(project_id: str, segment_id: str, mode: str = 
             output_dir=visual_dir,
             prefix=f"seg_{segment.id}",
             mode=mode or COMFYUI_VISUAL_MODE,
+            duration=segment.duration,
         )
         segment.visual_path = path
         segment.visual_type = vtype
@@ -875,6 +876,7 @@ async def generate_all_visuals(project_id: str, mode: str = None):
                 output_dir=visual_dir,
                 prefix=f"seg_{seg.id}",
                 mode=visual_mode,
+                duration=seg.duration,
             )
             seg.visual_path = path
             seg.visual_type = vtype

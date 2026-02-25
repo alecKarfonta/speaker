@@ -19,7 +19,9 @@ COMFYUI_API_URL = os.environ.get("COMFYUI_API_URL", "http://192.168.1.83:8188")
 COMFYUI_VISUAL_MODE = os.environ.get("COMFYUI_VISUAL_MODE", "image")  # "image" or "video"
 COMFYUI_IMAGE_WIDTH = int(os.environ.get("COMFYUI_IMAGE_WIDTH", "1024"))
 COMFYUI_IMAGE_HEIGHT = int(os.environ.get("COMFYUI_IMAGE_HEIGHT", "1024"))
-COMFYUI_VIDEO_FRAMES = int(os.environ.get("COMFYUI_VIDEO_FRAMES", "25"))
+COMFYUI_VIDEO_FRAMES = int(os.environ.get("COMFYUI_VIDEO_FRAMES", "65"))
+COMFYUI_VIDEO_FPS = int(os.environ.get("COMFYUI_VIDEO_FPS", "10"))
+MAX_VIDEO_FRAMES = 449  # Safe VRAM limit at 768x512 on 32GB GPU
 
 WORKFLOWS_DIR = os.path.join(os.path.dirname(__file__), "comfyui_workflows")
 
@@ -36,7 +38,8 @@ def _inject_params(workflow: Dict[str, Any], prompt: str,
                    batch_size: int = 1,
                    output_width: int = None,
                    output_height: int = None,
-                   video_length: int = None) -> Dict[str, Any]:
+                   video_length: int = None,
+                   fps: int = None) -> Dict[str, Any]:
     """
     Inject prompt, dimensions, seed, and batch_size into a workflow.
     Finds nodes by class_type and updates their inputs.
@@ -82,6 +85,13 @@ def _inject_params(workflow: Dict[str, Any], prompt: str,
                 inputs["width"] = output_width
             if output_height:
                 inputs["height"] = output_height
+
+        # Set FPS on LTXVConditioning and SaveAnimatedWEBP
+        if fps is not None:
+            if ct == "LTXVConditioning" and "frame_rate" in inputs:
+                inputs["frame_rate"] = float(fps)
+            if ct == "SaveAnimatedWEBP" and "fps" in inputs:
+                inputs["fps"] = float(fps)
 
     return workflow
 
@@ -192,16 +202,34 @@ async def generate_image(prompt: str, output_dir: str, prefix: str = "visual",
 
 async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
                          width: int = None, height: int = None,
-                         frames: int = None) -> str:
-    """Generate a video using ComfyUI LTX-2 19B distilled workflow."""
+                         frames: int = None, fps: int = None,
+                         duration: float = None) -> str:
+    """Generate a video using ComfyUI LTX-2 19B distilled workflow.
+    If duration (seconds) is provided, frames are auto-calculated from duration * fps.
+    Frames are capped at MAX_VIDEO_FRAMES to prevent OOM.
+    """
     w = width or min(COMFYUI_IMAGE_WIDTH, 768)
     h = height or min(COMFYUI_IMAGE_HEIGHT, 512)
+    video_fps = fps or COMFYUI_VIDEO_FPS
     seed = random.randint(0, 2**32 - 1)
-    num_frames = frames or COMFYUI_VIDEO_FRAMES
+
+    # Calculate frames: from explicit count, or duration * fps, or default
+    if frames:
+        num_frames = frames
+    elif duration:
+        # Round up to nearest 8 (LTX-2 latent requirement) + 1
+        raw = int(duration * video_fps)
+        num_frames = ((raw + 7) // 8) * 8 + 1
+    else:
+        num_frames = COMFYUI_VIDEO_FRAMES
+
+    # Cap to prevent OOM
+    num_frames = min(num_frames, MAX_VIDEO_FRAMES)
+    logger.info(f"Video gen: {num_frames} frames @ {video_fps}fps = {num_frames/video_fps:.1f}s")
 
     workflow = _load_workflow("text_to_video.json")
     workflow = _inject_params(workflow, prompt, w, h, seed,
-                              video_length=num_frames)
+                              video_length=num_frames, fps=video_fps)
 
     prompt_id = await queue_prompt(workflow)
     result = await poll_completion(prompt_id, timeout=600)
@@ -212,14 +240,15 @@ async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
 
 
 async def generate_visual(prompt: str, output_dir: str, prefix: str = "visual",
-                          mode: str = None) -> Tuple[str, str]:
+                          mode: str = None, duration: float = None) -> Tuple[str, str]:
     """
     Generate a visual (image or video) based on mode.
+    If mode is 'video' and duration is provided, video length matches audio duration.
     Returns (path, type) where type is 'image' or 'video'.
     """
     visual_mode = mode or COMFYUI_VISUAL_MODE
     if visual_mode == "video":
-        path = await generate_video(prompt, output_dir, prefix)
+        path = await generate_video(prompt, output_dir, prefix, duration=duration)
         return path, "video"
     else:
         path = await generate_image(prompt, output_dir, prefix)
