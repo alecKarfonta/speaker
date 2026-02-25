@@ -27,6 +27,8 @@ from app.models import (
     HealthResponse, APIInfo, MetricsResponse, ErrorResponse, ErrorDetail
 )
 import app.version as version
+from app.audiobook_router import router as audiobook_router, set_tts_service as set_audiobook_tts
+from app.audiobook_ws import router as audiobook_ws_router, set_tts_service as set_audiobook_ws_tts
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -55,6 +57,10 @@ tts_service: TTSBackendBase = TTSBackendFactory.create_backend(
     logger=logger,
     config=backend_config
 )
+
+# Inject TTS service into audiobook router
+set_audiobook_tts(tts_service)
+set_audiobook_ws_tts(tts_service)
 
 # Rate limiting storage (in production, use Redis)
 rate_limit_storage: Dict[str, List[float]] = {}
@@ -118,6 +124,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register audiobook routers
+app.include_router(audiobook_router)
+app.include_router(audiobook_ws_router)
 
 # Custom exception handlers
 @app.exception_handler(HTTPException)

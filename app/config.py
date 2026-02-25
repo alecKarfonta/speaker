@@ -91,6 +91,24 @@ class Settings(BaseModel):
         description="API key for STT service"
     )
     
+    # AI Character Analysis (OpenAI-compatible LLM endpoint)
+    instruct_llm_api_url: str = Field(
+        default="http://192.168.1.196:8600/v1/chat/completions",
+        description="OpenAI-compatible chat completions endpoint for AI analysis"
+    )
+    instruct_llm_model: str = Field(
+        default="Huihui-Qwen3-Next-80B-A3B-Thinking-abliterated",
+        description="Model name to use for character analysis"
+    )
+    instruct_llm_api_key: str = Field(
+        default="placeholder-api-key",
+        description="API key for LLM service"
+    )
+    instruct_llm_max_tokens: int = Field(
+        default=4000,
+        description="Max tokens for LLM response"
+    )
+    
     # File Storage
     voice_data_dir: str = Field(default="data/voices")
     max_file_size_mb: int = Field(default=50)

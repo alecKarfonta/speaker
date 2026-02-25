@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import TTSWorkspace from './components/tts/TTSWorkspace';
 import VoiceLibrary from './components/voices/VoiceLibrary';
+import AudiobookGenerator from './components/audiobook/AudiobookGenerator';
 
 // Placeholder components for other routes
 const LiveStream: React.FC = () => (
@@ -22,12 +23,13 @@ function App() {
     <Router>
       <Routes>
         <Route path="/" element={<TTSWorkspace />} />
+        <Route path="/audiobook" element={<AudiobookGenerator />} />
         <Route path="/stream" element={<LiveStream />} />
         <Route path="/voices" element={<VoiceLibrary />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Routes>
-      
-      <Toaster 
+
+      <Toaster
         position="bottom-right"
         toastOptions={{
           style: {

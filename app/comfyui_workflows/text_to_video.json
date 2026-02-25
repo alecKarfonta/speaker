@@ -1,0 +1,185 @@
+{
+    "1": {
+        "class_type": "CheckpointLoaderSimple",
+        "_meta": {
+            "title": "Load LTX-2 19B Distilled (model+VAE)"
+        },
+        "inputs": {
+            "ckpt_name": "LTX-2/ltx-2-19b-distilled-fp8.safetensors"
+        }
+    },
+    "2": {
+        "class_type": "LTXVGemmaCLIPModelLoader",
+        "_meta": {
+            "title": "Load Gemma CLIP for LTX-2"
+        },
+        "inputs": {
+            "gemma_path": "ltx_gemma_3_12B_it/model.safetensors",
+            "ltxv_path": "LTX-2/ltx-2-19b-distilled-fp8.safetensors",
+            "max_length": 256
+        }
+    },
+    "3": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Positive Prompt"
+        },
+        "inputs": {
+            "text": "PLACEHOLDER_PROMPT",
+            "clip": [
+                "2",
+                0
+            ]
+        }
+    },
+    "4": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Negative Prompt"
+        },
+        "inputs": {
+            "text": "blurry, low quality, text, watermark, distorted, static, frozen",
+            "clip": [
+                "2",
+                0
+            ]
+        }
+    },
+    "5": {
+        "class_type": "EmptyLTXVLatentVideo",
+        "_meta": {
+            "title": "Empty Video Latent"
+        },
+        "inputs": {
+            "width": 768,
+            "height": 512,
+            "length": 65,
+            "batch_size": 1
+        }
+    },
+    "6": {
+        "class_type": "LTXVConditioning",
+        "_meta": {
+            "title": "LTX-V Conditioning"
+        },
+        "inputs": {
+            "positive": [
+                "3",
+                0
+            ],
+            "negative": [
+                "4",
+                0
+            ],
+            "frame_rate": 25.0
+        }
+    },
+    "7": {
+        "class_type": "LTXVScheduler",
+        "_meta": {
+            "title": "LTX-V Scheduler"
+        },
+        "inputs": {
+            "steps": 8,
+            "max_shift": 2.05,
+            "base_shift": 0.95,
+            "stretch": true,
+            "terminal": 0.1
+        }
+    },
+    "8": {
+        "class_type": "KSamplerSelect",
+        "_meta": {
+            "title": "Sampler Select"
+        },
+        "inputs": {
+            "sampler_name": "euler"
+        }
+    },
+    "9": {
+        "class_type": "RandomNoise",
+        "_meta": {
+            "title": "Random Noise"
+        },
+        "inputs": {
+            "noise_seed": 42
+        }
+    },
+    "10": {
+        "class_type": "BasicGuider",
+        "_meta": {
+            "title": "Guider"
+        },
+        "inputs": {
+            "model": [
+                "1",
+                0
+            ],
+            "conditioning": [
+                "6",
+                0
+            ]
+        }
+    },
+    "11": {
+        "class_type": "SamplerCustomAdvanced",
+        "_meta": {
+            "title": "Advanced Sampler"
+        },
+        "inputs": {
+            "noise": [
+                "9",
+                0
+            ],
+            "guider": [
+                "10",
+                0
+            ],
+            "sampler": [
+                "8",
+                0
+            ],
+            "sigmas": [
+                "7",
+                0
+            ],
+            "latent_image": [
+                "5",
+                0
+            ]
+        }
+    },
+    "12": {
+        "class_type": "VAEDecode",
+        "_meta": {
+            "title": "VAE Decode"
+        },
+        "inputs": {
+            "samples": [
+                "11",
+                0
+            ],
+            "vae": [
+                "1",
+                2
+            ]
+        }
+    },
+    "13": {
+        "class_type": "SaveAnimatedWEBP",
+        "_meta": {
+            "title": "Save Video"
+        },
+        "inputs": {
+            "images": [
+                "12",
+                0
+            ],
+            "filename_prefix": "audiobook_video",
+            "fps": 25.0,
+            "lossless": false,
+            "quality": 85,
+            "method": "default"
+        }
+    }
+}
