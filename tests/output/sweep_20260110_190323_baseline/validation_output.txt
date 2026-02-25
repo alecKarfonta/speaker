@@ -1,0 +1,7 @@
+
+
+STDERR:
+Traceback (most recent call last):
+  File "/home/alec/git/speaker/scripts/run_tts_validation.py", line 33, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'

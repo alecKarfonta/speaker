@@ -10,7 +10,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 from pydantic import BaseModel, Field, constr
-from fastapi import UploadFile, File, HTTPException, Depends, Request
+from fastapi import UploadFile, File, Form, HTTPException, Depends, Request
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse, FileResponse
@@ -24,7 +24,8 @@ from app.log_util import ColoredFormatter
 from app.monitoring import metrics_collector, health_monitor, audit_logger, get_metrics, get_health
 from app.models import (
     TTSRequest, VoiceUploadResponse, VoiceDeleteResponse, LanguageListResponse,
-    HealthResponse, APIInfo, MetricsResponse, ErrorResponse, ErrorDetail
+    HealthResponse, APIInfo, MetricsResponse, ErrorResponse, ErrorDetail,
+    OpenAISpeechRequest, OpenAIAudioFormat
 )
 import app.version as version
 from app.audiobook_router import router as audiobook_router, set_tts_service as set_audiobook_tts
@@ -514,13 +515,16 @@ async def combine_voice_files(
 async def add_voice(
     voice_name: str, 
     request: Request,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    transcription: Optional[str] = Form(None)
 ):
     """
     Add a new voice by uploading an audio file.
     
     - **voice_name**: Name for the voice (alphanumeric and underscores only)
     - **file**: Audio file (.wav or .mp3) containing voice sample
+    - **transcription**: Optional transcription text of the audio. If provided, this text
+      will be used as the voice prompt instead of running STT on the audio.
     
     The voice will be available for TTS generation after upload.
     """
@@ -568,6 +572,13 @@ async def add_voice(
             
         with open(local_save_path, "wb") as f:
             f.write(content)
+        
+        # Save transcription text file if provided
+        if transcription and transcription.strip():
+            transcription_path = os.path.splitext(local_save_path)[0] + ".txt"
+            with open(transcription_path, "w", encoding="utf-8") as f:
+                f.write(transcription.strip())
+            logger.info(f"Saved transcription to {transcription_path}")
             
         # Reload voices to include the new one
         tts_service.load_voices()
@@ -716,26 +727,390 @@ async def generate_speech(
         )
         
         filename = "speech.wav" if output_format == "wav" else "speech.pcm"
+        
+        # Build response headers with profiling data
+        headers = {
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Length": str(len(audio_bytes)),
+            "X-Sample-Rate": str(sample_rate),
+            "X-Audio-Duration": str(len(audio)/sample_rate),
+            "X-Audio-Format": output_format,
+            "X-Model": tts_service.model_name,
+            "X-Voice": request.voice_name,
+            "X-Language": request.language,
+            "X-Text-Length": str(len(request.text))
+        }
+        
+        # Add profiling headers if available (GLM-TTS backend)
+        if hasattr(tts_service, 'get_last_timings'):
+            timings = tts_service.get_last_timings()
+            if timings:
+                headers["X-Timing-Total-Ms"] = str(round(timings.get('total', 0) * 1000, 1))
+                headers["X-Timing-LLM-Ms"] = str(round(timings.get('llm_inference', 0) * 1000, 1))
+                headers["X-Timing-Flow-Ms"] = str(round(timings.get('flow_inference', 0) * 1000, 1))
+                headers["X-Timing-Normalize-Ms"] = str(round(timings.get('text_normalize', 0) * 1000, 1))
+                headers["X-Timing-Prompt-Ms"] = str(round(timings.get('prompt_extraction', 0) * 1000, 1))
+                headers["X-Timing-Validation-Ms"] = str(round(timings.get('validation', 0) * 1000, 1))
+                headers["X-Tokens-Generated"] = str(timings.get('tokens_generated', 0))
+                headers["X-RTF"] = str(round(timings.get('rtf', 0), 2))
+        
         return Response(
             content=audio_bytes,
             media_type=media_type,
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": str(len(audio_bytes)),
-                "X-Sample-Rate": str(sample_rate),
-                "X-Audio-Duration": str(len(audio)/sample_rate),
-                "X-Audio-Format": output_format,
-                "X-Model": tts_service.model_name,
-                "X-Voice": request.voice_name,
-                "X-Language": request.language,
-                "X-Text-Length": str(len(request.text))
-            }
+            headers=headers
         )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error generating speech: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+from fastapi.responses import StreamingResponse
+import struct
+import json
+
+@app.post("/tts/stream")
+async def generate_speech_stream(
+    request: TTSRequest,
+    http_request: Request
+):
+    """
+    Stream TTS audio chunks as they're generated.
+    
+    This endpoint streams audio chunks in real-time, reducing time-to-first-audio
+    by up to 1500ms compared to the regular /tts endpoint.
+    
+    - **text**: Text to convert to speech (1-2000 characters)
+    - **voice_name**: Name of the voice to use
+    - **language**: Two-letter language code
+    
+    Returns a chunked binary stream with framing:
+    - Each chunk: 4-byte audio_len + 4-byte metadata_len + audio_bytes + metadata_json
+    
+    Response headers include:
+    - X-Streaming: true
+    - X-Sample-Rate: 24000
+    """
+    check_rate_limit(http_request)
+    
+    # Validate voice exists
+    available_voices = tts_service.get_voices()
+    if request.voice_name not in available_voices:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voice '{request.voice_name}' not found. Available voices: {', '.join(available_voices)}"
+        )
+    
+    # Check if backend supports streaming
+    if not hasattr(tts_service, 'generate_speech_streaming'):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="This TTS backend does not support streaming. Use /tts instead."
+        )
+    
+    # Prepare text with emotion tags if provided
+    text = request.text
+    if request.emotion:
+        emotion_tag = request.emotion if request.emotion.startswith('(') else f"({request.emotion})"
+        text = f"{emotion_tag} {text}"
+    
+    logger.info(f"[STREAMING] Starting stream for: '{text[:50]}...' voice={request.voice_name}")
+    
+    # Build kwargs for optional GLM-TTS parameters
+    glm_kwargs = {}
+    if request.sampling is not None:
+        glm_kwargs["sampling"] = request.sampling
+    if request.min_token_text_ratio is not None:
+        glm_kwargs["min_token_text_ratio"] = request.min_token_text_ratio
+    if request.max_token_text_ratio is not None:
+        glm_kwargs["max_token_text_ratio"] = request.max_token_text_ratio
+    if request.beam_size is not None:
+        glm_kwargs["beam_size"] = request.beam_size
+    if request.temperature is not None:
+        glm_kwargs["temperature"] = request.temperature
+    if request.top_p is not None:
+        glm_kwargs["top_p"] = request.top_p
+    if request.repetition_penalty is not None:
+        glm_kwargs["repetition_penalty"] = request.repetition_penalty
+    if request.sample_method is not None:
+        glm_kwargs["sample_method"] = request.sample_method
+    
+    def audio_generator():
+        """Generator that yields framed audio chunks"""
+        try:
+            for chunk_audio, sample_rate, metadata in tts_service.generate_speech_streaming(
+                text=text,
+                voice_name=request.voice_name,
+                language=request.language.value if hasattr(request.language, 'value') else request.language,
+                **glm_kwargs
+            ):
+                # Encode audio as float32 bytes (or convert to WAV if requested)
+                if request.output_format and request.output_format.value == "wav":
+                    wav_buffer = io.BytesIO()
+                    sf.write(wav_buffer, chunk_audio, sample_rate, format='WAV', subtype='PCM_16')
+                    wav_buffer.seek(0)
+                    audio_bytes = wav_buffer.read()
+                else:
+                    audio_bytes = chunk_audio.astype(np.float32).tobytes()
+                
+                # Encode metadata as JSON
+                metadata_bytes = json.dumps(metadata).encode('utf-8')
+                
+                # Frame: 4-byte audio_len (little-endian) + 4-byte metadata_len + audio + metadata
+                header = struct.pack('<II', len(audio_bytes), len(metadata_bytes))
+                
+                yield header + audio_bytes + metadata_bytes
+                
+                logger.debug(
+                    f"[STREAMING] Yielded chunk {metadata.get('chunk_index', 0)+1}/"
+                    f"{metadata.get('total_chunks', 1)}: {len(audio_bytes)} bytes"
+                )
+                
+        except Exception as e:
+            logger.error(f"[STREAMING] Error during generation: {str(e)}", exc_info=True)
+            # Yield error as final chunk
+            error_metadata = {
+                'error': str(e),
+                'is_final': True
+            }
+            error_bytes = json.dumps(error_metadata).encode('utf-8')
+            header = struct.pack('<II', 0, len(error_bytes))
+            yield header + error_bytes
+    
+    # Log for audit
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    user_agent = http_request.headers.get("user-agent")
+    audit_logger.log_tts_generation(
+        request.voice_name,
+        len(request.text),
+        request.language.value if hasattr(request.language, 'value') else request.language,
+        client_ip,
+        user_agent
+    )
+    
+    return StreamingResponse(
+        audio_generator(),
+        media_type="application/octet-stream",
+        headers={
+            "X-Streaming": "true",
+            "X-Sample-Rate": str(tts_service.sample_rate),
+            "X-Model": tts_service.model_name,
+            "X-Voice": request.voice_name,
+            "Cache-Control": "no-cache",
+            "Transfer-Encoding": "chunked"
+        }
+    )
+
+
+# OpenAI-compatible voice mapping
+# Maps OpenAI standard voices to Speaker voices (fallback to first available)
+OPENAI_VOICE_MAPPING = {
+    "alloy": None,    # Will map to first available voice
+    "echo": None,
+    "fable": None,
+    "onyx": None,
+    "nova": None,
+    "shimmer": None,
+    "ash": None,
+    "ballad": None,
+    "coral": None,
+    "sage": None,
+}
+
+def convert_audio_format(audio_data: np.ndarray, sample_rate: int, target_format: str) -> tuple[bytes, str]:
+    """
+    Convert audio to the specified format.
+    
+    Returns (audio_bytes, content_type)
+    """
+    import subprocess
+    import tempfile
+    
+    # Format to content-type mapping
+    content_types = {
+        "mp3": "audio/mpeg",
+        "opus": "audio/opus",
+        "aac": "audio/aac",
+        "flac": "audio/flac",
+        "wav": "audio/wav",
+        "pcm": "audio/pcm",
+    }
+    
+    content_type = content_types.get(target_format, "audio/mpeg")
+    
+    # Native formats - no ffmpeg needed
+    if target_format == "wav":
+        wav_buffer = io.BytesIO()
+        sf.write(wav_buffer, audio_data, sample_rate, format='WAV', subtype='PCM_16')
+        wav_buffer.seek(0)
+        return wav_buffer.read(), content_type
+    
+    if target_format == "flac":
+        flac_buffer = io.BytesIO()
+        sf.write(flac_buffer, audio_data, sample_rate, format='FLAC')
+        flac_buffer.seek(0)
+        return flac_buffer.read(), content_type
+    
+    if target_format == "pcm":
+        # Return raw 16-bit PCM
+        audio_int16 = (audio_data * 32767).astype(np.int16)
+        return audio_int16.tobytes(), content_type
+    
+    # For mp3, opus, aac - use ffmpeg
+    try:
+        # Write WAV to temp file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as wav_file:
+            sf.write(wav_file.name, audio_data, sample_rate, format='WAV', subtype='PCM_16')
+            wav_path = wav_file.name
+        
+        # Output file
+        output_path = wav_path.replace('.wav', f'.{target_format}')
+        
+        # Build ffmpeg command based on format
+        if target_format == "mp3":
+            cmd = ['ffmpeg', '-y', '-i', wav_path, '-codec:a', 'libmp3lame', '-b:a', '192k', output_path]
+        elif target_format == "opus":
+            cmd = ['ffmpeg', '-y', '-i', wav_path, '-codec:a', 'libopus', '-b:a', '128k', output_path]
+        elif target_format == "aac":
+            cmd = ['ffmpeg', '-y', '-i', wav_path, '-codec:a', 'aac', '-b:a', '192k', output_path]
+        else:
+            # Fallback to mp3
+            cmd = ['ffmpeg', '-y', '-i', wav_path, '-codec:a', 'libmp3lame', '-b:a', '192k', output_path]
+        
+        # Run ffmpeg
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode != 0:
+            logger.error(f"ffmpeg error: {result.stderr}")
+            # Fallback to WAV on error
+            wav_buffer = io.BytesIO()
+            sf.write(wav_buffer, audio_data, sample_rate, format='WAV', subtype='PCM_16')
+            wav_buffer.seek(0)
+            return wav_buffer.read(), "audio/wav"
+        
+        # Read output
+        with open(output_path, 'rb') as f:
+            audio_bytes = f.read()
+        
+        # Cleanup
+        os.unlink(wav_path)
+        os.unlink(output_path)
+        
+        return audio_bytes, content_type
+        
+    except Exception as e:
+        logger.error(f"Audio conversion error: {e}")
+        # Fallback to WAV
+        wav_buffer = io.BytesIO()
+        sf.write(wav_buffer, audio_data, sample_rate, format='WAV', subtype='PCM_16')
+        wav_buffer.seek(0)
+        return wav_buffer.read(), "audio/wav"
+
+
+@app.post("/v1/audio/speech", response_class=Response)
+async def openai_create_speech(
+    request: OpenAISpeechRequest,
+    http_request: Request
+):
+    """
+    OpenAI-compatible Text-to-Speech endpoint.
+    
+    Generates audio from the input text using the specified voice.
+    This endpoint is compatible with the OpenAI /v1/audio/speech API.
+    
+    - **input**: The text to generate audio for (max 4096 characters)
+    - **model**: TTS model (tts-1, tts-1-hd accepted for compatibility)
+    - **voice**: Voice name - OpenAI voices (alloy, echo, etc.) or Speaker voice names
+    - **response_format**: mp3, opus, aac, flac, wav, or pcm
+    - **speed**: Speed of audio (0.25 to 4.0)
+    
+    Returns binary audio data in the requested format.
+    """
+    check_rate_limit(http_request)
+    
+    try:
+        # Resolve voice name
+        available_voices = tts_service.get_voices()
+        
+        if request.voice in OPENAI_VOICE_MAPPING:
+            # OpenAI voice name - map to first available Speaker voice
+            if len(available_voices) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No voices available"
+                )
+            voice_name = available_voices[0]
+            logger.debug(f"Mapped OpenAI voice '{request.voice}' to Speaker voice '{voice_name}'")
+        elif request.voice in available_voices:
+            # Direct Speaker voice name
+            voice_name = request.voice
+        else:
+            # Unknown voice - try to use it anyway, let backend handle error
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Voice '{request.voice}' not found. Available: {', '.join(available_voices[:10])}"
+            )
+        
+        logger.info(f"[OpenAI API] Generating speech: input='{request.input[:50]}...', voice={voice_name}, format={request.response_format.value}")
+        
+        # Generate audio using the TTS backend
+        audio, sample_rate = tts_service.generate_speech(
+            text=request.input,
+            voice_name=voice_name,
+            language="en"  # Default to English for OpenAI compatibility
+        )
+        
+        if audio is None or len(audio) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate audio"
+            )
+        
+        # Convert to requested format
+        audio_bytes, content_type = convert_audio_format(
+            audio, sample_rate, request.response_format.value
+        )
+        
+        # Log for audit
+        client_ip = http_request.client.host if http_request.client else "unknown"
+        user_agent = http_request.headers.get("user-agent")
+        audit_logger.log_tts_generation(
+            voice_name,
+            len(request.input),
+            "en",
+            client_ip,
+            user_agent
+        )
+        
+        # Record metrics
+        metrics_collector.record_request(
+            endpoint="/v1/audio/speech",
+            method="POST",
+            status_code=200,
+            response_time=0,
+            voice_name=voice_name,
+            language="en",
+            text_length=len(request.input),
+            text=request.input
+        )
+        
+        return Response(
+            content=audio_bytes,
+            media_type=content_type,
+            headers={
+                "Content-Length": str(len(audio_bytes)),
+                "X-Request-Id": str(time.time_ns()),
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OpenAI TTS error: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal server error: {str(e)}"

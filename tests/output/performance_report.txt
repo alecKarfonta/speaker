@@ -1,0 +1,11 @@
+TTS Performance Report
+==================================================
+
+Short      |   6 chars | Latency: 0.37s | Audio: 0.86s | Speed: 2.30x
+Medium     |  45 chars | Latency: 0.64s | Audio: 2.25s | Speed: 3.50x
+Long       | 141 chars | Latency: 1.66s | Audio: 8.66s | Speed: 5.23x
+
+--------------------------------------------------
+Total Audio:    11.77s
+Total Compute:  2.67s
+Overall Speed:  4.40x real-time

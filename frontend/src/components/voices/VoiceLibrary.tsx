@@ -73,7 +73,7 @@ const VoiceLibrary: React.FC = () => {
   const [combineMode, setCombineMode] = useState(false);
   const [selectedForCombine, setSelectedForCombine] = useState<Set<string>>(new Set());
   const [expandedVoice, setExpandedVoice] = useState<string | null>(null);
-  
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -84,7 +84,7 @@ const VoiceLibrary: React.FC = () => {
       const response = await fetch('/voices');
       const data = await response.json();
       const voiceList = Array.isArray(data) ? data : data.voices || [];
-      
+
       // Fetch detailed info for each voice
       const voicesData: Record<string, Voice> = {};
       await Promise.all(
@@ -126,7 +126,7 @@ const VoiceLibrary: React.FC = () => {
           }
         })
       );
-      
+
       setVoices(voicesData);
     } catch (error) {
       toast.error('Failed to load voices');
@@ -144,7 +144,7 @@ const VoiceLibrary: React.FC = () => {
   useEffect(() => {
     if (!audioRef.current) {
       audioRef.current = new Audio();
-      
+
       audioRef.current.addEventListener('timeupdate', () => {
         if (audioPlayer && audioRef.current) {
           setAudioPlayer(prev => prev ? {
@@ -153,11 +153,11 @@ const VoiceLibrary: React.FC = () => {
           } : null);
         }
       });
-      
+
       audioRef.current.addEventListener('ended', () => {
         setAudioPlayer(prev => prev ? { ...prev, isPlaying: false } : null);
       });
-      
+
       audioRef.current.addEventListener('loadedmetadata', () => {
         if (audioPlayer && audioRef.current) {
           setAudioPlayer(prev => prev ? {
@@ -170,34 +170,37 @@ const VoiceLibrary: React.FC = () => {
   }, [audioPlayer]);
 
   // Upload voice files
-  const handleUpload = async (voiceName: string, files: FileList) => {
+  const handleUpload = async (voiceName: string, files: FileList, transcription?: string) => {
     if (!voiceName.trim()) {
       toast.error('Please enter a voice name');
       return;
     }
 
     setUploadingVoice(voiceName);
-    
+
     try {
       const uploadPromises = Array.from(files).map(async (file) => {
         const formData = new FormData();
         formData.append('file', file);
-        
+        if (transcription) {
+          formData.append('transcription', transcription);
+        }
+
         const response = await fetch(`/voices?voice_name=${encodeURIComponent(voiceName)}`, {
           method: 'POST',
           body: formData,
         });
-        
+
         if (!response.ok) {
           const error = await response.json();
           throw new Error(error.detail || 'Upload failed');
         }
-        
+
         return response.json();
       });
-      
+
       await Promise.all(uploadPromises);
-      
+
       toast.success(`Uploaded ${files.length} file(s) to ${voiceName}`);
       await loadVoices();
       setShowUploadModal(false);
@@ -214,16 +217,16 @@ const VoiceLibrary: React.FC = () => {
     if (!confirm(`Are you sure you want to delete the voice "${voiceName}"? This action cannot be undone.`)) {
       return;
     }
-    
+
     try {
       const response = await fetch(`/voices/${encodeURIComponent(voiceName)}`, {
         method: 'DELETE',
       });
-      
+
       if (!response.ok) {
         throw new Error('Delete failed');
       }
-      
+
       toast.success(`Voice "${voiceName}" deleted`);
       await loadVoices();
     } catch (error) {
@@ -237,9 +240,9 @@ const VoiceLibrary: React.FC = () => {
       toast.error('Please enter test text');
       return;
     }
-    
+
     setTestingVoice(voiceName);
-    
+
     try {
       const response = await fetch('/tts', {
         method: 'POST',
@@ -251,15 +254,15 @@ const VoiceLibrary: React.FC = () => {
           output_format: 'wav',
         }),
       });
-      
+
       if (!response.ok) {
         throw new Error('TTS generation failed');
       }
-      
+
       const buffer = await response.arrayBuffer();
       const blob = new Blob([buffer], { type: 'audio/wav' });
       const audioUrl = URL.createObjectURL(blob);
-      
+
       if (audioRef.current) {
         audioRef.current.src = audioUrl;
         audioRef.current.play();
@@ -271,7 +274,7 @@ const VoiceLibrary: React.FC = () => {
           duration: 0,
         });
       }
-      
+
       toast.success('TTS generated successfully');
     } catch (error) {
       toast.error(`TTS failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -283,7 +286,7 @@ const VoiceLibrary: React.FC = () => {
   // Play/pause audio
   const togglePlayPause = () => {
     if (!audioRef.current) return;
-    
+
     if (audioPlayer?.isPlaying) {
       audioRef.current.pause();
       setAudioPlayer(prev => prev ? { ...prev, isPlaying: false } : null);
@@ -300,11 +303,11 @@ const VoiceLibrary: React.FC = () => {
       if (!response.ok) {
         throw new Error('Failed to load audio file');
       }
-      
+
       const buffer = await response.arrayBuffer();
       const blob = new Blob([buffer], { type: 'audio/wav' });
       const audioUrl = URL.createObjectURL(blob);
-      
+
       if (audioRef.current) {
         audioRef.current.src = audioUrl;
         audioRef.current.play();
@@ -328,7 +331,7 @@ const VoiceLibrary: React.FC = () => {
       if (!response.ok) {
         throw new Error('Download failed');
       }
-      
+
       const buffer = await response.arrayBuffer();
       const blob = new Blob([buffer]);
       downloadBlob(blob, fileName);
@@ -341,17 +344,17 @@ const VoiceLibrary: React.FC = () => {
   // Delete individual file
   const handleDeleteFile = async (voiceName: string, fileName: string) => {
     if (!confirm(`Delete ${fileName}?`)) return;
-    
+
     try {
       const response = await fetch(
         `/voices/${encodeURIComponent(voiceName)}/files/${encodeURIComponent(fileName)}`,
         { method: 'DELETE' }
       );
-      
+
       if (!response.ok) {
         throw new Error('Delete failed');
       }
-      
+
       toast.success('File deleted');
       await loadVoices();
     } catch (error) {
@@ -370,12 +373,12 @@ const VoiceLibrary: React.FC = () => {
       toast.error('Select at least 2 voices to combine');
       return;
     }
-    
+
     const combinedName = prompt('Enter name for combined voice:', 'combined_voice');
     if (!combinedName) return;
-    
+
     const sanitizedName = combinedName.replace(/[^a-zA-Z0-9_]/g, '_');
-    
+
     try {
       const response = await fetch('/voices/combine', {
         method: 'POST',
@@ -385,15 +388,15 @@ const VoiceLibrary: React.FC = () => {
           source_voices: Array.from(selectedForCombine),
         }),
       });
-      
+
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.detail || 'Failed to combine voices');
       }
-      
+
       const result = await response.json();
       toast.success(`Combined ${result.files_copied} files into "${sanitizedName}"`);
-      
+
       setCombineMode(false);
       setSelectedForCombine(new Set());
       await loadVoices();
@@ -454,7 +457,7 @@ const VoiceLibrary: React.FC = () => {
                   Manage your voice collection and test synthesis
                 </p>
               </div>
-              
+
               <div className="flex items-center gap-3">
                 <Button
                   variant="ghost"
@@ -464,7 +467,7 @@ const VoiceLibrary: React.FC = () => {
                   <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
                   Refresh
                 </Button>
-                
+
                 {combineMode ? (
                   <>
                     <Button
@@ -515,7 +518,7 @@ const VoiceLibrary: React.FC = () => {
                   className="w-full pl-12 pr-4 py-3 rounded-xl bg-bg-secondary/50 border border-white/5 text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent/50"
                 />
               </div>
-              
+
               <div className="badge">
                 <FileAudio className="w-3 h-3 mr-1" />
                 {Object.keys(voices).length} voices
@@ -641,14 +644,14 @@ const VoiceLibrary: React.FC = () => {
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              
+
               <textarea
                 value={testText}
                 onChange={(e) => setTestText(e.target.value)}
                 placeholder="Enter text to test..."
                 className="w-full min-h-[100px] bg-bg-tertiary rounded-lg p-3 text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent/50 mb-4 resize-none"
               />
-              
+
               <Button
                 onClick={() => handleTestVoice(testingVoice)}
                 loading={uploadingVoice === testingVoice}
@@ -681,7 +684,7 @@ const VoiceLibrary: React.FC = () => {
                     <Play className="w-5 h-5 ml-0.5" />
                   )}
                 </button>
-                
+
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-sm font-medium text-text-primary capitalize">
@@ -700,7 +703,7 @@ const VoiceLibrary: React.FC = () => {
                     />
                   </div>
                 </div>
-                
+
                 <button
                   onClick={() => {
                     if (audioRef.current) {
@@ -776,7 +779,7 @@ const VoiceCard: React.FC<VoiceCardProps> = ({
       )}
     >
       {combineMode && (
-        <div 
+        <div
           className="absolute top-4 left-4 z-10 cursor-pointer"
           onClick={onSelect}
         >
@@ -792,7 +795,7 @@ const VoiceCard: React.FC<VoiceCardProps> = ({
       )}
 
       <div className="flex items-start justify-between mb-4">
-        <div 
+        <div
           className="flex items-center gap-3 cursor-pointer flex-1"
           onClick={!combineMode ? onExpand : undefined}
         >
@@ -895,7 +898,7 @@ const VoiceCard: React.FC<VoiceCardProps> = ({
                       <Play className="w-4 h-4 ml-0.5" />
                     )}
                   </button>
-                  
+
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-text-secondary truncate">{file.name}</p>
                     <div className="flex items-center gap-2 text-xs text-text-tertiary">
@@ -908,7 +911,7 @@ const VoiceCard: React.FC<VoiceCardProps> = ({
                       )}
                     </div>
                   </div>
-                  
+
                   <button
                     onClick={() => onDownloadFile(file.name)}
                     className="p-2 hover:bg-bg-hover rounded-lg text-text-tertiary hover:text-text-primary transition-colors"
@@ -916,7 +919,7 @@ const VoiceCard: React.FC<VoiceCardProps> = ({
                   >
                     <Download className="w-4 h-4" />
                   </button>
-                  
+
                   <button
                     onClick={() => onDeleteFile(file.name)}
                     className="p-2 hover:bg-bg-hover rounded-lg text-text-tertiary hover:text-error transition-colors"
@@ -945,7 +948,7 @@ const VoiceCard: React.FC<VoiceCardProps> = ({
             <Wand2 className="w-4 h-4" />
             Test
           </Button>
-          
+
           <Button
             size="sm"
             variant="ghost"
@@ -975,7 +978,7 @@ const VoiceCard: React.FC<VoiceCardProps> = ({
 // Upload Modal Component
 interface UploadModalProps {
   onClose: () => void;
-  onUpload: (voiceName: string, files: FileList) => void;
+  onUpload: (voiceName: string, files: FileList, transcription?: string) => void;
   uploading: boolean;
   voiceName: string;
   setVoiceName: (name: string) => void;
@@ -992,6 +995,7 @@ const UploadModal: React.FC<UploadModalProps> = ({
 }) => {
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [transcription, setTranscription] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDrag = (e: React.DragEvent) => {
@@ -1008,7 +1012,7 @@ const UploadModal: React.FC<UploadModalProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    
+
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       setSelectedFiles(e.dataTransfer.files);
     }
@@ -1025,13 +1029,13 @@ const UploadModal: React.FC<UploadModalProps> = ({
       toast.error('Please enter a voice name');
       return;
     }
-    
+
     if (!selectedFiles || selectedFiles.length === 0) {
       toast.error('Please select at least one file');
       return;
     }
-    
-    onUpload(voiceName, selectedFiles);
+
+    onUpload(voiceName, selectedFiles, transcription.trim() || undefined);
   };
 
   return (
@@ -1080,7 +1084,7 @@ const UploadModal: React.FC<UploadModalProps> = ({
             <p className="text-xs text-text-tertiary mt-1">
               Use only letters, numbers, and underscores
             </p>
-            
+
             {voiceName && existingVoices.includes(voiceName) && (
               <div className="flex items-center gap-2 mt-2 text-warning">
                 <AlertCircle className="w-4 h-4" />
@@ -1115,9 +1119,9 @@ const UploadModal: React.FC<UploadModalProps> = ({
                 onChange={handleFileSelect}
                 className="hidden"
               />
-              
+
               <FileAudio className="w-16 h-16 mx-auto mb-4 text-text-tertiary" />
-              
+
               {selectedFiles && selectedFiles.length > 0 ? (
                 <div>
                   <p className="text-text-primary font-medium mb-2">
@@ -1154,6 +1158,23 @@ const UploadModal: React.FC<UploadModalProps> = ({
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Transcription (optional) */}
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-2">
+              Transcription <span className="text-text-tertiary">(optional)</span>
+            </label>
+            <textarea
+              value={transcription}
+              onChange={(e) => setTranscription(e.target.value)}
+              placeholder="Enter the exact words spoken in the audio file..."
+              className="w-full min-h-[80px] px-4 py-3 rounded-xl bg-bg-tertiary border border-white/5 text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent/50 resize-none"
+            />
+            <p className="text-xs text-text-tertiary mt-1">
+              If provided, this text will be used instead of automatic speech recognition.
+              This is useful when STT produces inaccurate results.
+            </p>
           </div>
 
           {/* Actions */}

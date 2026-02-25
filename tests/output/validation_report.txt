@@ -1,0 +1,113 @@
+Timestamp: 2026-01-12T03:53:57.621825
+TTS API: http://localhost:8012
+STT API: http://192.168.1.77:8603/v1/audio/transcriptions
+Voice: biden
+  ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /health (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+
+  Label          Voice    Chars   Audio   Speed |     LLM    Flow   Other
+  -------------- -------- ----- ------- ------- | ------- ------- -------
+  Tiny           biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Short          biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Medium         biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Long           biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Very Long      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Paragraph      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Loli Short     loli     ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Loli Medium    loli     ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Batman Short   batman   ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Batman Medium  batman   ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Technical      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Emotional      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Questions      biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Numbers        biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+  Rapid Fire     biden    ❌ FAILED: HTTPConnectionPool(host='localhost', port=8012): Max retries exceeded with url: /tts (Caused by NewConnectionError("HTTPConnection(host='localhost', port=8012): Failed to establish a new connection: [Errno 111] Connection refused"))
+
+  Summary:
+    • Overall Speed: 0.00x real-time
+    • Total Audio: 0.00s in 0.00s compute
+    • Stage Breakdown: LLM 0ms (0%) | Flow 0ms (0%)
+  ✅ Performance test passed
+
+    # Voice       Sim Diagnosis                    Text
+  --- -------- ------ ---------------------------- ------------------------------
+    1 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    2 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    3 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    4 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    5 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    6 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    7 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    8 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+    9 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   10 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   11 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   12 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   13 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   14 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   15 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   16 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   17 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   18 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   19 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   20 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   21 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   22 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   23 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   24 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   25 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   26 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   27 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   28 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   29 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   30 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   31 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   32 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   33 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   34 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   35 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   36 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   37 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   38 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   39 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   40 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   41 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   42 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   43 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   44 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   45 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   46 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   47 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   48 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   49 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   50 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   51 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   52 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   53 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   54 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   55 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   56 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   57 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   58 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   59 loli        -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   60 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   61 batman      -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   62 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   63 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   64 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+   65 biden       -- 🚫 ERROR: HTTPConnectionPool(host='localhost', por
+
+  Average Similarity: 0.0%
+
+  Performance:
+    • Overall Speed: 0.00x real-time
+    • Total Audio Generated: 0.00s
+    • Total Compute Time: 0.00s
+    • Stage Breakdown: LLM 0% | Flow 0%
+
+  Quality:
+    • STT Round-Trip Tests: 65
+    • Average Accuracy: 0.0%
+    • Tests Passed: 0/0
+    • Tests Failed: 0
+
+  ❌ SOME TESTS FAILED
