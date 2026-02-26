@@ -5,6 +5,7 @@ Handles project CRUD, segment generation, and audio export.
 
 import io
 import os
+import re
 import logging
 import numpy as np
 import soundfile as sf
@@ -796,12 +797,15 @@ async def generate_segment_visual(project_id: str, segment_id: str, mode: str = 
 
     try:
         visual_dir = os.path.join(get_project_dir(project_id), "visuals")
+        # Find character portrait reference for this segment
+        ref_image = _find_character_portrait(project, segment)
         path, vtype = await comfyui_generate(
             prompt=segment.scene_prompt,
             output_dir=visual_dir,
             prefix=f"seg_{segment.id}",
             mode=mode or COMFYUI_VISUAL_MODE,
             duration=segment.duration,
+            ref_image=ref_image,
         )
         segment.visual_path = path
         segment.visual_type = vtype
@@ -871,12 +875,14 @@ async def generate_all_visuals(project_id: str, mode: str = None):
         save_project(project)
 
         try:
+            ref_image = _find_character_portrait(project, seg)
             path, vtype = await comfyui_generate(
                 prompt=seg.scene_prompt,
                 output_dir=visual_dir,
                 prefix=f"seg_{seg.id}",
                 mode=visual_mode,
                 duration=seg.duration,
+                ref_image=ref_image,
             )
             seg.visual_path = path
             seg.visual_type = vtype
@@ -917,6 +923,124 @@ async def update_visual_style(project_id: str, req: UpdateStyleRequest):
     """Manually set the project's visual style."""
     project = _get_project_or_404(project_id)
     project.visual_style = req.visual_style
+    save_project(project)
+    return project_to_detail_response(project)
+
+
+def _find_character_portrait(project, segment) -> Optional[str]:
+    """Find the ComfyUI portrait filename for the character speaking in a segment."""
+    if not segment.character or not project.characters:
+        return None
+    char_name = segment.character.lower()
+    for char_ref in project.characters:
+        if char_ref.name.lower() == char_name and char_ref.portrait_comfyui:
+            return char_ref.portrait_comfyui
+    return None
+
+
+@router.post("/projects/{project_id}/extract-characters", response_model=ProjectDetailResponse)
+async def extract_characters_endpoint(project_id: str):
+    """Use LLM to extract character appearances from book text."""
+    from .audiobook_llm import extract_characters
+    from .audiobook_models import CharacterRef
+
+    project = _get_project_or_404(project_id)
+    if not project.raw_text:
+        raise HTTPException(status_code=400, detail="Project has no text")
+
+    characters = extract_characters(project.raw_text)
+    if not characters:
+        raise HTTPException(status_code=500, detail="LLM failed to extract characters")
+
+    # Merge with existing characters (preserve portraits)
+    existing = {c.name.lower(): c for c in project.characters}
+    new_chars = []
+    for char_data in characters:
+        name = char_data["name"]
+        if name.lower() in existing:
+            # Update description, keep portrait
+            existing_char = existing[name.lower()]
+            existing_char.description = char_data["description"]
+            new_chars.append(existing_char)
+        else:
+            new_chars.append(CharacterRef(
+                name=name,
+                description=char_data["description"],
+            ))
+
+    project.characters = new_chars
+    save_project(project)
+    logger.info(f"Extracted {len(new_chars)} characters for project {project_id}")
+    return project_to_detail_response(project)
+
+
+@router.post("/projects/{project_id}/generate-portraits", response_model=ProjectDetailResponse)
+async def generate_portraits(project_id: str):
+    """Generate hero portrait images for all characters without portraits."""
+    from .audiobook_llm import generate_portrait_prompt
+    from .comfyui_service import generate_image, upload_image
+
+    project = _get_project_or_404(project_id)
+    if not project.characters:
+        raise HTTPException(status_code=400, detail="No characters. Run extract-characters first.")
+
+    portrait_dir = os.path.join(get_project_dir(project_id), "portraits")
+    os.makedirs(portrait_dir, exist_ok=True)
+
+    generated = 0
+    for char_ref in project.characters:
+        if char_ref.portrait_path and os.path.exists(char_ref.portrait_path):
+            continue  # Already has portrait
+
+        # Generate portrait prompt from description
+        portrait_prompt = generate_portrait_prompt(char_ref.name, char_ref.description)
+        if not portrait_prompt:
+            logger.warning(f"Failed to generate portrait prompt for {char_ref.name}")
+            continue
+
+        # Generate portrait image
+        try:
+            safe_name = re.sub(r'[^a-zA-Z0-9]', '_', char_ref.name.lower())
+            path = await generate_image(
+                prompt=portrait_prompt,
+                output_dir=portrait_dir,
+                prefix=f"portrait_{safe_name}",
+            )
+            char_ref.portrait_path = path
+
+            # Upload to ComfyUI for use in video generation
+            comfyui_name = await upload_image(path)
+            char_ref.portrait_comfyui = comfyui_name
+
+            generated += 1
+            logger.info(f"Generated portrait for {char_ref.name}: {path} (ComfyUI: {comfyui_name})")
+        except Exception as e:
+            logger.error(f"Portrait generation failed for {char_ref.name}: {e}")
+
+    save_project(project)
+    return project_to_detail_response(project)
+
+
+@router.put("/projects/{project_id}/characters/{character_name}")
+async def update_character(project_id: str, character_name: str, description: str = None):
+    """Update a character's description. Set description to regenerate portrait next time."""
+    project = _get_project_or_404(project_id)
+
+    char_ref = None
+    for c in project.characters:
+        if c.name.lower() == character_name.lower():
+            char_ref = c
+            break
+
+    if not char_ref:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+
+    if description:
+        char_ref.description = description
+        # Clear portrait so it gets regenerated
+        char_ref.portrait_path = None
+        char_ref.portrait_comfyui = None
+
     save_project(project)
     return project_to_detail_response(project)
 

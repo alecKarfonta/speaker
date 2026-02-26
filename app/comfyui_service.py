@@ -39,7 +39,8 @@ def _inject_params(workflow: Dict[str, Any], prompt: str,
                    output_width: int = None,
                    output_height: int = None,
                    video_length: int = None,
-                   fps: int = None) -> Dict[str, Any]:
+                   fps: int = None,
+                   ref_image: str = None) -> Dict[str, Any]:
     """
     Inject prompt, dimensions, seed, and batch_size into a workflow.
     Finds nodes by class_type and updates their inputs.
@@ -92,6 +93,18 @@ def _inject_params(workflow: Dict[str, Any], prompt: str,
                 inputs["frame_rate"] = float(fps)
             if ct == "SaveAnimatedWEBP" and "fps" in inputs:
                 inputs["fps"] = float(fps)
+
+        # Set reference image on LoadImage node
+        if ref_image is not None:
+            if ct == "LoadImage":
+                inputs["image"] = ref_image
+
+        # Set dimensions and frame length on LTXVImgToVideo
+        if ct == "LTXVImgToVideo":
+            inputs["width"] = width
+            inputs["height"] = height
+            if video_length is not None:
+                inputs["length"] = video_length
 
     return workflow
 
@@ -240,19 +253,93 @@ async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
 
 
 async def generate_visual(prompt: str, output_dir: str, prefix: str = "visual",
-                          mode: str = None, duration: float = None) -> Tuple[str, str]:
+                          mode: str = None, duration: float = None,
+                          ref_image: str = None) -> Tuple[str, str]:
     """
     Generate a visual (image or video) based on mode.
     If mode is 'video' and duration is provided, video length matches audio duration.
+    If ref_image is provided (ComfyUI filename), uses image-guided generation.
     Returns (path, type) where type is 'image' or 'video'.
     """
     visual_mode = mode or COMFYUI_VISUAL_MODE
     if visual_mode == "video":
-        path = await generate_video(prompt, output_dir, prefix, duration=duration)
+        if ref_image:
+            path = await generate_video_with_ref(
+                prompt, ref_image, output_dir, prefix, duration=duration
+            )
+        else:
+            path = await generate_video(prompt, output_dir, prefix, duration=duration)
         return path, "video"
     else:
         path = await generate_image(prompt, output_dir, prefix)
         return path, "image"
+
+
+async def upload_image(local_path: str) -> str:
+    """
+    Upload an image to ComfyUI's input directory via /upload/image.
+    Returns the filename on the ComfyUI server.
+    """
+    filename = os.path.basename(local_path)
+    async with httpx.AsyncClient(timeout=30) as client:
+        with open(local_path, "rb") as f:
+            files = {"image": (filename, f, "image/png")}
+            resp = await client.post(
+                f"{COMFYUI_API_URL}/upload/image",
+                files=files,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            uploaded_name = data.get("name", filename)
+            logger.info(f"Uploaded image to ComfyUI: {uploaded_name}")
+            return uploaded_name
+
+
+async def generate_video_with_ref(
+    prompt: str,
+    ref_image_comfyui: str,
+    output_dir: str,
+    prefix: str = "visual",
+    width: int = None,
+    height: int = None,
+    frames: int = None,
+    fps: int = None,
+    duration: float = None,
+) -> str:
+    """
+    Generate a video guided by a reference image using LTXVImgToVideo.
+    ref_image_comfyui is the filename already uploaded to ComfyUI.
+    """
+    w = width or min(COMFYUI_IMAGE_WIDTH, 768)
+    h = height or min(COMFYUI_IMAGE_HEIGHT, 512)
+    video_fps = fps or COMFYUI_VIDEO_FPS
+    seed = random.randint(0, 2**32 - 1)
+
+    # Calculate frames
+    if frames:
+        num_frames = frames
+    elif duration:
+        raw = int(duration * video_fps)
+        num_frames = ((raw + 7) // 8) * 8 + 1
+    else:
+        num_frames = COMFYUI_VIDEO_FRAMES
+
+    num_frames = min(num_frames, MAX_VIDEO_FRAMES)
+    logger.info(f"Video gen (ref): {num_frames} frames @ {video_fps}fps, ref={ref_image_comfyui}")
+
+    workflow = _load_workflow("text_to_video_ref.json")
+    workflow = _inject_params(
+        workflow, prompt, w, h, seed,
+        video_length=num_frames, fps=video_fps,
+        ref_image=ref_image_comfyui,
+    )
+
+    prompt_id = await queue_prompt(workflow)
+    result = await poll_completion(prompt_id, timeout=600)
+    path = await download_output(result, output_dir, prefix)
+    if not path:
+        raise RuntimeError(f"ComfyUI ref video generation produced no output for prompt_id={prompt_id}")
+    return path
 
 
 async def health_check() -> bool:

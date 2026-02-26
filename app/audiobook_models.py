@@ -64,6 +64,14 @@ class CharacterVoiceMapping(BaseModel):
     voice_name: str
 
 
+class CharacterRef(BaseModel):
+    """Character reference with appearance description and portrait for visual consistency."""
+    name: str
+    description: str = ""  # Detailed physical appearance description
+    portrait_path: Optional[str] = None  # Local path to hero portrait image
+    portrait_comfyui: Optional[str] = None  # Filename on ComfyUI input directory
+
+
 class AudiobookProject(BaseModel):
     """Top-level audiobook project."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -78,6 +86,7 @@ class AudiobookProject(BaseModel):
     detected_characters: List[str] = []
     character_descriptions: Dict[str, str] = {}  # AI-generated character descriptions
     visual_style: str = ""  # Persistent visual style prompt for scene continuity
+    characters: List[CharacterRef] = []  # Character references with portraits
 
     @property
     def total_segments(self) -> int:
@@ -179,6 +188,7 @@ class ProjectDetailResponse(BaseModel):
     total_characters: int = 0  # total text chars across all segments
     visual_ready: int = 0  # segments with visuals generated
     visual_style: str = ""  # project visual style for continuity
+    characters: List[dict] = []  # character references with portraits
 
 
 # --- Persistence helpers ---
@@ -306,4 +316,5 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
         total_characters=total_chars,
         visual_ready=vis_ready,
         visual_style=project.visual_style,
+        characters=[c.model_dump() for c in project.characters],
     )

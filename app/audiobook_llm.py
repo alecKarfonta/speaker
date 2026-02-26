@@ -401,3 +401,94 @@ def generate_visual_style(text: str) -> Optional[str]:
         style = response.strip().strip('"').strip()
         return style
     return None
+
+
+# ============================================================
+# Character appearance extraction
+# ============================================================
+
+CHARACTER_EXTRACTION_TEMPLATE = """Analyze the following book text and identify all important named characters.
+For each character, provide a detailed physical appearance description suitable for generating portrait images.
+Include: approximate age, gender, hair color/style, eye color, skin tone, build/height, distinguishing features, and typical clothing/attire.
+Be specific and visual — these descriptions will be used to generate consistent character portraits.
+
+Book text (excerpt):
+{text}
+
+Respond ONLY with valid JSON, no other text:
+```json
+[
+  {{
+    "name": "Character Name",
+    "description": "Detailed physical appearance: age, gender, hair, eyes, build, clothing, distinguishing features"
+  }}
+]
+```"""
+
+
+def extract_characters(text: str) -> Optional[List[Dict[str, str]]]:
+    """
+    Analyze book text and extract named characters with detailed visual descriptions.
+    Returns a list of dicts with 'name' and 'description' keys.
+    """
+    # Use first ~4000 chars to capture all character introductions
+    sample = text[:4000]
+    prompt = CHARACTER_EXTRACTION_TEMPLATE.format(text=sample)
+    response = _call_llm(
+        prompt,
+        system_message="You are a literary analyst specializing in visual character descriptions. Respond with only valid JSON.",
+        max_tokens=1000,
+        temperature=0.3,
+    )
+    if not response:
+        return None
+
+    # Parse JSON from response
+    try:
+        # Try to extract JSON array from the response
+        json_match = re.search(r'\[.*\]', response, re.DOTALL)
+        if json_match:
+            characters = json.loads(json_match.group())
+            # Validate structure
+            result = []
+            for c in characters:
+                if isinstance(c, dict) and "name" in c:
+                    result.append({
+                        "name": c["name"],
+                        "description": c.get("description", ""),
+                    })
+            if result:
+                logger.info(f"Extracted {len(result)} characters from book text")
+                return result
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse character extraction JSON: {e}")
+
+    return None
+
+
+PORTRAIT_PROMPT_TEMPLATE = """Convert this character description into a concise image generation prompt for a character portrait.
+The prompt should be optimized for AI image generation (Stable Diffusion style).
+Focus on the most visually distinctive features.
+Format: a single paragraph, no line breaks, include "portrait, upper body, facing camera" and a quality suffix.
+
+Character: {name}
+Description: {description}
+
+Respond with ONLY the image prompt, nothing else."""
+
+
+def generate_portrait_prompt(name: str, description: str) -> Optional[str]:
+    """
+    Convert a character's appearance description into an optimized image generation prompt.
+    """
+    prompt = PORTRAIT_PROMPT_TEMPLATE.format(name=name, description=description)
+    response = _call_llm(
+        prompt,
+        system_message="You are an expert at writing image generation prompts. Respond with only the prompt.",
+        max_tokens=150,
+        temperature=0.4,
+    )
+    if response:
+        return response.strip().strip('"').strip()
+    return None
+
