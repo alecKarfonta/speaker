@@ -38,3 +38,10 @@ Support proper book file formats beyond raw text:
 - Auto-import table of contents as chapter structure
 
 **Goal:** Drag-and-drop a book file and have it ready to generate immediately.
+
+
+2. 👁️ Live Audio-Visual Preview in UI
+Let the user preview each segment — click a segment row and see its video clip playing with the narration audio overlaid. Right now you generate everything blindly and only see results after a full export. With per-segment preview you get instant feedback: bad scene prompt? Regenerate just that one. Audio pacing off? Adjust. This makes the creative workflow interactive instead of batch-and-pray.
+
+3. ✏️ Scene Prompt Editor
+The LLM generates scene prompts automatically, but the user can't see or edit them before visual generation. A bad scene prompt = wasted 2 minutes of GPU time. Adding a prompt editor panel — show the generated prompt, let users tweak it ("make the castle darker", "add rain"), then regenerate — gives creative control. The backend already supp
