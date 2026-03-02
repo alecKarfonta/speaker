@@ -275,6 +275,37 @@ async def analyze_project_characters(project_id: str):
     project.character_voice_map = result.get("character_voice_map", project.character_voice_map)
     project.character_descriptions = result.get("character_descriptions", {})
     
+    # Auto-design voices if the TTS backend supports it
+    if hasattr(tts_service, "design_voice") and project.character_descriptions:
+        logger.info(f"Auto-designing voices for characters using Moss VoiceGenerator")
+        import re
+        
+        narrator_desc = result.get("narrator_description", "")
+        if narrator_desc:
+            voice_id = "gen_narrator"
+            try:
+                tts_service.design_voice(voice_id, narrator_desc)
+                result["narrator_voice"] = voice_id
+                available_voices.append(voice_id)
+            except Exception as e:
+                logger.error(f"Failed to design voice for narrator: {e}")
+                
+        for char_name, desc in project.character_descriptions.items():
+            current_voice = project.character_voice_map.get(char_name)
+            
+            # Design a new voice if no valid existing voice was matched
+            if not current_voice or current_voice not in available_voices:
+                voice_id = re.sub(r'[^a-zA-Z0-9]', '', char_name.lower())
+                if not voice_id:
+                    voice_id = f"voice_{hash(char_name)}"
+                voice_id = f"gen_{voice_id}" 
+                
+                try:
+                    tts_service.design_voice(voice_id, desc)
+                    project.character_voice_map[char_name] = voice_id
+                except Exception as e:
+                    logger.error(f"Failed to design voice for '{char_name}': {e}")
+    
     narrator = result.get("narrator_voice", "")
     if narrator:
         project.narrator_voice = narrator

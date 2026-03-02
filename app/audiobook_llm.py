@@ -36,6 +36,7 @@ Respond ONLY with valid JSON in this exact format, no other text:
     {{
       "name": "Character Name",
       "description": "Brief description of the character",
+      "voice_description": "Detailed description of the character's voice (e.g. 'A deep, raspy voice of an old man' or 'A bright, cheerful young girl')",
       "voice_traits": {{
         "age": "young/middle-aged/elderly",
         "gender": "male/female",
@@ -46,6 +47,7 @@ Respond ONLY with valid JSON in this exact format, no other text:
   ],
   "narrator": {{
     "description": "Narrator style description",
+    "voice_description": "Detailed description of the narrator's voice",
     "suggested_voice": "best_matching_voice_name_from_available_list"
   }}
 }}
@@ -274,23 +276,29 @@ def analyze_characters(
                 character_voice_map[name] = available_voices[idx]
 
             if description:
-                # Include voice traits in description
-                traits = char.get("voice_traits", {})
-                trait_str = ""
-                if traits:
-                    parts = []
-                    if traits.get("age"):
-                        parts.append(traits["age"])
-                    if traits.get("gender"):
-                        parts.append(traits["gender"])
-                    if traits.get("quality"):
-                        parts.append(traits["quality"])
-                    trait_str = f" ({', '.join(parts)})" if parts else ""
-                character_descriptions[name] = f"{description}{trait_str}"
+                # Use explicit voice description if provided, otherwise build from traits
+                voice_desc = char.get("voice_description", "")
+                if not voice_desc:
+                    traits = char.get("voice_traits", {})
+                    trait_str = ""
+                    if traits:
+                        parts = []
+                        if traits.get("age"):
+                            parts.append(traits["age"])
+                        if traits.get("gender"):
+                            parts.append(traits["gender"])
+                        if traits.get("quality"):
+                            parts.append(traits["quality"])
+                        trait_str = f" ({', '.join(parts)})" if parts else ""
+                    voice_desc = f"{description}{trait_str}"
+                
+                character_descriptions[name] = voice_desc
 
         narrator_voice = narrator.get("suggested_voice", "")
         if narrator_voice and narrator_voice not in available_voices:
             narrator_voice = available_voices[0] if available_voices else ""
+            
+        narrator_desc = narrator.get("voice_description", "") or narrator.get("description", "")
 
         return {
             "characters": characters,
@@ -298,7 +306,7 @@ def analyze_characters(
             "character_voice_map": character_voice_map,
             "character_descriptions": character_descriptions,
             "narrator_voice": narrator_voice,
-            "narrator_description": narrator.get("description", ""),
+            "narrator_description": narrator_desc,
         }
 
     except Exception as e:

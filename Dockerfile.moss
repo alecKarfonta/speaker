@@ -64,7 +64,7 @@ RUN python3 -c "import torch; print('PyTorch:', torch.__version__)" && \
     python3 -c "import fastapi; print('FastAPI:', fastapi.__version__)"
 
 # ===== Application code =====
-COPY app/moss_api.py /app/app/moss_api.py
+COPY app/ /app/app/
 COPY scripts/test_moss_tts.py /app/scripts/test_moss_tts.py
 
 RUN mkdir -p /app/data/voices /app/output

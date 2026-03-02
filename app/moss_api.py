@@ -254,6 +254,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.audiobook_router import router as audiobook_router, set_tts_service as set_audiobook_tts
+from app.audiobook_ws import router as audiobook_ws_router, set_tts_service as set_audiobook_ws_tts
+
+class MossTTSAdapter:
+    """Adapter to make MOSS-TTS look like TTSBackendBase for the audiobook router."""
+    def get_voices(self) -> list[str]:
+        voices = []
+        if VOICES_DIR.exists():
+            for voice_dir in sorted(VOICES_DIR.iterdir()):
+                if voice_dir.is_dir():
+                    files = [f.name for f in voice_dir.iterdir()
+                             if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")]
+                    if files:
+                        voices.append(voice_dir.name)
+        return voices
+
+    def generate_speech(self, text: str, voice_name: str, language: str = "en", **kwargs):
+        ref_path = None
+        if voice_name:
+            voice_dir = VOICES_DIR / voice_name
+            if voice_dir.exists():
+                audio_files = [f for f in voice_dir.iterdir()
+                               if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")]
+                if audio_files:
+                    ref_path = str(audio_files[0])
+        
+        # This wrapper is called in an async endpoint but `generate_speech` in GLM-TTS was synchronous
+        # Wait, the audiobook router `generate_segment` actually calls `tts_service.generate_speech` synchronously!
+        # Because we can't `await` it there without changing the router to use `await`, we must run the 
+        # synchronous `_generate_audio` directly. This will block the event loop temporarily just like GLM-TTS did.
+        audio, sr = _generate_audio(text=text, reference_path=ref_path)
+        
+        # Convert torch.Tensor to numpy array as expected by audiobook_router
+        import numpy as np
+        audio_np = audio.cpu().numpy()
+        if audio_np.ndim == 2:
+            audio_np = audio_np.squeeze(0)
+            
+        return audio_np, sr
+
+    def design_voice(self, name: str, description: str):
+        voice_dir = VOICES_DIR / name
+        voice_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"[MossTTSAdapter] Designing new voice '{name}' with description: {description}")
+        audio, sr = _generate_voice_design(
+            text="This is my voice. I will be reading for you today. Let the story begin.",
+            instruction=description
+        )
+        wav_bytes = _audio_to_wav_bytes(audio, sr)
+        
+        dest = voice_dir / "generated_reference.wav"
+        dest.write_bytes(wav_bytes)
+        logger.info(f"[MossTTSAdapter] Saved designed voice to {dest}")
+        return str(dest)
+
+moss_tts_adapter = MossTTSAdapter()
+set_audiobook_tts(moss_tts_adapter)
+set_audiobook_ws_tts(moss_tts_adapter)
+app.include_router(audiobook_router)
+app.include_router(audiobook_ws_router)
+
 
 @app.on_event("startup")
 async def startup_event():
