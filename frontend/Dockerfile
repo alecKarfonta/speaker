@@ -25,8 +25,11 @@ FROM nginx:alpine
 # Copy built assets from build stage
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Copy nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Copy nginx template (envsubst replaces ${TTS_BACKEND_HOST} at startup)
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+
+# Default backend (can be overridden via docker-compose environment)
+ENV TTS_BACKEND_HOST=moss-tts:8000
 
 EXPOSE 80
 

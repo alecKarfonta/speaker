@@ -1,78 +1,182 @@
-# Speaker: High-Performance Generative Speech Synthesis
+# Speaker
 
-Speaker is a specialized platform for ultra-realistic Text-to-Speech synthesis and zero-shot voice cloning. It is designed around the philosophy that speech should feel natural, identity should be portable, and inference should be fast enough for real-time applications.
+A multi-engine platform for text-to-speech, voice cloning, and voice design. Supports three TTS backends that can be swapped with a single command. Ships with a React frontend.
 
-At its core, Speaker uses the GLM-TTS architecture—a two-stage generative model combining a Llama-based language model for semantic understanding with a flow-matching diffusion transformer for acoustic synthesis. This combination allows for capturing the nuance of a human voice with as little as 3 seconds of reference audio.
+<!-- TODO: Screenshot of the main TTS generation page -->
+![TTS Workspace](docs/screenshots/tts_workspace.png)
 
----
+## What It Does
 
-## Technical Foundation
+**Text-to-Speech** — Generate speech from text with configurable parameters, streaming output, and voice selection.
 
-Most TTS solutions are built as black boxes. Speaker is designed with visibility and high-performance hardware in mind.
+<!-- TODO: GIF — type text, pick a voice, generate, play the result -->
+![TTS Demo](docs/screenshots/tts_generation.gif)
 
-### The Inference Pipeline
-The synthesis process is split into distinct, optimized stages:
-1.  **Frontend**: Text is normalized and converted into semantic tokens.
-2.  **LLM (Llama)**: Semantic tokens are transformed into speech tokens. We utilize **vLLM** for this stage, leveraging PagedAttention to achieve high throughput and low latency.
-3.  **Flow Matching (DiT)**: Acoustic tokens are generated via a diffusion process. On Blackwell hardware (RTX 5090), this process is optimized with specialized dtypes and torch.compile.
-4.  **Vocoder (HiFT)**: Mel-spectrograms are converted into high-fidelity audio. We use a **TensorRT** implementation of the HiFT vocoder, which provides a 3x speedup over standard PyTorch execution.
+**Voice Design** — Describe a voice in plain English and the system creates it. No reference audio needed. Powered by [MOSS-VoiceGenerator](https://github.com/OpenMOSS/MOSS-TTS).
 
-### Hardware Optimization (NVIDIA Blackwell)
-Speaker is preconfigured to take full advantage of modern GPU architectures. This includes:
-*   **Precision**: Support for FP8 and BF16 dtypes to maximize throughput on Ada and Blackwell architectures.
-*   **JIT Optimization**: Aggressive use of torch.compile for non-autoregressive components.
-*   **Quantization**: Built-in 4-bit and 8-bit quantization modes for the LLM stage to minimize VRAM footprint without sacrificing synthesis quality.
+> *"A deep, authoritative male voice like a news anchor"*
 
----
+<!-- TODO: GIF — Voice Studio Design tab, type a description, generate, listen -->
+![Voice Design](docs/screenshots/voice_design.gif)
 
-## Performance Telemetry
+**Voice Cloning** — Clone any voice from as little as 3 seconds of reference audio. Upload a sample, and the system captures the identity for synthesis.
 
-Understanding the "black box" of generative speech is critical. Speaker includes a first-class monitoring stack based on Prometheus and Grafana.
+<!-- TODO: Screenshot of the Clone tab with an uploaded audio file -->
+![Voice Cloning](docs/screenshots/voice_cloning.png)
 
-Instead of generic health checks, we track the engine's cognitive load:
-*   **Real-Time Factor (RTF)**: The ratio of generated audio duration to inference time.
-*   **Latency Breakdown**: Per-stage millisecond tracking for the LLM, Flow, and Vocoder.
-*   **VRAM Allocation**: Real-time tracking of memory usage, essential for balancing multiple models on a single GPU.
+**Voice Library** — Save, organize, and preview cloned voices.
+
+<!-- TODO: Screenshot of the Voice Library page -->
+![Voice Library](docs/screenshots/voice_library.png)
 
 ---
 
-## Validation and Reliability
+## Backends
 
-To ensure consistent output quality, we maintain an automated validation suite (`scripts/run_tts_validation.py`) that performs round-trip STT (Speech-to-Text) verification.
+| Backend | Model | Strength | Port |
+|---------|-------|----------|------|
+| **MOSS-TTS** | OpenMOSS-Team/MOSS-TTS | Voice design from text, high quality | 8013 |
+| **GLM-TTS** | GLM-4-Voice | vLLM + TensorRT acceleration | 8012 |
+| **Qwen3-TTS** | Qwen/Qwen3-TTS | Multilingual, style control | 8016 |
 
-A unique challenge in TTS validation is "orthographic drift"—where numbers or symbols are spoken correctly but transcribed differently (e.g., "$47.50" vs "forty-seven dollars and fifty cents"). Our validation engine utilizes `num2words` to normalize these discrepancies, ensuring that similarity scores reflect actual synthesis accuracy rather than formatting variations.
+**MOSS-TTS** is the recommended default. It runs two models — MOSS-TTS for synthesis/cloning and MOSS-VoiceGenerator for voice design — on separate GPUs with 4-bit quantization. Total VRAM: ~23 GB across two cards.
+
+**GLM-TTS** is the original backend, optimized for NVIDIA Blackwell hardware. Uses vLLM with PagedAttention for the LLM stage and a TensorRT HiFT vocoder.
+
+**Qwen3-TTS** adds multilingual support and instruction-following style control with a built-in speaker library.
 
 ---
 
-## Deployment
-
-### Docker Environment
-The simplest way to stand up the full stack is via Docker Compose:
+## Getting Started
 
 ```bash
-docker compose up -d --build
+git clone https://github.com/alecKarfonta/speaker.git
+cd speaker
+
+# Start MOSS-TTS + frontend
+docker compose --profile moss up -d moss-tts frontend
 ```
 
-Service mapping:
-*   **Web Interface**: Port 3012
-*   **API (OpenAPI)**: Port 8012
-*   **Monitoring (Grafana)**: Port 3333
+Models download on first launch (~2-3 min). Then open:
 
-### Component Configuration
-Advanced engine settings are managed through environment variables in the compose file. Key toggles include switching between Transformers and vLLM engines, enabling TensorRT vocoders, and adjusting flow-matching steps.
+- **Frontend**: http://localhost:3012
+- **API**: http://localhost:8013/health
+
+For GLM-TTS instead, place weights in `GLM-TTS/ckpt/` and run `docker compose up -d tts-api frontend`.
+
+### Switching Backends
+
+```bash
+./scripts/switch-backend.sh moss     # MOSS-TTS
+./scripts/switch-backend.sh glm      # GLM-TTS
+./scripts/switch-backend.sh qwen     # Qwen3-TTS
+./scripts/switch-backend.sh status   # Show current config
+```
+
+Or set `TTS_BACKEND_HOST` in `docker-compose.yml` under the `frontend` service:
+
+```yaml
+- TTS_BACKEND_HOST=moss-tts:8000   # or tts-api:8000, qwen-tts:8000
+```
 
 ---
 
-## Project Structure
+## API
 
-*   `app/`: Core FastAPI application and backend implementations.
-*   `GLM-TTS/`: Model definitions and weights.
-*   `frontend/`: React-based management UI.
-*   `k8s/`: Kubernetes manifest for at-scale deployment.
-*   `scripts/`: Utility scripts for validation, metrics, and benchmarking.
+All backends share a common REST API. The frontend hits these through an nginx reverse proxy.
+
+```bash
+# Generate speech
+curl -X POST http://localhost:8013/tts \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello world!", "voice_name": "trump"}' \
+  -o speech.wav
+
+# Design a voice from a description (MOSS only)
+curl -X POST http://localhost:8013/tts/design \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Welcome!", "instruction": "Warm female narrator"}' \
+  -o designed.wav
+
+# Clone a voice from audio
+curl -X POST http://localhost:8013/tts/clone \
+  -F "reference=@sample.wav" \
+  -F "text=Testing voice clone" \
+  -o cloned.wav
+```
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check, GPU info |
+| `GET /voices` | List saved voices |
+| `POST /tts` | Generate speech (auto-clones if `voice_name` set) |
+| `POST /tts/stream` | Streaming generation |
+| `POST /tts/clone` | Clone from uploaded audio |
+| `POST /tts/design` | Voice design from text prompt |
+| `POST /voices/{name}` | Save reference audio |
+
+---
+
+## Monitoring
+
+Prometheus + Grafana stack for tracking inference performance:
+
+- Real-Time Factor (audio duration / inference time)
+- Per-stage latency (LLM, flow matching, vocoder)
+- GPU memory usage
+
+<!-- TODO: Screenshot of Grafana dashboard -->
+![Grafana](docs/screenshots/grafana_dashboard.png)
+
+Grafana runs at http://localhost:3333.
+
+---
+
+## Project Layout
+
+```
+app/                     Backend APIs (MOSS, GLM, Qwen)
+frontend/                React + TypeScript UI
+  src/components/
+    tts/                 TTS Workspace (main page)
+    studio/              Voice Studio (design, clone, speakers)
+    voices/              Voice Library
+scripts/
+  switch-backend.sh      Backend switching
+  test_moss_api.py       API test suite (9 tests)
+  run_tts_validation.py  Round-trip STT quality checks
+docker-compose.yml       Full stack orchestration
+```
+
+## Configuration
+
+Key environment variables (set in `docker-compose.yml`):
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `TTS_BACKEND_HOST` | `moss-tts:8000` | Frontend proxy target |
+| `MOSS_MODEL_ID` | `OpenMOSS-Team/MOSS-TTS` | TTS model |
+| `MOSS_VOICE_GEN_MODEL` | `OpenMOSS-Team/MOSS-VoiceGenerator` | Voice design model |
+| `MOSS_ENABLE_VOICE_GEN` | `true` | Enable voice design endpoint |
+| `MOSS_QUANTIZE` | `4bit` | Quantization: `4bit`, `8bit`, `none` |
+| `GLM_TTS_ENGINE` | `vllm` | GLM LLM engine |
+| `GLM_TTS_QUANTIZATION` | `4bit` | GLM quantization |
+
+---
+
+## Service Ports
+
+| Service | Port |
+|---------|------|
+| Frontend | 3012 |
+| MOSS-TTS | 8013 |
+| GLM-TTS | 8012 |
+| Qwen3-TTS | 8016 |
+| Grafana | 3333 |
+| Prometheus | 9199 |
 
 ---
 
 ## License
 
-This project is licensed under the MIT License. Contributions focused on model optimization or hardware acceleration are always welcome.
+MIT

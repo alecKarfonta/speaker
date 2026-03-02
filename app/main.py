@@ -1,3 +1,4 @@
+import asyncio
 import os
 import asyncio
 
@@ -74,6 +75,11 @@ tts_service: TTSBackendBase = TTSBackendFactory.create_backend(
 # Inject TTS service into audiobook router
 set_audiobook_tts(tts_service)
 set_audiobook_ws_tts(tts_service)
+
+# Semaphore to serialize GPU inference — only 1 inference thread at a time.
+# Additional requests wait on the semaphore (non-blocking to event loop)
+# rather than spawning competing threads that fight over VLLM/GPU resources.
+tts_inference_semaphore = asyncio.Semaphore(1)
 
 # Rate limiting storage (in production, use Redis)
 rate_limit_storage: Dict[str, List[float]] = {}
@@ -679,12 +685,14 @@ async def generate_speech(
         if request.sample_method is not None:
             glm_kwargs["sample_method"] = request.sample_method
         
-        audio, sample_rate = tts_service.generate_speech(
-            text=text,
-            voice_name=request.voice_name,
-            language=request.language,
-            **glm_kwargs
-        )
+        async with tts_inference_semaphore:
+            audio, sample_rate = await asyncio.to_thread(
+                tts_service.generate_speech,
+                text=text,
+                voice_name=request.voice_name,
+                language=request.language,
+                **glm_kwargs
+            )
 
         # Debug logging
         # logger.debug(f"generate_speech(): {type(audio) = }")    
@@ -851,15 +859,26 @@ async def generate_speech_stream(
     if request.sample_method is not None:
         glm_kwargs["sample_method"] = request.sample_method
     
-    def audio_generator():
-        """Generator that yields framed audio chunks"""
+    async def audio_generator():
+        """Async generator that yields framed audio chunks.
+        
+        Runs the blocking TTS inference in a thread pool to keep
+        the event loop free for health checks and other requests.
+        """
         try:
-            for chunk_audio, sample_rate, metadata in tts_service.generate_speech_streaming(
-                text=text,
-                voice_name=request.voice_name,
-                language=request.language.value if hasattr(request.language, 'value') else request.language,
-                **glm_kwargs
-            ):
+            # Collect all chunks from the sync generator in a thread
+            def _generate_all_chunks():
+                return list(tts_service.generate_speech_streaming(
+                    text=text,
+                    voice_name=request.voice_name,
+                    language=request.language.value if hasattr(request.language, 'value') else request.language,
+                    **glm_kwargs
+                ))
+            
+            async with tts_inference_semaphore:
+                chunks = await asyncio.to_thread(_generate_all_chunks)
+            
+            for chunk_audio, sample_rate, metadata in chunks:
                 # Encode audio as float32 bytes (or convert to WAV if requested)
                 if request.output_format and request.output_format.value == "wav":
                     wav_buffer = io.BytesIO()
@@ -1070,11 +1089,13 @@ async def openai_create_speech(
         logger.info(f"[OpenAI API] Generating speech: input='{request.input[:50]}...', voice={voice_name}, format={request.response_format.value}")
         
         # Generate audio using the TTS backend
-        audio, sample_rate = tts_service.generate_speech(
-            text=request.input,
-            voice_name=voice_name,
-            language="en"  # Default to English for OpenAI compatibility
-        )
+        async with tts_inference_semaphore:
+            audio, sample_rate = await asyncio.to_thread(
+                tts_service.generate_speech,
+                text=request.input,
+                voice_name=voice_name,
+                language="en"  # Default to English for OpenAI compatibility
+            )
         
         if audio is None or len(audio) == 0:
             raise HTTPException(

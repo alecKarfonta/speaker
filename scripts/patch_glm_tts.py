@@ -126,6 +126,48 @@ def main():
     patch_file(os.path.join(glm_dir, "flow/flow.py"), flow_patches)
     
     # =========================================================================
+    # PATCH 3: cosyvoice/cli/frontend.py - Replace torchaudio with soundfile
+    # In torchaudio 2.9+, the backend parameter is ignored and it tries to use
+    # torchcodec which requires FFmpeg libraries. Use soundfile directly instead.
+    # =========================================================================
+    print("\n[PATCH 3] cosyvoice/cli/frontend.py - Replacing torchaudio with soundfile...")
+    
+    frontend_patches = [
+        # Patch 3a: extract_speech_token - replace torchaudio.load with soundfile
+        # Note: soundfile returns float64 by default, we must convert to float32 for resamplers
+        (
+            "extract_speech_token() use soundfile instead of torchaudio",
+            "audio, sample_rate = torchaudio.load(utt, backend='soundfile')",
+            "import soundfile as sf; _audio_data, sample_rate = sf.read(utt, dtype='float32'); audio = torch.from_numpy(_audio_data).unsqueeze(0) if len(_audio_data.shape) == 1 else torch.from_numpy(_audio_data.T)"
+        ),
+        # Patch 3b: Also catch the original without backend= 
+        (
+            "extract_speech_token() use soundfile (original pattern)",
+            "audio, sample_rate = torchaudio.load(utt)",
+            "import soundfile as sf; _audio_data, sample_rate = sf.read(utt, dtype='float32'); audio = torch.from_numpy(_audio_data).unsqueeze(0) if len(_audio_data.shape) == 1 else torch.from_numpy(_audio_data.T)"
+        ),
+    ]
+    
+    patch_file(os.path.join(glm_dir, "cosyvoice/cli/frontend.py"), frontend_patches)
+    
+    # =========================================================================
+    # PATCH 4: utils/file_utils.py - Replace torchaudio with soundfile
+    # This is the ACTUAL source of the torchcodec error in the traceback
+    # =========================================================================
+    print("\n[PATCH 4] utils/file_utils.py - Replacing torchaudio with soundfile...")
+    
+    file_utils_patches = [
+        # Patch 4a: load_wav function - the actual error source!
+        (
+            "load_wav() use soundfile instead of torchaudio",
+            "speech, sample_rate = torchaudio.load(wav)",
+            "import soundfile as sf; import torch; _audio_data, sample_rate = sf.read(wav, dtype='float32'); speech = torch.from_numpy(_audio_data).unsqueeze(0) if len(_audio_data.shape) == 1 else torch.from_numpy(_audio_data.T)"
+        ),
+    ]
+    
+    patch_file(os.path.join(glm_dir, "utils/file_utils.py"), file_utils_patches)
+    
+    # =========================================================================
     # VERIFY: Check that SDPA is being used
     # =========================================================================
     print("\n[VERIFY] Checking for SDPA (scaled_dot_product_attention)...")

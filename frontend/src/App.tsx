@@ -4,6 +4,7 @@ import { Toaster } from 'react-hot-toast';
 import TTSWorkspace from './components/tts/TTSWorkspace';
 import VoiceLibrary from './components/voices/VoiceLibrary';
 import AudiobookGenerator from './components/audiobook/AudiobookGenerator';
+import VoiceStudio from './components/studio/VoiceStudio';
 
 // Placeholder components for other routes
 const LiveStream: React.FC = () => (
@@ -24,6 +25,7 @@ function App() {
       <Routes>
         <Route path="/" element={<TTSWorkspace />} />
         <Route path="/audiobook" element={<AudiobookGenerator />} />
+        <Route path="/studio" element={<VoiceStudio />} />
         <Route path="/stream" element={<LiveStream />} />
         <Route path="/voices" element={<VoiceLibrary />} />
         <Route path="/settings" element={<SettingsPage />} />

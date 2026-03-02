@@ -12,6 +12,7 @@ import {
   Sparkles,
   Zap,
   BookOpen,
+  Wand2
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useTTSStore } from '../../stores/ttsStore';
@@ -26,6 +27,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { path: '/', label: 'Text to Speech', icon: Mic, gradient: 'from-violet-500 to-purple-500' },
   { path: '/audiobook', label: 'Audiobook', icon: BookOpen, gradient: 'from-amber-500 to-orange-500' },
+  { path: '/studio', label: 'Voice Studio', icon: Wand2, gradient: 'from-cyan-500 to-blue-500' },
   { path: '/stream', label: 'Live Stream', icon: Radio, gradient: 'from-emerald-500 to-teal-500' },
   { path: '/voices', label: 'Voice Library', icon: Users, gradient: 'from-orange-500 to-pink-500' },
 ];
@@ -169,7 +171,7 @@ const Sidebar: React.FC = () => {
               </div>
               <div className="flex items-center gap-2">
                 <Zap className="w-4 h-4 text-yellow-400" />
-                <span className="text-xs text-text-tertiary">GLM-TTS Active</span>
+                <span className="text-xs text-text-tertiary">MOSS-TTS Active</span>
               </div>
             </div>
           </motion.div>
