@@ -139,7 +139,7 @@ services:
       #   tts-api:8000    → GLM-TTS (default profile)
       #   moss-tts:8000   → MOSS-TTS (moss profile)
       #   qwen-tts:8000   → Qwen3-TTS (qwen profile)
-      - TTS_BACKEND_HOST=tts-api:8000
+      - TTS_BACKEND_HOST=moss-tts:8000
     depends_on:
       - tts-api
     networks:
