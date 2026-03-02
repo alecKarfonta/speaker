@@ -1,3 +1,4 @@
+from pydantic import BaseModel
 """
 Audiobook API router — all /audiobook/* endpoints.
 Handles project CRUD, segment generation, and audio export.
@@ -9,7 +10,7 @@ import re
 import logging
 import numpy as np
 import soundfile as sf
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, UploadFile, status, Response
 from datetime import datetime
 
@@ -446,14 +447,42 @@ async def generate_segment(project_id: str, segment_id: str):
     save_project(project)
     
     try:
-        audio, sample_rate = tts_service.generate_speech(
-            text=seg.text,
-            voice_name=voice,
-            language="en",
-        )
+        # Auto-chunk if text exceeds TTS max length
+        from .config import settings
+        max_len = settings.max_text_length
+        text = seg.text.strip()
         
-        if audio is None or len(audio) == 0:
-            raise RuntimeError("TTS returned empty audio")
+        if len(text) <= max_len:
+            chunks = [text]
+        else:
+            chunks = _split_text_into_chunks(text, max_len)
+            logger.info(f"Auto-split segment '{segment_id}' ({len(text)} chars) into {len(chunks)} chunks")
+        
+        # Generate audio for each chunk
+        audio_parts = []
+        sample_rate = None
+        for i, chunk in enumerate(chunks):
+            chunk_audio, sr = tts_service.generate_speech(
+                text=chunk,
+                voice_name=voice,
+                language="en",
+            )
+            if chunk_audio is None or len(chunk_audio) == 0:
+                raise RuntimeError(f"TTS returned empty audio for chunk {i+1}/{len(chunks)}")
+            audio_parts.append(chunk_audio)
+            sample_rate = sr
+        
+        # Concatenate chunks with a brief silence gap between them
+        if len(audio_parts) == 1:
+            audio = audio_parts[0]
+        else:
+            gap = np.zeros(int(sample_rate * 0.3), dtype=audio_parts[0].dtype)  # 300ms gap
+            combined = []
+            for i, part in enumerate(audio_parts):
+                combined.append(part)
+                if i < len(audio_parts) - 1:
+                    combined.append(gap)
+            audio = np.concatenate(combined)
         
         # Save audio to disk
         project_dir = get_project_dir(project_id)
@@ -469,7 +498,7 @@ async def generate_segment(project_id: str, segment_id: str):
         seg.error_message = None
         
         save_project(project)
-        logger.info(f"Generated segment '{segment_id}' ({seg.duration:.1f}s)")
+        logger.info(f"Generated segment '{segment_id}' ({seg.duration:.1f}s, {len(chunks)} chunk(s))")
         
         return {
             "status": "done",
@@ -481,8 +510,42 @@ async def generate_segment(project_id: str, segment_id: str):
         seg.status = SegmentStatus.ERROR
         seg.error_message = str(e)
         save_project(project)
-        logger.error(f"Failed to generate segment '{segment_id}': {e}")
+        logger.error(f"Failed segment '{segment_id}': {e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+
+
+def _split_text_into_chunks(text: str, max_len: int) -> list:
+    """Split text at sentence boundaries to stay under max_len per chunk."""
+    import re
+    # Split at sentence endings
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    chunks = []
+    current = ""
+    for sent in sentences:
+        if len(sent) > max_len:
+            # Sentence itself is too long — split at clause boundaries
+            if current:
+                chunks.append(current.strip())
+                current = ""
+            sub_parts = re.split(r'(?<=[,;:])\s+', sent)
+            for part in sub_parts:
+                if len(current) + len(part) + 1 > max_len:
+                    if current:
+                        chunks.append(current.strip())
+                    current = part
+                else:
+                    current = f"{current} {part}".strip() if current else part
+        elif len(current) + len(sent) + 1 > max_len:
+            chunks.append(current.strip())
+            current = sent
+        else:
+            current = f"{current} {sent}".strip() if current else sent
+    
+    if current.strip():
+        chunks.append(current.strip())
+    
+    return chunks if chunks else [text[:max_len]]
 
 
 @router.get("/projects/{project_id}/segments/{segment_id}/audio")
@@ -948,29 +1011,57 @@ async def extract_characters_endpoint(project_id: str):
     if not project.raw_text:
         raise HTTPException(status_code=400, detail="Project has no text")
 
-    characters = extract_characters(project.raw_text)
-    if not characters:
+    # Group segments into chunks of ~8000 characters to process the entire book
+    chunks = []
+    current_chunk = ""
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if len(current_chunk) + len(seg.text) > 8000:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = seg.text
+            else:
+                current_chunk += "\n\n" + seg.text
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    if not chunks:
+        # Fallback if no segments
+        chunks = [project.raw_text]
+
+    all_characters_data = []
+    for chunk in chunks:
+        chars = extract_characters(chunk)
+        if chars:
+            all_characters_data.extend(chars)
+
+    if not all_characters_data:
         raise HTTPException(status_code=500, detail="LLM failed to extract characters")
 
     # Merge with existing characters (preserve portraits)
     existing = {c.name.lower(): c for c in project.characters}
-    new_chars = []
-    for char_data in characters:
+    new_chars_dict = {}
+
+    # First add existing so they are preserved
+    for name, c in existing.items():
+        new_chars_dict[name] = c
+
+    for char_data in all_characters_data:
         name = char_data["name"]
-        if name.lower() in existing:
-            # Update description, keep portrait
-            existing_char = existing[name.lower()]
-            existing_char.description = char_data["description"]
-            new_chars.append(existing_char)
+        name_lower = name.lower()
+        if name_lower in new_chars_dict:
+            # Update description if it is longer/more detailed than existing, 
+            # or just overwrite (current logic was overwrite)
+            new_chars_dict[name_lower].description = char_data["description"]
         else:
-            new_chars.append(CharacterRef(
+            new_chars_dict[name_lower] = CharacterRef(
                 name=name,
                 description=char_data["description"],
-            ))
+            )
 
-    project.characters = new_chars
+    project.characters = list(new_chars_dict.values())
     save_project(project)
-    logger.info(f"Extracted {len(new_chars)} characters for project {project_id}")
+    logger.info(f"Extracted {len(project.characters)} characters for project {project_id}")
     return project_to_detail_response(project)
 
 

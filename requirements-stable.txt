@@ -7,6 +7,8 @@ python-multipart>=0.0.20
 # Audio processing
 # Note: numpy is provided by vLLM base image (numpy 2.x)
 soundfile>=0.12.0
+# torchaudio 2.9.1+ uses torchcodec as its audio I/O backend (requires ffmpeg)
+torchcodec>=0.3.0
 scipy>=1.10.0
 
 # Text processing for GLM-TTS

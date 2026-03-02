@@ -1,5 +1,17 @@
 import os
-import random
+import asyncio
+
+# ── Force torchaudio soundfile backend ──────────────────────────────────────
+# torchaudio >= 2.9.1 defaults to torchcodec which is not installed / broken.
+# This must happen BEFORE any module imports torchaudio (e.g. GLM-TTS frontend).
+os.environ.setdefault("TORCHAUDIO_BACKEND", "soundfile")
+try:
+    import torchaudio
+    torchaudio.set_audio_backend("soundfile")
+except Exception:
+    pass  # Older torchaudio versions may not have set_audio_backend
+# ─────────────────────────────────────────────────────────────────────────────
+
 import logging
 import numpy as np
 import io

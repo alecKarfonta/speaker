@@ -13,6 +13,9 @@ ENV TZ=UTC
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/app:/app/GLM-TTS
+# torchaudio 2.9.1+ changed default I/O backend to torchcodec (not installed).
+# Force soundfile backend to preserve the original torchaudio.load() behaviour.
+ENV TORCHAUDIO_BACKEND=soundfile
 
 # Install system dependencies for audio processing
 RUN apt-get update && apt-get install -y \
@@ -68,6 +71,18 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # Verify vLLM is available
 RUN python3 -c "import vllm; print('vLLM OK:', vllm.__version__)"
+
+# Remove torchcodec — the vLLM base image ships it but its .so files are
+# incompatible with this GPU/driver stack, crashing the vLLM EngineCore subprocess.
+# TORCHAUDIO_BACKEND=soundfile is already set so we don't need torchcodec.
+RUN pip uninstall -y torchcodec || true
+
+# Patch torchaudio _torchcodec.py to fall back to soundfile when torchcodec is
+# unavailable. This fixes both the main process AND the vLLM EngineCore subprocess
+# (spawned as a fresh Python process). The patch replaces the hard ImportError
+# with a soundfile-based fallback so torchaudio.load() never crashes.
+COPY scripts/patch_torchaudio.py /tmp/patch_torchaudio.py
+RUN python3 /tmp/patch_torchaudio.py
 
 # ===== APPLICATION CODE (LAST - changes frequently) =====
 COPY app/ ./app/

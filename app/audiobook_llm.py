@@ -199,10 +199,16 @@ def _extract_json(text: str) -> Optional[dict]:
 def check_llm_available() -> bool:
     """Check if the LLM endpoint is reachable."""
     try:
-        url = settings.instruct_llm_api_url.replace("/chat/completions", "/models")
-        resp = requests.get(url, timeout=5, headers={
-            "Authorization": f"Bearer {settings.instruct_llm_api_key}"
-        } if settings.instruct_llm_api_key else {})
+        url = settings.instruct_llm_api_url
+        headers = {"Content-Type": "application/json"}
+        if settings.instruct_llm_api_key:
+            headers["Authorization"] = f"Bearer {settings.instruct_llm_api_key}"
+        # Send a minimal chat request — cheaper than /v1/models which 404s on some servers
+        resp = requests.post(url, json={
+            "model": settings.instruct_llm_model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        }, headers=headers, timeout=10)
         return resp.status_code == 200
     except Exception:
         return False
@@ -431,9 +437,7 @@ def extract_characters(text: str) -> Optional[List[Dict[str, str]]]:
     Analyze book text and extract named characters with detailed visual descriptions.
     Returns a list of dicts with 'name' and 'description' keys.
     """
-    # Use first ~4000 chars to capture all character introductions
-    sample = text[:4000]
-    prompt = CHARACTER_EXTRACTION_TEMPLATE.format(text=sample)
+    prompt = CHARACTER_EXTRACTION_TEMPLATE.format(text=text)
     response = _call_llm(
         prompt,
         system_message="You are a literary analyst specializing in visual character descriptions. Respond with only valid JSON.",

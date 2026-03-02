@@ -8,6 +8,7 @@ services:
       - "8012:8000"
     environment:
       - ENVIRONMENT=development
+      - TORCHAUDIO_BACKEND=soundfile
       - PYTHONPATH=/app:/app/GLM-TTS
       - HF_HOME=/app/model_cache/huggingface
       - TORCH_HOME=/app/model_cache/torch
@@ -29,6 +30,9 @@ services:
       - GLM_TTS_VLLM_QUANTIZATION=none
       # Use vLLM engine for high-performance inference
       - GLM_TTS_ENGINE=vllm
+      # Force vLLM V0 engine — V1 spawns an EngineCore subprocess that loads torchcodec
+      # which crashes on this system (undefined symbol in libtorchcodec_core*.so)
+      - VLLM_USE_V1=0
       #
       # === RTX 5090 Blackwell Optimizations ===
       - GLM_TTS_FLOW_DTYPE=fp32
@@ -62,7 +66,7 @@ services:
       - INSTRUCT_LLM_API_KEY=placeholder-api-key
       # ComfyUI Visual Generation
       - COMFYUI_API_URL=http://192.168.1.83:8188
-      - COMFYUI_VISUAL_MODE=image
+      - COMFYUI_VISUAL_MODE=video
       - COMFYUI_IMAGE_WIDTH=1920
       - COMFYUI_IMAGE_HEIGHT=1080
       - COMFYUI_VIDEO_FPS=10

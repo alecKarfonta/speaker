@@ -132,7 +132,7 @@ class Settings(BaseModel):
     api_keys: List[str] = Field(default=[])
     
     # Performance
-    max_text_length: int = Field(default=2000)
+    max_text_length: int = Field(default=10000)
     min_text_length: int = Field(default=1)
     max_concurrent_requests: int = Field(default=10)
     

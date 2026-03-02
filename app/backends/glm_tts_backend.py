@@ -132,9 +132,11 @@ class GLMTTSBackend(TTSBackendBase):
         self.garbage_threshold = float(os.environ.get("GLM_TTS_GARBAGE_THRESHOLD", self.config.get("garbage_threshold", 1.0)))
         self.silence_threshold_db = float(os.environ.get("GLM_TTS_SILENCE_THRESHOLD_DB", self.config.get("silence_threshold_db", -40)))
         
-        # Text chunking parameters
-        self.max_text_len = self.config.get("max_text_len", 200)  # Increased from 60
-        self.min_text_len = self.config.get("min_text_len", 50)   # Increased from 30
+        # Text chunking parameters (internal GLM-TTS sub-chunking, not audiobook segment level)
+        # Larger chunks = more coherent audio, fewer mid-sentence breaks
+        # The model handles up to ~30s of audio per chunk with max_token_text_ratio=30
+        self.max_text_len = self.config.get("max_text_len", 500)  # Increased from 200 for longer, coherent chunks
+        self.min_text_len = self.config.get("min_text_len", 100)   # Increased from 50
         
         # Device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

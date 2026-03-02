@@ -130,42 +130,46 @@ def parse_book_text(text: str, chapter_pattern: str = "auto") -> List[Chapter]:
 
 def split_chapter_into_segments(
     text: str,
-    max_chars: int = 3000,
+    max_chars: int = 800,
     min_chars: int = 100,
 ) -> List[Segment]:
     """
     Break chapter text into TTS-sized segments at natural boundaries.
     
     Strategy:
-    1. Split on paragraph breaks first
-    2. If a paragraph is too long, split on sentence boundaries
-    3. Merge short paragraphs together up to max_chars
+    1. Normalize text — rejoin PDF line breaks, keep true paragraph breaks
+    2. Split into paragraphs (double newline separated)
+    3. Build segments by accumulating whole paragraphs
+    4. If a single paragraph exceeds max_chars, split at sentence boundaries
+    5. Never split mid-sentence
+    
+    Target: ~100-200 words per segment (~15-30s of TTS audio)
     """
-    text = text.strip()
+    text = _normalize_text_for_segmentation(text)
     if not text:
         return []
     
-    # Split into paragraphs
+    # Split into paragraphs on double newlines
     paragraphs = re.split(r"\n\s*\n", text)
     paragraphs = [p.strip() for p in paragraphs if p.strip()]
     
-    # If only one paragraph (or no paragraph breaks), split on sentences
-    if len(paragraphs) <= 1:
-        paragraphs = _split_into_sentences(text)
+    # If still only one big block (common in PDFs), try to recover paragraphs
+    # by splitting at sentence boundaries  
+    if len(paragraphs) <= 1 and len(text) > max_chars:
+        paragraphs = _recover_paragraphs(text, target_size=max_chars // 2)
     
-    # Merge/split paragraphs into segments of appropriate size
+    # Build segments by accumulating paragraphs
     segments = []
     current_text = ""
     
     for para in paragraphs:
-        # If this single paragraph exceeds max, split it by sentences
         if len(para) > max_chars:
-            # Flush current
+            # Flush current buffer
             if current_text.strip():
                 segments.append(Segment(text=current_text.strip()))
                 current_text = ""
             
-            # Split long paragraph into sentence groups
+            # Split the oversized paragraph at sentence boundaries
             sentences = _split_into_sentences(para)
             for sent in sentences:
                 if len(current_text) + len(sent) + 1 > max_chars and current_text.strip():
@@ -178,7 +182,7 @@ def split_chapter_into_segments(
                 current_text = ""
         
         elif len(current_text) + len(para) + 2 > max_chars:
-            # Would exceed limit — flush current, start new
+            # Adding this paragraph would exceed limit — flush and start new
             if current_text.strip():
                 segments.append(Segment(text=current_text.strip()))
             current_text = para + "\n\n"
@@ -190,7 +194,7 @@ def split_chapter_into_segments(
     if current_text.strip():
         segments.append(Segment(text=current_text.strip()))
     
-    # Merge segments that are too short with neighbors
+    # Merge segments that are too short with their neighbor
     if len(segments) > 1:
         merged = [segments[0]]
         for seg in segments[1:]:
@@ -198,16 +202,172 @@ def split_chapter_into_segments(
                 merged[-1].text += "\n\n" + seg.text
             else:
                 merged.append(seg)
+        # Also check the last segment
+        if len(merged) > 1 and len(merged[-1].text) < min_chars:
+            merged[-2].text += "\n\n" + merged[-1].text
+            merged.pop()
         segments = merged
     
     return segments
 
 
+def _normalize_text_for_segmentation(text: str) -> str:
+    """
+    Normalize text for segmentation:
+    - Rejoin lines broken by PDF column layout (single newlines within paragraphs)
+    - Preserve true paragraph breaks (double newlines)
+    """
+    text = text.strip()
+    if not text:
+        return ""
+    
+    # Normalize line endings
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    
+    # Preserve explicit paragraph breaks (double+ newlines) with a placeholder
+    text = re.sub(r"\n\s*\n", "\n<PARA>\n", text)
+    
+    # Lines ending with a hyphen are word-wrapped
+    text = re.sub(r"(\w)-\n\s*(\w)", r"\1\2", text)
+    
+    # Replace ALL remaining single newlines with spaces
+    # (We already preserved real paragraph breaks as <PARA>)
+    text = re.sub(r"\n", " ", text)
+    
+    # Restore paragraph breaks
+    text = text.replace("<PARA>", "\n\n")
+    
+    # Clean up multiple spaces
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    
+    # Re-normalize multiple blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    
+    return text.strip()
+
+
+def _recover_paragraphs(text: str, target_size: int = 1500) -> List[str]:
+    """
+    For text with no paragraph breaks, split into paragraph-like chunks
+    at sentence boundaries near the target_size.
+    """
+    sentences = _split_into_sentences(text)
+    if not sentences:
+        return [text]
+    
+    paragraphs = []
+    current = ""
+    
+    for sent in sentences:
+        if len(current) + len(sent) + 1 > target_size and current:
+            paragraphs.append(current.strip())
+            current = sent
+        else:
+            current = f"{current} {sent}".strip() if current else sent
+    
+    if current.strip():
+        paragraphs.append(current.strip())
+    
+    return paragraphs if paragraphs else [text]
+
+
+# Abbreviations and patterns that should NOT trigger a sentence split
+_ABBREVIATIONS = {
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "ave", "blvd",
+    "gen", "gov", "sgt", "cpl", "pvt", "capt", "lt", "col", "maj",
+    "rev", "hon", "pres", "rep", "sen",
+    "vs", "etc", "approx", "dept", "est", "fig", "inc", "ltd", "co",
+    "vol", "ed", "trans", "illus", "feat",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+    "no", "nos", "op", "cit", "seq", "al", "viz",
+    "a.m", "p.m", "e.g", "i.e", "cf", "ibid",
+    "u.s", "u.k", "u.n",
+}
+
+
 def _split_into_sentences(text: str) -> List[str]:
-    """Split text into sentences at . ! ? boundaries."""
-    # Split on sentence-ending punctuation followed by space or newline
-    parts = re.split(r"(?<=[.!?])\s+", text)
-    return [p.strip() for p in parts if p.strip()]
+    """
+    Split text into sentences with proper handling of:
+    - Abbreviations (Mr., Dr., etc.)
+    - Initials (J. K. Rowling)
+    - Decimal numbers (3.14)
+    - Ellipses (...)
+    - Quoted speech ending a sentence
+    """
+    if not text or not text.strip():
+        return []
+    
+    text = text.strip()
+    sentences = []
+    current = ""
+    i = 0
+    
+    while i < len(text):
+        char = text[i]
+        current += char
+        
+        # Check for sentence-ending punctuation
+        if char in ".!?":
+            # Look ahead to decide if this is a real sentence break
+            
+            # Handle ellipsis (... or …)
+            if char == "." and i + 1 < len(text) and text[i + 1] == ".":
+                i += 1
+                continue
+            
+            # Check for closing quotes/parens after the punctuation
+            j = i + 1
+            while j < len(text) and text[j] in '"\'")\u201d\u2019':
+                current += text[j]
+                j += 1
+            
+            # Check if what follows looks like a new sentence
+            # (whitespace then capital letter or end of text)
+            rest = text[j:]
+            if not rest.strip():
+                # End of text
+                sentences.append(current.strip())
+                current = ""
+                i = j
+                continue
+            
+            # Check for whitespace followed by uppercase = new sentence
+            ws_match = re.match(r"\s+", rest)
+            if ws_match:
+                after_ws = rest[ws_match.end():]
+                if after_ws and after_ws[0].isupper():
+                    # Check if the word before the period is an abbreviation
+                    word_before = re.search(r"(\w+)\.$", current)
+                    if word_before and word_before.group(1).lower() in _ABBREVIATIONS:
+                        # This is an abbreviation, not a sentence end
+                        i = j
+                        continue
+                    
+                    # Check for single-letter initial (A. B. Smith)
+                    initial_match = re.search(r"\b[A-Z]\.$", current)
+                    if initial_match:
+                        # Single letter initial — not a sentence break
+                        i = j
+                        continue
+                    
+                    # This is a real sentence break
+                    sentences.append(current.strip())
+                    current = ""
+                    i = j
+                    continue
+            
+            # No whitespace after punctuation or followed by lowercase — not a sentence end
+            i = j
+            continue
+        
+        i += 1
+    
+    # Flush remaining text
+    if current.strip():
+        sentences.append(current.strip())
+    
+    return sentences
 
 
 def detect_characters(text: str) -> List[str]:
