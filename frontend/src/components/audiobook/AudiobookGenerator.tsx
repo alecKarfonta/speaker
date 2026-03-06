@@ -5,14 +5,17 @@ import {
     ChevronDown, ChevronRight, Edit3, Check, X, Upload, Users,
     Volume2, Mic, Zap, AlertCircle, Loader2, FileText, Music,
     Sparkles, Settings2, Square, Radio, Wifi, WifiOff, Clock,
-    Hash, Headphones, Layers, Image, Film, Palette, Search, Video, Eye,
+    Hash, Headphones, Layers, Image, Film, Sliders, Timer,
+    Package, Palette,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import Layout from '../layout/Layout';
 import { useAudiobookStore } from '../../stores/audiobookStore';
 import { useGenerationSocket } from '../../hooks/useGenerationSocket';
-import { getSegmentAudioUrl, getSegmentVisualUrl, getChapterExportUrl, getFullExportUrl, getVideoUrl, getPortraitUrl } from '../../services/audiobookApi';
-import type { SegmentResponse, ChapterResponse, CharacterRef } from '../../services/audiobookApi';
+import { getSegmentAudioUrl, getSegmentVisualUrl, getChapterExportUrl, getFullExportUrl, getVideoUrl, getDownloadAllUrl, setVideoFillMode } from '../../services/audiobookApi';
+import type { SegmentResponse, ChapterResponse, VisualParams } from '../../services/audiobookApi';
+import CharacterProfileModal from './CharacterProfileModal';
+import QueuePanel from './QueuePanel';
 
 // ============================================================
 // Design tokens
@@ -24,6 +27,57 @@ const inputStyle = 'w-full bg-white/[0.04] border border-white/[0.08] rounded-xl
 const selectStyle = 'bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white/80 focus:border-amber-500/40 focus:outline-none transition-all';
 const btnPrimary = 'px-5 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/20 hover:shadow-amber-500/30 hover:from-amber-400 hover:to-orange-500 transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none';
 const btnGhost = `px-4 py-2 rounded-xl text-sm font-medium ${glass} ${glassHover} text-white/70 hover:text-white transition-all`;
+
+// ============================================================
+// Collapsible sidebar section
+// ============================================================
+const SidebarSection: React.FC<{
+    icon: React.ReactNode;
+    label: string;
+    status?: string;
+    statusColor?: string;
+    defaultOpen?: boolean;
+    children: React.ReactNode;
+}> = ({ icon, label, status, statusColor = 'text-white/20', defaultOpen = true, children }) => {
+    const [open, setOpen] = useState(defaultOpen);
+    return (
+        <div className="space-y-2">
+            <button
+                onClick={() => setOpen(!open)}
+                className="w-full flex items-center gap-2 group"
+            >
+                <motion.div
+                    animate={{ rotate: open ? 90 : 0 }}
+                    transition={{ duration: 0.12 }}
+                    className="flex-shrink-0"
+                >
+                    <ChevronRight size={10} className="text-white/20" />
+                </motion.div>
+                <span className="flex items-center gap-1.5 text-[10px] font-semibold text-white/40 uppercase tracking-[0.12em]">
+                    {icon} {label}
+                </span>
+                {status && (
+                    <span className={`ml-auto text-[9px] font-medium ${statusColor} tabular-nums`}>{status}</span>
+                )}
+            </button>
+            <AnimatePresence initial={false}>
+                {open && (
+                    <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="overflow-hidden"
+                    >
+                        <div className="space-y-2 pl-4">
+                            {children}
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </div>
+    );
+};
 
 // ============================================================
 // Status badge component
@@ -60,24 +114,390 @@ const ProgressBar: React.FC<{ progress: number; size?: 'sm' | 'md' | 'lg'; glow?
 // ============================================================
 // Segment Row
 // ============================================================
+// Generate a stable color for a character name
+const getCharacterColor = (name: string | null): { hue: number; border: string; bg: string; text: string; badge: string; badgeBorder: string } => {
+    if (!name) {
+        // Narrator = amber
+        return {
+            hue: 38,
+            border: 'border-l-amber-500/40',
+            bg: 'bg-amber-500/[0.04]',
+            text: 'text-amber-400/80',
+            badge: 'bg-amber-500/10',
+            badgeBorder: 'border-amber-500/15',
+        };
+    }
+    // Hash character name to a hue (avoid yellows/ambers reserved for narrator)
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    const hue = ((Math.abs(hash) % 280) + 60) % 360; // skip 30-60 (amber range)
+    return {
+        hue,
+        border: '',  // will use inline style
+        bg: '',
+        text: '',
+        badge: '',
+        badgeBorder: '',
+    };
+};
+
+// Animation style options for image mode (applied via ffmpeg at export time)
+const ANIMATION_STYLES = [
+    { id: 'random', label: '🔀 Random', title: 'Randomly pick zoom in or out each time' },
+    { id: 'zoom_in', label: '🔍+ Zoom In', title: 'Slow Ken Burns zoom toward center' },
+    { id: 'zoom_out', label: '🔍− Zoom Out', title: 'Slow Ken Burns zoom back from center' },
+    { id: 'pan_left', label: '◀ Pan', title: 'Camera drifts left to right' },
+    { id: 'pan_right', label: '▶ Pan', title: 'Camera drifts right to left' },
+    { id: 'pan_up', label: '⬆ Pan Up', title: 'Camera drifts upward' },
+    { id: 'static', label: '☐ Static', title: 'No camera movement' },
+];
+
+// ============================================================
+// Visual Settings Popover
+// ============================================================
+const RESOLUTION_PRESETS = [
+    { label: '512×512', w: 512, h: 512 },
+    { label: '768×512', w: 768, h: 512 },
+    { label: '1024×576', w: 1024, h: 576 },
+    { label: '1920×1080', w: 1920, h: 1080 },
+];
+
+// Benchmark: ~49s for 25 frames at 768×512 on RTX 5090 ≈ 2s/frame
+// Image: ~15s
+const estimateTime = (mode: string, frames: number, w: number, h: number): string => {
+    if (mode === 'image') return '~15s';
+    const pixelFactor = (w * h) / (768 * 512);
+    const secs = Math.round(frames * 2.0 * pixelFactor);
+    return secs < 60 ? `~${secs}s` : `~${Math.round(secs / 60)}m ${secs % 60}s`;
+};
+
+const VisualSettingsPopover: React.FC<{
+    segment: SegmentResponse;
+    projectId: string;
+    onClose: () => void;
+}> = ({ segment, projectId, onClose }) => {
+    const { generateVisual, visualMode, visualSettings, setVisualSettings, updateSegment } = useAudiobookStore();
+
+    const computeFrames = useCallback((fpVal: number) => {
+        if (segment.duration) {
+            const raw = Math.round(segment.duration * fpVal);
+            const rounded = ((raw + 7) >> 3) * 8 + 1;
+            return Math.min(Math.max(rounded, 9), 449);
+        }
+        return visualSettings.frames;
+    }, [segment.duration, visualSettings.frames]);
+
+    const [localMode, setLocalMode] = useState<'image' | 'video'>(visualMode);
+    const [fps, setFps] = useState(visualSettings.fps);
+    const [frames, setFrames] = useState(() => computeFrames(visualSettings.fps));
+    const [resPick, setResPick] = useState(() =>
+        RESOLUTION_PRESETS.findIndex(r => r.w === visualSettings.width && r.h === visualSettings.height)
+    );
+    const [scenePrompt, setScenePrompt] = useState(segment.scene_prompt || '');
+    const [promptDirty, setPromptDirty] = useState(false);
+    const [savingPrompt, setSavingPrompt] = useState(false);
+    const [animationStyle, setAnimationStyle] = useState<string>(segment.animation_style || 'random');
+    const [fillMode, setFillMode] = useState<'loop' | 'hold' | 'fade'>(
+        (segment.video_fill_mode as 'loop' | 'hold' | 'fade') || 'hold'
+    );
+    const ref = useRef<HTMLDivElement>(null);
+
+    const handleFillModeChange = async (mode: 'loop' | 'hold' | 'fade') => {
+        setFillMode(mode);
+        try { await setVideoFillMode(projectId, segment.id, mode); } catch { }
+    };
+
+    const res = RESOLUTION_PRESETS[resPick < 0 ? 1 : resPick];
+    const estTime = estimateTime(localMode, frames, res.w, res.h);
+
+    const handleFpsChange = (val: number) => {
+        setFps(val);
+        setFrames(computeFrames(val));
+    };
+
+    // Close on outside click
+    useEffect(() => {
+        const handler = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [onClose]);
+
+    const handleSavePrompt = async () => {
+        if (!promptDirty) return;
+        setSavingPrompt(true);
+        try {
+            await updateSegment(segment.id, { scene_prompt: scenePrompt });
+            setPromptDirty(false);
+        } catch { }
+        setSavingPrompt(false);
+    };
+
+    const handleGenerate = async () => {
+        // Persist fps and resolution globally (not frames — each segment computes from duration)
+        setVisualSettings({ fps, width: res.w, height: res.h });
+        if (promptDirty) await handleSavePrompt();
+        onClose();
+        const params: VisualParams = {
+            mode: localMode,
+            frames,
+            fps,
+            width: res.w,
+            height: res.h,
+            ...(localMode === 'image' ? { animation: animationStyle } : {}),
+        };
+        await generateVisual(segment.id, params);
+    };
+
+    return (
+        <motion.div
+            ref={ref}
+            initial={{ opacity: 0, scale: 0.95, y: -4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: -4 }}
+            transition={{ duration: 0.12 }}
+            className="absolute right-0 top-10 z-50 w-80 rounded-2xl border border-white/10 bg-[#0d0d1a]/95 backdrop-blur-xl shadow-2xl shadow-black/60 p-4 space-y-3.5"
+        >
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <Film size={13} className="text-emerald-400" />
+                    <span className="text-xs font-semibold text-white/80">Visual Settings</span>
+                </div>
+                <button onClick={onClose} className="p-1 rounded-md text-white/25 hover:text-white/60 hover:bg-white/5 transition-colors">
+                    <X size={12} />
+                </button>
+            </div>
+
+            {/* Scene Prompt */}
+            <div className="space-y-1.5">
+                <label className="flex items-center justify-between text-[10px] font-medium text-white/40 uppercase tracking-wider">
+                    <span>Scene Prompt</span>
+                    {promptDirty && (
+                        <button
+                            onClick={handleSavePrompt}
+                            disabled={savingPrompt}
+                            className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/20 transition-colors"
+                        >
+                            {savingPrompt ? <Loader2 size={8} className="animate-spin" /> : <Check size={8} />}
+                            Save
+                        </button>
+                    )}
+                </label>
+                <textarea
+                    value={scenePrompt}
+                    onChange={e => { setScenePrompt(e.target.value); setPromptDirty(true); }}
+                    placeholder="Describe the visual scene (auto-generated by LLM if empty)…"
+                    rows={4}
+                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-[11px] text-white/80 placeholder:text-white/20 focus:border-emerald-500/40 focus:ring-1 focus:ring-emerald-500/20 focus:outline-none resize-none transition-all leading-relaxed"
+                />
+            </div>
+
+            {/* Mode toggle */}
+            <div className="space-y-1.5">
+                <label className="text-[10px] font-medium text-white/40 uppercase tracking-wider">Mode</label>
+                <div className="flex rounded-xl border border-white/[0.08] overflow-hidden">
+                    {(['image', 'video'] as const).map(m => (
+                        <button
+                            key={m}
+                            onClick={() => setLocalMode(m)}
+                            className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-medium transition-all ${localMode === m
+                                ? m === 'image'
+                                    ? 'bg-sky-500/20 text-sky-300'
+                                    : 'bg-violet-500/20 text-violet-300'
+                                : 'text-white/35 hover:text-white/60 hover:bg-white/[0.04]'
+                                }`}
+                        >
+                            {m === 'image' ? <Image size={11} /> : <Film size={11} />}
+                            {m.charAt(0).toUpperCase() + m.slice(1)}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* Animation style — image mode only */}
+            <AnimatePresence>
+                {localMode === 'image' && (
+                    <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="overflow-hidden space-y-1.5"
+                    >
+                        <label className="text-[10px] font-medium text-white/40 uppercase tracking-wider block">
+                            Animation <span className="normal-case text-white/20">(applied at export)</span>
+                        </label>
+                        <div className="grid grid-cols-3 gap-1">
+                            {ANIMATION_STYLES.map(s => (
+                                <button
+                                    key={s.id}
+                                    onClick={() => setAnimationStyle(s.id)}
+                                    title={s.title}
+                                    className={`py-1.5 px-1 rounded-lg text-[10px] font-medium transition-all border leading-tight ${animationStyle === s.id
+                                        ? 'bg-sky-500/20 text-sky-300 border-sky-500/30'
+                                        : 'text-white/35 border-white/[0.06] hover:text-white/60 hover:bg-white/[0.04]'
+                                        }`}
+                                >
+                                    {s.label}
+                                </button>
+                            ))}
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Video-only controls */}
+            <AnimatePresence>
+                {localMode === 'video' && (
+                    <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="overflow-hidden space-y-3"
+                    >
+                        {/* Video fill mode (when clip is shorter than audio) */}
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] font-medium text-white/40 uppercase tracking-wider block">
+                                When clip ends early
+                            </label>
+                            <div className="flex rounded-xl border border-white/[0.08] overflow-hidden">
+                                {([['loop', 'Loop'], ['hold', 'Hold frame'], ['fade', 'Fade out']] as const).map(([m, label]) => (
+                                    <button
+                                        key={m}
+                                        onClick={() => handleFillModeChange(m)}
+                                        className={`flex-1 py-1.5 text-[10px] font-medium transition-all ${fillMode === m
+                                            ? 'bg-violet-500/20 text-violet-300'
+                                            : 'text-white/35 hover:text-white/60 hover:bg-white/[0.04]'
+                                            }`}
+                                    >
+                                        {label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        {/* Frames */}
+                        <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                                <label className="text-[10px] font-medium text-white/40 uppercase tracking-wider">Frames</label>
+                                <div className="flex items-center gap-2">
+                                    {segment.duration && (
+                                        <span className="text-[9px] text-white/25 tabular-nums">({(frames / fps).toFixed(1)}s / {segment.duration.toFixed(1)}s audio)</span>
+                                    )}
+                                    <span className="text-[11px] text-white/60 tabular-nums font-mono">{frames}</span>
+                                </div>
+                            </div>
+                            <input
+                                type="range" min={9} max={449} step={8}
+                                value={frames}
+                                onChange={e => setFrames(Number(e.target.value))}
+                                className="w-full h-1.5 accent-violet-500 bg-white/10 rounded-full appearance-none cursor-pointer"
+                            />
+                            <div className="flex justify-between text-[9px] text-white/20">
+                                <span>9</span><span>225</span><span>449</span>
+                            </div>
+                        </div>
+
+                        {/* FPS */}
+                        <div className="flex items-center gap-3">
+                            <label className="text-[10px] font-medium text-white/40 uppercase tracking-wider w-8">FPS</label>
+                            <input
+                                type="range" min={8} max={30} step={1}
+                                value={fps}
+                                onChange={e => handleFpsChange(Number(e.target.value))}
+                                className="flex-1 h-1.5 accent-violet-500 bg-white/10 rounded-full appearance-none cursor-pointer"
+                            />
+                            <span className="text-[11px] text-white/60 tabular-nums font-mono w-8 text-right">{fps}</span>
+                        </div>
+
+                        {/* Duration estimate from frames/fps */}
+                        <div className="text-[10px] text-white/30 text-center">
+                            Duration: ~{(frames / fps).toFixed(1)}s
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Resolution */}
+            <div className="space-y-1.5">
+                <label className="text-[10px] font-medium text-white/40 uppercase tracking-wider">Resolution</label>
+                <div className="grid grid-cols-2 gap-1.5">
+                    {RESOLUTION_PRESETS.map((r, i) => (
+                        <button
+                            key={r.label}
+                            onClick={() => setResPick(i)}
+                            className={`py-1.5 rounded-lg text-[10px] font-mono transition-all border ${resPick === i
+                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                : 'text-white/35 border-white/[0.06] hover:text-white/60 hover:bg-white/[0.04]'
+                                }`}
+                        >
+                            {r.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* Time estimate + Generate */}
+            <div className="pt-1 border-t border-white/[0.05] flex items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5 text-white/40">
+                    <Timer size={11} />
+                    <span className="text-[11px]">{estTime}</span>
+                </div>
+                <button
+                    onClick={handleGenerate}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-emerald-500/80 to-teal-600/80 text-white shadow-lg shadow-emerald-500/10 hover:from-emerald-500 hover:to-teal-600 transition-all active:scale-[0.98]"
+                >
+                    <Zap size={12} /> Generate
+                </button>
+            </div>
+        </motion.div>
+    );
+};
+
+// ============================================================
+// Segment Row
+// ============================================================
 const SegmentRow: React.FC<{
     segment: SegmentResponse;
     projectId: string;
     voices: string[];
     index: number;
 }> = ({ segment, projectId, voices, index }) => {
-    const { generateSegment, updateSegment, splitSegment, mergeSegment, generateVisual, generating, playingSegmentId, setPlayingSegment } = useAudiobookStore();
+    const { generateSegment, updateSegment, splitSegment, mergeSegment, generateVisual, generateScenePrompt, generating, playingSegmentId, setPlayingSegment } = useAudiobookStore();
     const [editing, setEditing] = useState(false);
     const [editText, setEditText] = useState(segment.text);
     const [editVoice, setEditVoice] = useState(segment.voice_name || '');
     const [showFullVisual, setShowFullVisual] = useState(false);
-    const [showVisualMenu, setShowVisualMenu] = useState(false);
+    const [showVisualSettings, setShowVisualSettings] = useState(false);
+    const [visualTimestamp, setVisualTimestamp] = useState(() => Date.now());
     const audioRef = useRef<HTMLAudioElement>(null);
     const isGenerating = generating.has(segment.id);
+    const isGeneratingPrompt = generating.has(`prompt:${segment.id}`);
     const isPlaying = playingSegmentId === segment.id;
     const isStale = segment.status === 'pending' && !segment.has_audio;
     const hasVisual = segment.has_visual && segment.visual_status === 'done';
-    const isVisualGenerating = segment.visual_status === 'generating';
+
+    // Bust browser cache any time visual_status flips to 'done' (regeneration)
+    const prevVisualStatus = React.useRef(segment.visual_status);
+    useEffect(() => {
+        if (segment.visual_status === 'done' && prevVisualStatus.current !== 'done') {
+            setVisualTimestamp(Date.now());
+        }
+        prevVisualStatus.current = segment.visual_status;
+    }, [segment.visual_status]);
+
+    const speakerName = segment.character || null; // null = narrator
+    const speakerLabel = segment.character || 'Narrator';
+    const charColor = getCharacterColor(speakerName);
+    const isNarrator = !segment.character;
+
+    // For characters: compute inline HSL colors; for narrator: use Tailwind classes
+    const borderColor = isNarrator ? undefined : `hsl(${charColor.hue}, 70%, 55%)`;
+    const badgeBg = isNarrator ? undefined : `hsla(${charColor.hue}, 70%, 55%, 0.12)`;
+    const badgeBorder = isNarrator ? undefined : `hsla(${charColor.hue}, 70%, 55%, 0.2)`;
+    const badgeText = isNarrator ? undefined : `hsl(${charColor.hue}, 70%, 70%)`;
 
     const handlePlay = useCallback(() => {
         if (!segment.has_audio) return;
@@ -109,13 +529,16 @@ const SegmentRow: React.FC<{
             initial={{ opacity: 0, x: -8 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: index * 0.02 }}
-            className={`group relative rounded-xl p-3.5 transition-all duration-200
+            className={`group relative rounded-xl p-3.5 transition-all duration-200 border-l-[3px]
                 ${isPlaying
                     ? 'bg-amber-500/[0.08] border border-amber-500/20 shadow-[0_0_20px_rgba(251,191,36,0.06)]'
                     : isGenerating
                         ? 'bg-sky-500/[0.05] border border-sky-500/15'
-                        : 'bg-white/[0.015] border border-transparent hover:bg-white/[0.04] hover:border-white/[0.06]'
+                        : `${isNarrator ? charColor.bg : ''} border border-transparent hover:bg-white/[0.04] hover:border-white/[0.06]`
                 }`}
+            style={{
+                borderLeftColor: isPlaying ? undefined : (borderColor || (isNarrator ? 'rgba(251, 191, 36, 0.4)' : undefined)),
+            }}
         >
             <audio ref={audioRef} onEnded={() => setPlayingSegment(null)} onError={() => setPlayingSegment(null)} />
 
@@ -146,9 +569,9 @@ const SegmentRow: React.FC<{
                             className="block rounded-lg overflow-hidden border border-white/10 hover:border-emerald-500/30 transition-all hover:shadow-lg hover:shadow-emerald-500/10"
                         >
                             <img
-                                src={getSegmentVisualUrl(projectId, segment.id)}
+                                src={`${getSegmentVisualUrl(projectId, segment.id)}?t=${visualTimestamp}`}
                                 alt={segment.scene_prompt || 'Generated visual'}
-                                className="w-16 h-16 object-cover"
+                                className="w-16 h-16 object-cover object-top"
                                 loading="lazy"
                             />
                         </button>
@@ -159,7 +582,7 @@ const SegmentRow: React.FC<{
                                 className="absolute top-0 left-20 z-50 rounded-xl overflow-hidden border border-white/15 shadow-2xl shadow-black/60 bg-black/90"
                             >
                                 <img
-                                    src={getSegmentVisualUrl(projectId, segment.id)}
+                                    src={`${getSegmentVisualUrl(projectId, segment.id)}?t=${visualTimestamp}`}
                                     alt={segment.scene_prompt || 'Generated visual'}
                                     className="max-w-[400px] max-h-[400px] object-contain"
                                 />
@@ -207,6 +630,29 @@ const SegmentRow: React.FC<{
                         </motion.div>
                     ) : (
                         <>
+                            {/* Speaker tag */}
+                            <div className="flex items-center gap-2 mb-1">
+                                <span
+                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border
+                                        ${isNarrator
+                                            ? 'bg-amber-500/10 text-amber-400/80 border-amber-500/15'
+                                            : ''
+                                        }`}
+                                    style={!isNarrator ? {
+                                        backgroundColor: badgeBg,
+                                        borderColor: badgeBorder,
+                                        color: badgeText,
+                                    } : undefined}
+                                >
+                                    {isNarrator ? <Headphones size={9} /> : <Users size={9} />}
+                                    {speakerLabel}
+                                </span>
+                                {segment.voice_name && (
+                                    <span className="text-[10px] text-white/25 flex items-center gap-0.5">
+                                        <Mic size={8} /> {segment.voice_name}
+                                    </span>
+                                )}
+                            </div>
                             <p className="text-[13px] text-white/75 leading-[1.7] line-clamp-2 group-hover:line-clamp-none transition-all">
                                 {segment.text}
                             </p>
@@ -215,16 +661,6 @@ const SegmentRow: React.FC<{
                                 {isStale && (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/15">
                                         <AlertCircle size={8} /> needs re-gen
-                                    </span>
-                                )}
-                                {segment.voice_name && (
-                                    <span className="inline-flex items-center gap-1 text-[11px] text-white/35">
-                                        <Mic size={9} /> {segment.voice_name}
-                                    </span>
-                                )}
-                                {segment.character && (
-                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] bg-violet-500/10 text-violet-400/80 border border-violet-500/10">
-                                        <Users size={8} /> {segment.character}
                                     </span>
                                 )}
                                 {segment.emotion && (
@@ -237,9 +673,8 @@ const SegmentRow: React.FC<{
                                 )}
                                 {/* Visual status indicator */}
                                 {segment.visual_status === 'done' && (
-                                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] bg-emerald-500/10 text-emerald-400/80 border border-emerald-500/10" title={segment.visual_mode || 'image'}>
-                                        {segment.visual_mode?.includes('video') ? <Video size={8} /> : <Image size={8} />}
-                                        {' '}{segment.visual_mode === 'faceid_image' ? 'FaceID' : segment.visual_mode === 'faceid_video' ? 'FaceID Video' : segment.visual_mode === 'image_ref' ? 'Ref Image' : segment.visual_mode === 'video' ? 'Video' : 'Image'}
+                                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] bg-emerald-500/10 text-emerald-400/80 border border-emerald-500/10">
+                                        <Image size={8} /> Visual
                                     </span>
                                 )}
                                 {segment.visual_status === 'generating' && (
@@ -259,13 +694,12 @@ const SegmentRow: React.FC<{
 
                 {/* Actions toolbar */}
                 {!editing && (
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all duration-200 flex-shrink-0">
+                    <div className="relative flex items-center gap-0.5 flex-shrink-0">
                         {[
                             { icon: <Edit3 size={13} />, title: 'Edit text', onClick: () => { setEditText(segment.text); setEditVoice(segment.voice_name || ''); setEditing(true); }, color: 'hover:text-white/80' },
                             { icon: <Sparkles size={13} />, title: 'Split segment', onClick: () => splitSegment(segment.id), color: 'hover:text-sky-400' },
                             { icon: <Layers size={13} />, title: 'Merge with next', onClick: () => mergeSegment(segment.id), color: 'hover:text-violet-400' },
-                            { icon: isVisualGenerating ? <Loader2 size={13} className="animate-spin" /> : <Eye size={13} />, title: 'Visual modes', onClick: () => setShowVisualMenu(!showVisualMenu), color: showVisualMenu ? 'text-emerald-400 bg-white/[0.06]' : 'hover:text-emerald-400', disabled: isVisualGenerating },
-                            { icon: isGenerating ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />, title: 'Re-generate audio', onClick: () => generateSegment(segment.id), color: 'hover:text-amber-400', disabled: isGenerating },
+                            { icon: <RefreshCw size={13} />, title: 'Re-generate audio', onClick: () => generateSegment(segment.id), color: 'hover:text-amber-400', disabled: isGenerating },
                         ].map((btn, i) => (
                             <button
                                 key={i}
@@ -277,45 +711,51 @@ const SegmentRow: React.FC<{
                                 {btn.icon}
                             </button>
                         ))}
+                        {/* Regenerate scene prompt button */}
+                        <button
+                            onClick={() => generateScenePrompt(segment.id)}
+                            disabled={isGeneratingPrompt || isGenerating}
+                            title={segment.scene_prompt ? 'Regenerate scene prompt' : 'Generate scene prompt'}
+                            className={`p-1.5 rounded-lg transition-all text-white/25 hover:text-cyan-400 hover:bg-white/[0.06] disabled:opacity-30 ${isGeneratingPrompt ? 'text-cyan-400 bg-cyan-500/10' : ''}`}
+                        >
+                            {isGeneratingPrompt
+                                ? <Loader2 size={13} className="animate-spin" />
+                                : <FileText size={13} />
+                            }
+                        </button>
+                        {/* Visual settings button with popover */}
+                        <button
+                            onClick={() => setShowVisualSettings(!showVisualSettings)}
+                            title="Visual settings & generate"
+                            disabled={isGenerating}
+                            className={`p-1.5 rounded-lg transition-all ${isGenerating
+                                ? 'text-sky-400 bg-sky-500/10'
+                                : showVisualSettings
+                                    ? 'bg-emerald-500/20 text-emerald-400'
+                                    : 'text-white/25 hover:text-emerald-400 hover:bg-white/[0.06]'
+                                }`}
+                        >
+                            {isGenerating || segment.visual_status === 'generating'
+                                ? <Loader2 size={13} className="animate-spin" />
+                                : <Image size={13} />
+                            }
+                        </button>
+                        <AnimatePresence>
+                            {showVisualSettings && (
+                                <VisualSettingsPopover
+                                    segment={segment}
+                                    projectId={projectId}
+                                    onClose={() => setShowVisualSettings(false)}
+                                />
+                            )}
+                        </AnimatePresence>
                     </div>
-                )}
-
-                {/* Visual Mode Dropdown */}
-                {showVisualMenu && !editing && (
-                    <motion.div
-                        initial={{ opacity: 0, y: -4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="absolute right-0 top-full mt-1 z-40 rounded-xl border border-white/10 bg-[#0f0f1a]/95 backdrop-blur-xl shadow-2xl shadow-black/60 p-1.5 min-w-[220px]"
-                    >
-                        <div className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest text-white/25 font-semibold">Generate Visual</div>
-                        {[
-                            { mode: 'image', icon: <Image size={14} />, label: 'Scene Image', desc: 'Qwen-Image, no character', color: 'text-white/60' },
-                            { mode: 'image_ref', icon: <Image size={14} />, label: 'Ref Image', desc: 'img2img from portrait', color: 'text-sky-400' },
-                            { mode: 'faceid_image', icon: <Eye size={14} />, label: 'FaceID Image', desc: 'SDXL + face identity', color: 'text-emerald-400' },
-                            { mode: 'video', icon: <Video size={14} />, label: 'Scene Video', desc: 'LTX-2, no character', color: 'text-white/60' },
-                            { mode: 'faceid_video', icon: <Film size={14} />, label: 'FaceID Video', desc: 'FaceID image → animated', color: 'text-amber-400' },
-                        ].map((item) => (
-                            <button
-                                key={item.mode}
-                                onClick={() => { generateVisual(segment.id, item.mode); setShowVisualMenu(false); }}
-                                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left hover:bg-white/[0.06] transition-all group/vm ${segment.visual_mode === item.mode ? 'bg-white/[0.04]' : ''}`}
-                            >
-                                <span className={item.color}>{item.icon}</span>
-                                <div className="flex-1 min-w-0">
-                                    <div className={`text-xs font-medium ${item.color}`}>{item.label}</div>
-                                    <div className="text-[10px] text-white/30 leading-tight">{item.desc}</div>
-                                </div>
-                                {segment.visual_mode === item.mode && (
-                                    <Check size={12} className="text-emerald-400 flex-shrink-0" />
-                                )}
-                            </button>
-                        ))}
-                    </motion.div>
                 )}
             </div>
         </motion.div>
     );
 };
+
 
 // ============================================================
 // Chapter Player (continuous playback + timeline)
@@ -471,7 +911,7 @@ const ChapterSection: React.FC<{
     onGenerateChapter?: (idx: number) => void;
     generatingSegmentId?: string | null;
 }> = ({ chapter, projectId, voices, onGenerateChapter, generatingSegmentId }) => {
-    const { generateChapter } = useAudiobookStore();
+    const { generateChapter, generateAllVisuals } = useAudiobookStore();
     const [expanded, setExpanded] = useState(true);
     const donePercent = Math.round(chapter.progress * 100);
 
@@ -527,12 +967,21 @@ const ChapterSection: React.FC<{
                     <button
                         onClick={handleGenerate}
                         className="px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-[11px] font-medium text-amber-400/80 hover:text-amber-400 border border-amber-500/10 hover:border-amber-500/20 transition-all flex items-center gap-1.5"
+                        title="Generate TTS audio for this chapter"
                     >
-                        <Zap size={11} /> Generate
+                        <Zap size={11} /> Generate Audio
+                    </button>
+                    <button
+                        onClick={() => generateAllVisuals()}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-[11px] font-medium text-emerald-400/80 hover:text-emerald-400 border border-emerald-500/10 hover:border-emerald-500/20 transition-all flex items-center gap-1.5"
+                        title="Generate visuals for all segments in this chapter"
+                    >
+                        <Image size={11} /> Generate Visuals
                     </button>
                     <a
                         href={getChapterExportUrl(projectId, chapter.index)}
                         className="px-3 py-1.5 rounded-lg bg-white/[0.03] hover:bg-white/[0.06] text-[11px] font-medium text-white/40 hover:text-white/70 border border-white/[0.06] transition-all flex items-center gap-1.5"
+                        title="Export this chapter's audio"
                     >
                         <Download size={11} /> Export
                     </a>
@@ -782,10 +1231,32 @@ const NewProjectModal: React.FC<{
 // Character Voice Panel
 // ============================================================
 const CharacterVoicePanel: React.FC = () => {
-    const { currentProject, availableVoices, updateCharacterMap, analyzeCharacters, analyzing } = useAudiobookStore();
+    const { currentProject, availableVoices, updateCharacterMap, analyzeCharacters, analyzing, setCurrentProject } = useAudiobookStore();
+    const [selectedChar, setSelectedChar] = useState<any>(null);
+    const [extracting, setExtracting] = useState(false);
+    const [extractStep, setExtractStep] = useState('');
+    const [generatingPortraits, setGeneratingPortraits] = useState(false);
+    const [portraitProgress, setPortraitProgress] = useState({ done: 0, total: 0, currentName: '' });
+    const [generatingNarrator, setGeneratingNarrator] = useState(false);
+    const [designingNarrator, setDesigningNarrator] = useState(false);
+    const [narratorPrompt, setNarratorPrompt] = useState('');
+    const [elapsed, setElapsed] = useState(0);
+    const elapsedRef = useRef<any>(null);
+
     if (!currentProject) return null;
 
     const { detected_characters, character_voice_map, character_descriptions, narrator_voice } = currentProject;
+
+    // Sync narrator prompt from project data
+    useEffect(() => {
+        setNarratorPrompt(currentProject.narrator_voice_prompt || '');
+    }, [currentProject.narrator_voice_prompt]);
+
+    const startTimer = () => {
+        setElapsed(0);
+        elapsedRef.current = setInterval(() => setElapsed(t => t + 1), 1000);
+    };
+    const stopTimer = () => { clearInterval(elapsedRef.current); elapsedRef.current = null; };
 
     const handleVoiceChange = (character: string, voice: string) => {
         const newMap = { ...character_voice_map, [character]: voice };
@@ -796,17 +1267,148 @@ const CharacterVoicePanel: React.FC = () => {
         updateCharacterMap(character_voice_map, voice);
     };
 
+    const handleExtractCharacters = async () => {
+        setExtracting(true);
+        setExtractStep('Analyzing book text for characters…');
+        startTimer();
+        try {
+            const { extractCharacters } = await import('../../services/audiobookApi');
+            const updated = await extractCharacters(currentProject.id);
+            setCurrentProject(updated);
+            toast.success(`Extracted ${updated.characters?.length || 0} characters`);
+        } catch (e: any) {
+            toast.error(e.message || 'Character extraction failed');
+        } finally {
+            setExtracting(false);
+            setExtractStep('');
+            stopTimer();
+        }
+    };
+
+    const handleGeneratePortraits = async () => {
+        const chars = currentProject.characters || [];
+        const needPortrait = chars.filter(c => !c.portrait_path);
+        setGeneratingPortraits(true);
+        setPortraitProgress({ done: 0, total: needPortrait.length, currentName: needPortrait[0]?.name || '' });
+        startTimer();
+
+        // Start portrait generation (backend processes synchronously)
+        const portraitPromise = (async () => {
+            const { generatePortraits } = await import('../../services/audiobookApi');
+            return await generatePortraits(currentProject.id);
+        })();
+
+        // Poll for progress while generating
+        const pollInterval = setInterval(async () => {
+            try {
+                const { getProject } = await import('../../services/audiobookApi');
+                const snap = await getProject(currentProject.id);
+                const doneCount = (snap.characters || []).filter(c => c.portrait_path).length;
+                const prevDone = (currentProject.characters || []).filter(c => c.portrait_path).length;
+                const newDone = doneCount - prevDone;
+                if (newDone > 0) {
+                    const nextChar = needPortrait[newDone] || needPortrait[needPortrait.length - 1];
+                    setPortraitProgress({ done: newDone, total: needPortrait.length, currentName: nextChar?.name || '' });
+                }
+            } catch { /* ignore polling errors */ }
+        }, 3000);
+
+        try {
+            const updated = await portraitPromise;
+            setCurrentProject(updated);
+            toast.success('All portraits generated!');
+        } catch (e: any) {
+            toast.error(e.message || 'Portrait generation failed');
+        } finally {
+            clearInterval(pollInterval);
+            setGeneratingPortraits(false);
+            setPortraitProgress({ done: 0, total: 0, currentName: '' });
+            stopTimer();
+        }
+    };
+
+
+    const handleProjectUpdate = (updated: any) => {
+        setCurrentProject(updated);
+        // Update selected character if modal is open
+        if (selectedChar && updated.characters) {
+            const updatedChar = updated.characters.find((c: any) => c.name === selectedChar.name);
+            if (updatedChar) setSelectedChar(updatedChar);
+        }
+    };
+
+    const characters = currentProject.characters && currentProject.characters.length > 0
+        ? currentProject.characters
+        : detected_characters.map((name: string) => ({ name, description: character_descriptions?.[name] || '' }));
+
     return (
         <div className="space-y-4">
-            {/* AI auto-assign */}
-            <button
-                onClick={() => analyzeCharacters().then(() => toast.success('AI analysis complete!'))}
-                disabled={analyzing}
-                className="w-full px-3 py-2.5 rounded-xl text-[11px] font-semibold bg-gradient-to-r from-violet-500/15 to-purple-500/15 hover:from-violet-500/25 hover:to-purple-500/25 border border-violet-500/15 text-violet-300 hover:text-violet-200 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
-            >
-                {analyzing ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-                {analyzing ? 'Analyzing...' : '✨ Auto-Assign Voices'}
-            </button>
+            {/* Action buttons */}
+            <div className="space-y-2">
+                <button
+                    onClick={() => analyzeCharacters().then(() => toast.success('AI analysis complete!'))}
+                    disabled={analyzing}
+                    className="w-full px-3 py-2.5 rounded-xl text-[11px] font-semibold bg-gradient-to-r from-violet-500/15 to-purple-500/15 hover:from-violet-500/25 hover:to-purple-500/25 border border-violet-500/15 text-violet-300 hover:text-violet-200 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+                    title="Detect speaking characters and assign voices automatically"
+                >
+                    {analyzing ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                    {analyzing ? 'Analyzing…' : '✨ Auto-Assign Voices'}
+                </button>
+
+                {/* Extract Characters */}
+                {extracting ? (
+                    <div className="rounded-xl border border-violet-500/15 bg-violet-500/[0.05] p-2.5 space-y-2">
+                        <div className="flex items-center gap-2">
+                            <Loader2 size={11} className="animate-spin text-violet-400 flex-shrink-0" />
+                            <span className="text-[10px] font-medium text-violet-300 flex-1">{extractStep}</span>
+                            <span className="text-[9px] text-white/20 tabular-nums font-mono">{elapsed}s</span>
+                        </div>
+                        <div className="w-full h-1 bg-white/[0.04] rounded-full overflow-hidden">
+                            <div className="h-full bg-violet-500/50 rounded-full animate-pulse" style={{ width: '100%' }} />
+                        </div>
+                    </div>
+                ) : (
+                    <button
+                        onClick={handleExtractCharacters}
+                        className="w-full px-2 py-2 rounded-xl text-[10px] font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-white/50 hover:text-white/70 transition-all flex items-center justify-center gap-1.5"
+                        title="Analyze book text to identify all speaking characters and build profiles"
+                    >
+                        <Users size={10} /> Extract Characters
+                    </button>
+                )}
+
+                {/* Generate All Portraits */}
+                {generatingPortraits ? (
+                    <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/[0.05] p-2.5 space-y-2">
+                        <div className="flex items-center gap-2">
+                            <Loader2 size={11} className="animate-spin text-emerald-400 flex-shrink-0" />
+                            <span className="text-[10px] font-medium text-emerald-300 flex-1 truncate">
+                                Generating portrait{portraitProgress.currentName ? `: ${portraitProgress.currentName}` : '…'}
+                            </span>
+                            <span className="text-[9px] text-white/20 tabular-nums font-mono">{elapsed}s</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                                <motion.div
+                                    className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full"
+                                    animate={{ width: portraitProgress.total > 0 ? `${(portraitProgress.done / portraitProgress.total) * 100}%` : '10%' }}
+                                    transition={{ duration: 0.4 }}
+                                />
+                            </div>
+                            <span className="text-[9px] text-emerald-400/60 tabular-nums">{portraitProgress.done}/{portraitProgress.total}</span>
+                        </div>
+                    </div>
+                ) : (
+                    <button
+                        onClick={handleGeneratePortraits}
+                        disabled={!currentProject.characters?.length}
+                        className="w-full px-2 py-2 rounded-xl text-[10px] font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-white/50 hover:text-white/70 transition-all disabled:opacity-40 flex items-center justify-center gap-1.5"
+                        title="Generate visual portraits for each character using ComfyUI"
+                    >
+                        <Image size={10} /> Generate All Portraits
+                    </button>
+                )}
+            </div>
 
             {/* Narrator */}
             <div>
@@ -823,139 +1425,128 @@ const CharacterVoicePanel: React.FC = () => {
                         <option key={v} value={v} className="bg-[#0f0f1a]">{v}</option>
                     ))}
                 </select>
+
+                {/* Narrator voice prompt */}
+                <div className="mt-2 space-y-1.5">
+                    <textarea
+                        value={narratorPrompt}
+                        onChange={(e) => setNarratorPrompt(e.target.value)}
+                        onBlur={async () => {
+                            if (narratorPrompt !== (currentProject.narrator_voice_prompt || '')) {
+                                try {
+                                    const { updateNarratorVoicePrompt } = await import('../../services/audiobookApi');
+                                    const updated = await updateNarratorVoicePrompt(currentProject.id, narratorPrompt);
+                                    setCurrentProject(updated);
+                                } catch (e: any) {
+                                    toast.error(e.message || 'Failed to save narrator prompt');
+                                }
+                            }
+                        }}
+                        placeholder="Describe the ideal narrator voice... (auto-generated or edit manually)"
+                        className={`${inputStyle} text-[11px] resize-y font-mono leading-relaxed min-h-[60px]`}
+                        rows={3}
+                    />
+                    <div className="flex gap-1.5">
+                        <button
+                            onClick={async () => {
+                                setGeneratingNarrator(true);
+                                try {
+                                    const { generateNarratorVoice } = await import('../../services/audiobookApi');
+                                    const updated = await generateNarratorVoice(currentProject.id);
+                                    setCurrentProject(updated);
+                                    toast.success('Narrator voice generated!');
+                                } catch (e: any) {
+                                    toast.error(e.message || 'Narrator voice generation failed');
+                                } finally {
+                                    setGeneratingNarrator(false);
+                                }
+                            }}
+                            disabled={generatingNarrator}
+                            className="flex-1 px-2 py-1.5 rounded-lg text-[10px] font-semibold bg-gradient-to-r from-amber-500/10 to-orange-500/10 hover:from-amber-500/20 hover:to-orange-500/20 border border-amber-500/10 text-amber-400/80 hover:text-amber-400 transition-all disabled:opacity-40 flex items-center justify-center gap-1"
+                        >
+                            {generatingNarrator ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                            Generate
+                        </button>
+                        <button
+                            onClick={async () => {
+                                setDesigningNarrator(true);
+                                try {
+                                    const { designNarratorVoice } = await import('../../services/audiobookApi');
+                                    const updated = await designNarratorVoice(currentProject.id);
+                                    setCurrentProject(updated);
+                                    toast.success('Narrator voice redesigned!');
+                                } catch (e: any) {
+                                    toast.error(e.message || 'Voice redesign failed');
+                                } finally {
+                                    setDesigningNarrator(false);
+                                }
+                            }}
+                            disabled={designingNarrator || !narratorPrompt.trim()}
+                            className="flex-1 px-2 py-1.5 rounded-lg text-[10px] font-semibold bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-white/50 hover:text-white/70 transition-all disabled:opacity-40 flex items-center justify-center gap-1"
+                        >
+                            {designingNarrator ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                            Redesign
+                        </button>
+                    </div>
+                </div>
             </div>
 
             {/* Characters */}
-            {detected_characters.length > 0 && (
+            {characters.length > 0 && (
                 <div>
                     <label className="text-[10px] font-semibold text-white/30 uppercase tracking-[0.12em] mb-2 block flex items-center gap-1.5">
-                        <Users size={10} /> Characters ({detected_characters.length})
+                        <Users size={10} /> Characters ({characters.length})
                     </label>
-                    <div className="space-y-2.5">
-                        {detected_characters.map((char: string) => (
-                            <div key={char} className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                    <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-violet-500/20 to-pink-500/20 flex items-center justify-center border border-violet-500/10 flex-shrink-0">
-                                        <span className="text-[10px] font-bold text-violet-300">{char[0]}</span>
+                    <div className="space-y-2">
+                        {characters.map((char: any) => {
+                            const name = char.name;
+                            const portraitUrl = char.portrait_path
+                                ? `/audiobook/projects/${currentProject.id}/characters/${encodeURIComponent(name)}/portrait`
+                                : null;
+
+                            return (
+                                <button
+                                    key={name}
+                                    onClick={() => setSelectedChar(char)}
+                                    className="w-full text-left bg-white/[0.02] border border-white/5 rounded-xl p-2.5 hover:bg-white/[0.05] hover:border-violet-500/15 transition-all group cursor-pointer"
+                                >
+                                    <div className="flex items-center gap-2.5">
+                                        {portraitUrl ? (
+                                            <img src={portraitUrl} alt={name} className="w-8 h-8 rounded-lg object-cover object-top border border-white/10 flex-shrink-0" />
+                                        ) : (
+                                            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500/20 to-pink-500/20 flex items-center justify-center border border-violet-500/10 flex-shrink-0">
+                                                <span className="text-[11px] font-bold text-violet-300">{name[0]}</span>
+                                            </div>
+                                        )}
+                                        <div className="flex-1 min-w-0">
+                                            <h4 className="text-[12px] font-semibold text-white/70 truncate group-hover:text-white/90 transition-colors">{name}</h4>
+                                            <span className="text-[9px] text-white/25">
+                                                {character_voice_map[name] || 'Narrator'} · {char.visual_profile ? '📋' : ''} Click to view
+                                            </span>
+                                        </div>
+                                        <ChevronRight size={12} className="text-white/15 group-hover:text-white/30 transition-colors flex-shrink-0" />
                                     </div>
-                                    <span className="text-xs text-white/60 w-16 truncate flex-shrink-0 font-medium" title={char}>{char}</span>
-                                    <select
-                                        value={character_voice_map[char] || ''}
-                                        onChange={(e) => handleVoiceChange(char, e.target.value)}
-                                        className={`${selectStyle} flex-1 text-[11px] py-1.5`}
-                                    >
-                                        <option value="" className="bg-[#0f0f1a]">Narrator</option>
-                                        {availableVoices.map((v: string) => (
-                                            <option key={v} value={v} className="bg-[#0f0f1a]">{v}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                                {character_descriptions && character_descriptions[char] && (
-                                    <p className="text-[10px] text-white/20 pl-8 leading-relaxed italic">
-                                        {character_descriptions[char]}
-                                    </p>
-                                )}
-                            </div>
-                        ))}
+                                </button>
+                            );
+                        })}
                     </div>
                 </div>
             )}
-        </div>
-    );
-};
 
-// ============================================================
-// Character Portraits Panel
-// ============================================================
-const CharacterPortraitPanel: React.FC = () => {
-    const { currentProject, extractCharacters, generatePortraits, extractingCharacters } = useAudiobookStore();
-    if (!currentProject) return null;
+            {/* Queue Panel */}
+            <QueuePanel />
 
-    const characters: CharacterRef[] = currentProject.characters || [];
-    const hasCharacters = characters.length > 0;
-    const hasAllPortraits = hasCharacters && characters.every((c: CharacterRef) => c.portrait_path);
-    const hasAnyPortrait = hasCharacters && characters.some((c: CharacterRef) => c.portrait_path);
-
-    return (
-        <div className="space-y-3">
-            <label className="text-[10px] font-semibold text-white/30 uppercase tracking-[0.12em] mb-1.5 block flex items-center gap-1.5">
-                <Palette size={10} /> Characters & Portraits
-            </label>
-
-            {/* Action buttons */}
-            <div className="space-y-2">
-                <button
-                    onClick={() => extractCharacters().then(() => toast.success('Characters extracted!'))}
-                    disabled={extractingCharacters}
-                    className="w-full px-3 py-2 rounded-xl text-[11px] font-semibold bg-gradient-to-r from-cyan-500/15 to-blue-500/15 hover:from-cyan-500/25 hover:to-blue-500/25 border border-cyan-500/15 text-cyan-300 hover:text-cyan-200 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
-                >
-                    {extractingCharacters ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
-                    {extractingCharacters ? 'Extracting...' : '🔍 Extract Characters'}
-                </button>
-
-                {hasCharacters && (
-                    <button
-                        onClick={() => generatePortraits().then(() => toast.success('Portraits generated!'))}
-                        disabled={extractingCharacters || hasAllPortraits}
-                        className="w-full px-3 py-2 rounded-xl text-[11px] font-semibold bg-gradient-to-r from-amber-500/15 to-orange-500/15 hover:from-amber-500/25 hover:to-orange-500/25 border border-amber-500/15 text-amber-300 hover:text-amber-200 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
-                    >
-                        {extractingCharacters ? <Loader2 size={13} className="animate-spin" /> : <Palette size={13} />}
-                        {hasAllPortraits ? '✅ All Portraits Ready' : '🎨 Generate Portraits'}
-                    </button>
-                )}
-            </div>
-
-            {/* Character list with portrait thumbnails */}
-            {hasCharacters && (
-                <div className="space-y-2.5">
-                    {characters.map((char: CharacterRef) => (
-                        <div key={char.name} className={`rounded-xl p-2.5 ${glass} transition-all`}>
-                            <div className="flex items-start gap-2.5">
-                                {/* Portrait thumbnail */}
-                                <div className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 border border-white/[0.08] bg-white/[0.03]">
-                                    {char.portrait_path ? (
-                                        <img
-                                            src={getPortraitUrl(currentProject.id, char.name)}
-                                            alt={char.name}
-                                            className="w-full h-full object-cover"
-                                        />
-                                    ) : (
-                                        <div className="w-full h-full flex items-center justify-center">
-                                            <Users size={16} className="text-white/15" />
-                                        </div>
-                                    )}
-                                </div>
-
-                                {/* Character info */}
-                                <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-1.5">
-                                        <span className="text-xs font-semibold text-white/80 truncate">{char.name}</span>
-                                        {char.portrait_comfyui && (
-                                            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/15">ref</span>
-                                        )}
-                                    </div>
-                                    {char.description && (
-                                        <p className="text-[10px] text-white/25 leading-relaxed mt-0.5 line-clamp-2">
-                                            {char.description}
-                                        </p>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            )}
-
-            {!hasCharacters && (
-                <p className="text-[10px] text-white/15 text-center py-2">
-                    Extract characters from book text to generate reference portraits
-                </p>
-            )}
-
-            {hasAnyPortrait && (
-                <p className="text-[10px] text-white/20 text-center">
-                    <span className="text-emerald-400/60">✓</span> Portraits auto-used as reference in video generation
-                </p>
+            {/* Character Profile Modal */}
+            {selectedChar && (
+                <CharacterProfileModal
+                    character={selectedChar}
+                    projectId={currentProject.id}
+                    voiceMap={character_voice_map}
+                    availableVoices={availableVoices}
+                    onVoiceChange={handleVoiceChange}
+                    onProjectUpdate={handleProjectUpdate}
+                    onClose={() => setSelectedChar(null)}
+                />
             )}
         </div>
     );
@@ -968,7 +1559,7 @@ const AudiobookGenerator: React.FC = () => {
     const {
         projects, currentProject, availableVoices, loading, analyzing, error,
         fetchProjects, fetchVoices, loadProject, deleteProject, clearError, retryFailed,
-        generateAllVisuals, exportVideo,
+        generateAllVisuals, exportVideo, visualMode, setVisualMode, videoExporting,
     } = useAudiobookStore();
 
     const [showNewModal, setShowNewModal] = useState(false);
@@ -1001,6 +1592,15 @@ const AudiobookGenerator: React.FC = () => {
             }
         }
     }, [progress.completedSegmentIds, autoPlay, currentProject]);
+
+    // Toast when video export completes
+    const prevVideoExporting = React.useRef(false);
+    useEffect(() => {
+        if (prevVideoExporting.current && !videoExporting) {
+            toast.success('Video ready — click Download MP4');
+        }
+        prevVideoExporting.current = videoExporting;
+    }, [videoExporting]);
 
     const progressPercent = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
 
@@ -1067,21 +1667,162 @@ const AudiobookGenerator: React.FC = () => {
                     {/* Separator */}
                     <div className="mx-5 h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
 
-                    {/* Voice mapping + Character Portraits */}
+                    {/* Controls & voices — shown when project is loaded */}
                     {currentProject && (
-                        <div className="p-5 flex-1 overflow-y-auto scrollbar-thin space-y-5">
-                            <div>
-                                <h3 className="text-[10px] font-semibold text-white/30 uppercase tracking-[0.12em] mb-3 flex items-center gap-1.5">
-                                    <Mic size={10} /> Voice Mapping
-                                </h3>
+                        <div className="p-4 flex-1 overflow-y-auto scrollbar-thin space-y-5">
+
+                            {/* ── Audio Generation ─────────────────── */}
+                            <SidebarSection
+                                icon={<Music size={10} className="text-amber-400/60" />}
+                                label="Audio Generation"
+                                status={`${currentProject.done_segments}/${currentProject.total_segments}`}
+                                statusColor={currentProject.done_segments === currentProject.total_segments ? 'text-emerald-400/60' : 'text-amber-400/60'}
+                            >
+                                {progress.isGenerating ? (
+                                    <>
+                                        <div className="rounded-xl border border-amber-500/15 bg-amber-500/[0.04] p-2.5 space-y-2">
+                                            <div className="flex items-center gap-2">
+                                                <div className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />
+                                                <span className="text-[10px] font-semibold text-amber-400 flex-1">Generating…</span>
+                                                <span className="text-[9px] text-white/30 tabular-nums">
+                                                    {progress.done}/{progress.total}
+                                                </span>
+                                            </div>
+                                            <ProgressBar progress={progress.total > 0 ? progress.done / progress.total : 0} size="sm" glow />
+                                            {progress.currentSegmentPreview && (
+                                                <p className="text-[9px] text-white/25 truncate italic">
+                                                    "{progress.currentSegmentPreview}…"
+                                                </p>
+                                            )}
+                                        </div>
+                                        <button
+                                            onClick={cancelGeneration}
+                                            className="w-full px-3 py-2 rounded-xl text-[11px] font-semibold bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 transition-all flex items-center justify-center gap-1.5"
+                                        >
+                                            <Square size={11} /> Stop Generation
+                                        </button>
+                                    </>
+                                ) : (
+                                    <button
+                                        onClick={startGenerateAll}
+                                        disabled={!connected}
+                                        className="w-full px-3 py-2 rounded-xl text-[11px] font-semibold bg-gradient-to-r from-amber-500/15 to-orange-500/15 hover:from-amber-500/25 hover:to-orange-500/25 border border-amber-500/15 text-amber-400 hover:text-amber-300 transition-all disabled:opacity-40 flex items-center justify-center gap-1.5"
+                                        title="Generate TTS audio for all pending segments"
+                                    >
+                                        <Zap size={12} /> Generate All Audio
+                                    </button>
+                                )}
+
+                                <button
+                                    onClick={() => setAutoPlay(!autoPlay)}
+                                    className={`w-full px-3 py-1.5 rounded-xl text-[10px] font-medium border transition-all flex items-center justify-center gap-1.5
+                                        ${autoPlay
+                                            ? 'bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400'
+                                            : 'bg-white/[0.03] border-white/[0.06] text-white/35 hover:text-white/60'
+                                        }`}
+                                    title="Auto-play each segment as it finishes generating"
+                                >
+                                    <Volume2 size={10} /> Auto-play {autoPlay ? 'ON' : 'OFF'}
+                                </button>
+
+                                {currentProject.error_segments > 0 && (
+                                    <button
+                                        onClick={() => retryFailed()}
+                                        className="w-full px-3 py-1.5 rounded-xl text-[10px] font-medium bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/15 hover:border-red-500/25 transition-all flex items-center justify-center gap-1.5"
+                                    >
+                                        <RefreshCw size={10} /> Retry {currentProject.error_segments} Failed
+                                    </button>
+                                )}
+                            </SidebarSection>
+
+                            {/* ── Visual Generation ─────────────────── */}
+                            <SidebarSection
+                                icon={<Palette size={10} className="text-emerald-400/60" />}
+                                label="Visual Generation"
+                                status={`${currentProject.visual_ready}/${currentProject.total_segments}`}
+                                statusColor={currentProject.visual_ready === currentProject.total_segments ? 'text-emerald-400/60' : 'text-white/20'}
+                            >
+                                {/* Image / Video mode toggle */}
+                                <div className="flex rounded-xl border border-white/[0.08] overflow-hidden">
+                                    {(['image', 'video'] as const).map(m => (
+                                        <button
+                                            key={m}
+                                            onClick={() => setVisualMode(m)}
+                                            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[10px] font-medium transition-all
+                                                ${visualMode === m
+                                                    ? m === 'image'
+                                                        ? 'bg-emerald-500/20 text-emerald-300'
+                                                        : 'bg-violet-500/20 text-violet-300'
+                                                    : 'text-white/30 hover:text-white/50 hover:bg-white/[0.03]'
+                                                }`}
+                                        >
+                                            {m === 'image' ? <Image size={10} /> : <Film size={10} />}
+                                            {m.charAt(0).toUpperCase() + m.slice(1)}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                <button
+                                    onClick={() => generateAllVisuals()}
+                                    disabled={loading}
+                                    className="w-full px-3 py-2 rounded-xl text-[11px] font-semibold bg-emerald-500/[0.08] hover:bg-emerald-500/15 border border-emerald-500/15 text-emerald-400 hover:text-emerald-300 transition-all disabled:opacity-40 flex items-center justify-center gap-1.5"
+                                    title="Generate scene prompts (if missing) then visuals for all segments"
+                                >
+                                    {visualMode === 'video' ? <Film size={12} /> : <Image size={12} />}
+                                    Generate All Visuals
+                                </button>
+
+                                <button
+                                    onClick={() => exportVideo()}
+                                    disabled={videoExporting}
+                                    className="w-full px-3 py-1.5 rounded-xl text-[10px] font-medium bg-violet-500/[0.06] hover:bg-violet-500/12 border border-violet-500/15 text-violet-400 hover:text-violet-300 transition-all disabled:opacity-60 flex items-center justify-center gap-1.5"
+                                    title="Assemble all segments into an MP4 video"
+                                >
+                                    {videoExporting
+                                        ? <><Loader2 size={10} className="animate-spin" /> Assembling…</>
+                                        : <><Film size={10} /> Export Video</>
+                                    }
+                                </button>
+                            </SidebarSection>
+
+                            {/* ── Export & Download ─────────────────── */}
+                            <SidebarSection
+                                icon={<Package size={10} className="text-white/30" />}
+                                label="Export & Download"
+                                defaultOpen={false}
+                            >
+                                <a
+                                    href={getFullExportUrl(currentProject.id)}
+                                    className="w-full px-3 py-1.5 rounded-xl text-[10px] font-medium bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] text-white/40 hover:text-white/70 transition-all flex items-center justify-center gap-1.5"
+                                    title="Download concatenated audio as a single file"
+                                >
+                                    <Download size={10} /> Export Audio
+                                </a>
+                                <a
+                                    href={getDownloadAllUrl(currentProject.id)}
+                                    className="w-full px-3 py-1.5 rounded-xl text-[10px] font-medium bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] text-white/40 hover:text-white/70 transition-all flex items-center justify-center gap-1.5"
+                                    title="Download all WAV audio, images, and videos as a ZIP"
+                                >
+                                    <Download size={10} /> Download All Assets
+                                </a>
+                                <a
+                                    href={getVideoUrl(currentProject.id)}
+                                    className="w-full px-3 py-1.5 rounded-xl text-[10px] font-medium bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] text-white/40 hover:text-white/70 transition-all flex items-center justify-center gap-1.5"
+                                    title="Download the assembled MP4 video"
+                                >
+                                    <Download size={10} /> Download MP4
+                                </a>
+                            </SidebarSection>
+
+                            {/* ── Characters & Voices ─────────────────── */}
+                            <SidebarSection
+                                icon={<Users size={10} className="text-violet-400/60" />}
+                                label="Characters & Voices"
+                                status={currentProject.characters?.length ? `${currentProject.characters.length}` : undefined}
+                            >
                                 <CharacterVoicePanel />
-                            </div>
+                            </SidebarSection>
 
-                            {/* Separator */}
-                            <div className="h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
-
-                            {/* Character Portraits */}
-                            <CharacterPortraitPanel />
                         </div>
                     )}
                 </div>
@@ -1150,71 +1891,6 @@ const AudiobookGenerator: React.FC = () => {
                                             {connected ? 'Live' : 'Offline'}
                                         </span>
                                     </div>
-                                </div>
-
-                                <div className="flex items-center gap-2 flex-shrink-0">
-                                    <button
-                                        onClick={() => setAutoPlay(!autoPlay)}
-                                        className={`px-3 py-2 rounded-xl text-[11px] font-medium border transition-all flex items-center gap-1.5
-                                            ${autoPlay
-                                                ? 'bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400'
-                                                : `bg-white/[0.03] border-white/[0.06] text-white/35 hover:text-white/60`
-                                            }`}
-                                        title="Auto-play segments as they complete"
-                                    >
-                                        <Volume2 size={13} />
-                                        {autoPlay ? 'ON' : 'Auto-play'}
-                                    </button>
-
-                                    {progress.isGenerating ? (
-                                        <button
-                                            onClick={cancelGeneration}
-                                            className="px-4 py-2 rounded-xl text-sm font-semibold bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 transition-all flex items-center gap-2"
-                                        >
-                                            <Square size={13} /> Cancel
-                                        </button>
-                                    ) : (
-                                        <button
-                                            onClick={startGenerateAll}
-                                            disabled={!connected}
-                                            className={`${btnPrimary} flex items-center gap-2`}
-                                        >
-                                            <Zap size={15} /> Generate All
-                                        </button>
-                                    )}
-
-                                    <a
-                                        href={getFullExportUrl(currentProject.id)}
-                                        className={btnGhost + ' flex items-center gap-2'}
-                                    >
-                                        <Download size={14} /> Export Audio
-                                    </a>
-
-                                    <button
-                                        onClick={() => generateAllVisuals()}
-                                        disabled={loading}
-                                        className="px-3 py-2 rounded-xl text-[11px] font-medium border transition-all flex items-center gap-1.5 bg-emerald-500/[0.06] border-emerald-500/15 text-emerald-400 hover:bg-emerald-500/15 hover:border-emerald-500/25 disabled:opacity-40"
-                                    >
-                                        <Image size={13} /> Generate Visuals
-                                    </button>
-
-                                    <button
-                                        onClick={() => exportVideo()}
-                                        disabled={loading || currentProject.visual_ready < currentProject.total_segments}
-                                        title={currentProject.visual_ready < currentProject.total_segments ? 'Generate all visuals first' : 'Export as video'}
-                                        className="px-3 py-2 rounded-xl text-[11px] font-medium border transition-all flex items-center gap-1.5 bg-violet-500/[0.06] border-violet-500/15 text-violet-400 hover:bg-violet-500/15 hover:border-violet-500/25 disabled:opacity-40"
-                                    >
-                                        <Film size={13} /> Export Video
-                                    </button>
-
-                                    {currentProject.visual_ready === currentProject.total_segments && currentProject.total_segments > 0 && (
-                                        <a
-                                            href={getVideoUrl(currentProject.id)}
-                                            className={btnGhost + ' flex items-center gap-2'}
-                                        >
-                                            <Download size={14} /> Download MP4
-                                        </a>
-                                    )}
                                 </div>
                             </div>
 

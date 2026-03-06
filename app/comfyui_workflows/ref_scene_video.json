@@ -1,0 +1,350 @@
+{
+    "1": {
+        "class_type": "UNETLoader",
+        "_meta": {
+            "title": "Load Qwen-Image Model"
+        },
+        "inputs": {
+            "unet_name": "qwen-image/qwen_image_fp8_e4m3fn.safetensors",
+            "weight_dtype": "fp8_e4m3fn"
+        }
+    },
+    "2": {
+        "class_type": "CLIPLoader",
+        "_meta": {
+            "title": "Load CLIP (Qwen VL)"
+        },
+        "inputs": {
+            "clip_name": "qwen/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+            "type": "qwen_image",
+            "device": "cpu"
+        }
+    },
+    "3": {
+        "class_type": "VAELoader",
+        "_meta": {
+            "title": "Load VAE (Qwen)"
+        },
+        "inputs": {
+            "vae_name": "qwen-image/qwen_image_vae.safetensors"
+        }
+    },
+    "4": {
+        "class_type": "LoraLoader",
+        "_meta": {
+            "title": "Lightning LoRA (4-step)"
+        },
+        "inputs": {
+            "model": [
+                "1",
+                0
+            ],
+            "clip": [
+                "2",
+                0
+            ],
+            "lora_name": "qwen-image-lightning/Qwen-Image-Lightning-4steps-V1.0.safetensors",
+            "strength_model": 1.0,
+            "strength_clip": 1.0
+        }
+    },
+    "20": {
+        "class_type": "LoadImage",
+        "_meta": {
+            "title": "Character Portrait"
+        },
+        "inputs": {
+            "image": "PLACEHOLDER_REF_IMAGE"
+        }
+    },
+    "5": {
+        "class_type": "TextEncodeQwenImageEditPlus",
+        "_meta": {
+            "title": "Positive Prompt (Multi-Ref)"
+        },
+        "inputs": {
+            "prompt": "PLACEHOLDER_PROMPT",
+            "clip": [
+                "4",
+                1
+            ],
+            "vae": [
+                "3",
+                0
+            ],
+            "image1": [
+                "20",
+                0
+            ]
+        }
+    },
+    "6": {
+        "class_type": "EmptyLatentImage",
+        "_meta": {
+            "title": "Empty Latent (Base)"
+        },
+        "inputs": {
+            "width": 512,
+            "height": 512,
+            "batch_size": 1
+        }
+    },
+    "8": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Negative Prompt"
+        },
+        "inputs": {
+            "text": "blurry, low quality, text, watermark, logo, words, letters, UI elements, distorted, deformed face, extra limbs",
+            "clip": [
+                "4",
+                1
+            ]
+        }
+    },
+    "7": {
+        "class_type": "KSampler",
+        "_meta": {
+            "title": "KSampler (Base)"
+        },
+        "inputs": {
+            "model": [
+                "4",
+                0
+            ],
+            "seed": 42,
+            "steps": 4,
+            "cfg": 1.0,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "positive": [
+                "5",
+                0
+            ],
+            "negative": [
+                "8",
+                0
+            ],
+            "latent_image": [
+                "6",
+                0
+            ],
+            "denoise": 1.0
+        }
+    },
+    "9": {
+        "class_type": "VAEDecode",
+        "_meta": {
+            "title": "VAE Decode (Scene Image)"
+        },
+        "inputs": {
+            "samples": [
+                "7",
+                0
+            ],
+            "vae": [
+                "3",
+                0
+            ]
+        }
+    },
+    "13": {
+        "class_type": "ImageScale",
+        "_meta": {
+            "title": "Scale Scene for LTX-2"
+        },
+        "inputs": {
+            "image": [
+                "9",
+                0
+            ],
+            "upscale_method": "lanczos",
+            "width": 768,
+            "height": 512,
+            "crop": "disabled"
+        }
+    },
+    "30": {
+        "class_type": "CheckpointLoaderSimple",
+        "_meta": {
+            "title": "Load LTX-2 19B Distilled"
+        },
+        "inputs": {
+            "ckpt_name": "LTX-2/ltx-2-19b-distilled-fp8.safetensors"
+        }
+    },
+    "31": {
+        "class_type": "LTXVGemmaCLIPModelLoader",
+        "_meta": {
+            "title": "Load Gemma CLIP for LTX-2"
+        },
+        "inputs": {
+            "gemma_path": "gemma-3-12b-it/model-00001-of-00005.safetensors",
+            "ltxv_path": "LTX-2/ltx-2-19b-distilled-fp8.safetensors",
+            "max_length": 256
+        }
+    },
+    "32": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Video Positive Prompt"
+        },
+        "inputs": {
+            "text": "PLACEHOLDER_PROMPT",
+            "clip": [
+                "31",
+                0
+            ]
+        }
+    },
+    "33": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Video Negative Prompt"
+        },
+        "inputs": {
+            "text": "blurry, low quality, text, watermark, distorted, static, frozen",
+            "clip": [
+                "31",
+                0
+            ]
+        }
+    },
+    "34": {
+        "class_type": "LTXVImgToVideo",
+        "_meta": {
+            "title": "Image to Video"
+        },
+        "inputs": {
+            "positive": [
+                "32",
+                0
+            ],
+            "negative": [
+                "33",
+                0
+            ],
+            "vae": [
+                "30",
+                2
+            ],
+            "image": [
+                "13",
+                0
+            ],
+            "width": 768,
+            "height": 512,
+            "length": 65,
+            "batch_size": 1,
+            "strength": 0.85
+        }
+    },
+    "35": {
+        "class_type": "LTXVScheduler",
+        "_meta": {
+            "title": "LTX-V Scheduler"
+        },
+        "inputs": {
+            "steps": 8,
+            "max_shift": 2.05,
+            "base_shift": 0.95,
+            "stretch": true,
+            "terminal": 0.1
+        }
+    },
+    "36": {
+        "class_type": "KSamplerSelect",
+        "_meta": {
+            "title": "Video Sampler Select"
+        },
+        "inputs": {
+            "sampler_name": "euler"
+        }
+    },
+    "37": {
+        "class_type": "RandomNoise",
+        "_meta": {
+            "title": "Video Random Noise"
+        },
+        "inputs": {
+            "noise_seed": 42
+        }
+    },
+    "38": {
+        "class_type": "BasicGuider",
+        "_meta": {
+            "title": "Video Guider"
+        },
+        "inputs": {
+            "model": [
+                "30",
+                0
+            ],
+            "conditioning": [
+                "34",
+                0
+            ]
+        }
+    },
+    "39": {
+        "class_type": "SamplerCustomAdvanced",
+        "_meta": {
+            "title": "Video Advanced Sampler"
+        },
+        "inputs": {
+            "noise": [
+                "37",
+                0
+            ],
+            "guider": [
+                "38",
+                0
+            ],
+            "sampler": [
+                "36",
+                0
+            ],
+            "sigmas": [
+                "35",
+                0
+            ],
+            "latent_image": [
+                "34",
+                2
+            ]
+        }
+    },
+    "40": {
+        "class_type": "VAEDecode",
+        "_meta": {
+            "title": "VAE Decode (Video)"
+        },
+        "inputs": {
+            "samples": [
+                "39",
+                0
+            ],
+            "vae": [
+                "30",
+                2
+            ]
+        }
+    },
+    "41": {
+        "class_type": "SaveAnimatedWEBP",
+        "_meta": {
+            "title": "Save Video"
+        },
+        "inputs": {
+            "images": [
+                "40",
+                0
+            ],
+            "filename_prefix": "audiobook_scene_video",
+            "fps": 25.0,
+            "lossless": false,
+            "quality": 85,
+            "method": "default"
+        }
+    }
+}

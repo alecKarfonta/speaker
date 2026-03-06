@@ -4,15 +4,18 @@ Audiobook API router — all /audiobook/* endpoints.
 Handles project CRUD, segment generation, and audio export.
 """
 
+import asyncio
 import io
 import os
 import re
 import logging
 import numpy as np
 import soundfile as sf
-from typing import List, Optional
-
+from typing import List, Optional, Dict
 from fastapi import APIRouter, HTTPException, UploadFile, status, Response
+
+# Per-project export locks — prevents concurrent exports from corrupting clips
+_export_locks: Dict[str, asyncio.Lock] = {}
 from datetime import datetime
 
 from .audiobook_models import (
@@ -25,7 +28,7 @@ from .audiobook_models import (
 from .audiobook_parser import (
     parse_book_text, detect_characters, assign_segment_voices,
 )
-from .audiobook_llm import analyze_characters as llm_analyze_characters, check_llm_available
+from .audiobook_llm import analyze_characters as llm_analyze_characters, check_llm_available, generate_narrator_voice_prompt as llm_generate_narrator_voice_prompt
 from .audiobook_parsers import parse_uploaded_file, SUPPORTED_EXTENSIONS
 
 logger = logging.getLogger("speaker.audiobook")
@@ -40,6 +43,14 @@ def set_tts_service(service):
     """Called from main.py to inject the TTS service."""
     global tts_service
     tts_service = service
+
+
+@router.on_event("startup")
+async def _start_generation_workers():
+    """Start background queue workers when FastAPI starts."""
+    from .generation_queue import start_workers
+    start_workers()
+    logger.info("Generation queue workers registered at startup")
 
 
 def _get_project_or_404(project_id: str) -> AudiobookProject:
@@ -276,6 +287,22 @@ async def analyze_project_characters(project_id: str):
     project.character_voice_map = result.get("character_voice_map", project.character_voice_map)
     project.character_descriptions = result.get("character_descriptions", {})
     
+    visual_profiles = result.get("character_visual_profiles", {})
+    
+    # Update CharacterRef objects
+    existing_chars = {c.name: c for c in project.characters}
+    new_characters = []
+    
+    from app.audiobook_models import CharacterRef
+    for name in project.detected_characters:
+        ref = existing_chars.get(name, CharacterRef(name=name))
+        ref.description = project.character_descriptions.get(name, "")
+        if name in visual_profiles:
+            ref.visual_profile = visual_profiles[name]
+        new_characters.append(ref)
+        
+    project.characters = new_characters
+    
     # Auto-design voices if the TTS backend supports it
     if hasattr(tts_service, "design_voice") and project.character_descriptions:
         logger.info(f"Auto-designing voices for characters using Moss VoiceGenerator")
@@ -290,6 +317,10 @@ async def analyze_project_characters(project_id: str):
                 available_voices.append(voice_id)
             except Exception as e:
                 logger.error(f"Failed to design voice for narrator: {e}")
+
+        # Store the narrator voice prompt on the project
+        if narrator_desc:
+            project.narrator_voice_prompt = narrator_desc
                 
         for char_name, desc in project.character_descriptions.items():
             current_voice = project.character_voice_map.get(char_name)
@@ -324,7 +355,7 @@ async def analyze_project_characters(project_id: str):
 
 @router.put("/projects/{project_id}/segments/{segment_id}", response_model=ProjectDetailResponse)
 async def update_segment(project_id: str, segment_id: str, request: UpdateSegmentRequest):
-    """Edit a segment's text or voice."""
+    """Edit a segment's text, voice, or scene prompt."""
     project = _get_project_or_404(project_id)
     _, _, seg = _find_segment(project, segment_id)
     
@@ -336,6 +367,12 @@ async def update_segment(project_id: str, segment_id: str, request: UpdateSegmen
     
     if request.voice_name is not None:
         seg.voice_name = request.voice_name
+
+    if request.scene_prompt is not None:
+        seg.scene_prompt = request.scene_prompt
+        # If visual was already generated, allow re-generation with new prompt
+        if seg.visual_status == "done":
+            seg.visual_status = "pending"
     
     save_project(project)
     return project_to_detail_response(project)
@@ -456,94 +493,16 @@ async def retry_failed_segments(project_id: str):
 
 @router.post("/projects/{project_id}/segments/{segment_id}/generate")
 async def generate_segment(project_id: str, segment_id: str):
-    """Generate (or regenerate) audio for a single segment."""
+    """Enqueue audio generation for a single segment."""
+    from .generation_queue import enqueue_tts
     if not tts_service:
         raise HTTPException(status_code=503, detail="TTS service not available")
-    
     project = _get_project_or_404(project_id)
-    ch_idx, seg_idx, seg = _find_segment(project, segment_id)
-    
-    voice = seg.voice_name or project.narrator_voice
-    if not voice:
-        raise HTTPException(status_code=400, detail="No voice assigned to segment and no narrator voice set")
-    
-    # Validate voice exists
-    available_voices = tts_service.get_voices()
-    if voice not in available_voices:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Voice '{voice}' not found. Available: {', '.join(available_voices)}"
-        )
-    
-    seg.status = SegmentStatus.GENERATING
+    _, _, seg = _find_segment(project, segment_id)
+    seg.status = SegmentStatus.GENERATING  # show queued immediately
     save_project(project)
-    
-    try:
-        # Auto-chunk if text exceeds TTS max length
-        from .config import settings
-        max_len = settings.max_text_length
-        text = seg.text.strip()
-        
-        if len(text) <= max_len:
-            chunks = [text]
-        else:
-            chunks = _split_text_into_chunks(text, max_len)
-            logger.info(f"Auto-split segment '{segment_id}' ({len(text)} chars) into {len(chunks)} chunks")
-        
-        # Generate audio for each chunk
-        audio_parts = []
-        sample_rate = None
-        for i, chunk in enumerate(chunks):
-            chunk_audio, sr = tts_service.generate_speech(
-                text=chunk,
-                voice_name=voice,
-                language="en",
-            )
-            if chunk_audio is None or len(chunk_audio) == 0:
-                raise RuntimeError(f"TTS returned empty audio for chunk {i+1}/{len(chunks)}")
-            audio_parts.append(chunk_audio)
-            sample_rate = sr
-        
-        # Concatenate chunks with a brief silence gap between them
-        if len(audio_parts) == 1:
-            audio = audio_parts[0]
-        else:
-            gap = np.zeros(int(sample_rate * 0.3), dtype=audio_parts[0].dtype)  # 300ms gap
-            combined = []
-            for i, part in enumerate(audio_parts):
-                combined.append(part)
-                if i < len(audio_parts) - 1:
-                    combined.append(gap)
-            audio = np.concatenate(combined)
-        
-        # Save audio to disk
-        project_dir = get_project_dir(project_id)
-        audio_dir = os.path.join(project_dir, "audio")
-        os.makedirs(audio_dir, exist_ok=True)
-        
-        audio_path = os.path.join(audio_dir, f"{segment_id}.wav")
-        sf.write(audio_path, audio, sample_rate, format="WAV", subtype="PCM_16")
-        
-        seg.status = SegmentStatus.DONE
-        seg.audio_path = audio_path
-        seg.duration = len(audio) / sample_rate
-        seg.error_message = None
-        
-        save_project(project)
-        logger.info(f"Generated segment '{segment_id}' ({seg.duration:.1f}s, {len(chunks)} chunk(s))")
-        
-        return {
-            "status": "done",
-            "duration": seg.duration,
-            "segment_id": segment_id,
-        }
-    
-    except Exception as e:
-        seg.status = SegmentStatus.ERROR
-        seg.error_message = str(e)
-        save_project(project)
-        logger.error(f"Failed segment '{segment_id}': {e}")
-        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+    depth = enqueue_tts(project_id, segment_id)
+    return {"status": "queued", "queue_depth": depth, "segment_id": segment_id}
 
 
 def _split_text_into_chunks(text: str, max_len: int) -> list:
@@ -707,56 +666,24 @@ async def export_chapter(project_id: str, chapter_idx: int):
 
 @router.post("/projects/{project_id}/generate-all")
 async def generate_all(project_id: str):
-    """Generate all pending segments across all chapters."""
+    """Enqueue all pending segments for audio generation."""
+    from .generation_queue import enqueue_tts
     if not tts_service:
         raise HTTPException(status_code=503, detail="TTS service not available")
-    
     project = _get_project_or_404(project_id)
-    results = {"generated": 0, "errors": 0, "skipped": 0}
-    
+    enqueued = 0
     for ch in project.chapters:
         for seg in ch.segments:
             if seg.status == SegmentStatus.DONE:
-                results["skipped"] += 1
                 continue
-            
             voice = seg.voice_name or project.narrator_voice
             if not voice:
-                seg.status = SegmentStatus.ERROR
-                seg.error_message = "No voice assigned"
-                results["errors"] += 1
                 continue
-            
             seg.status = SegmentStatus.GENERATING
-            save_project(project)
-            
-            try:
-                audio, sample_rate = tts_service.generate_speech(
-                    text=seg.text, voice_name=voice, language="en"
-                )
-                
-                if audio is None or len(audio) == 0:
-                    raise RuntimeError("TTS returned empty audio")
-                
-                audio_dir = os.path.join(get_project_dir(project_id), "audio")
-                os.makedirs(audio_dir, exist_ok=True)
-                audio_path = os.path.join(audio_dir, f"{seg.id}.wav")
-                sf.write(audio_path, audio, sample_rate, format="WAV", subtype="PCM_16")
-                
-                seg.status = SegmentStatus.DONE
-                seg.audio_path = audio_path
-                seg.duration = len(audio) / sample_rate
-                seg.error_message = None
-                results["generated"] += 1
-                
-            except Exception as e:
-                seg.status = SegmentStatus.ERROR
-                seg.error_message = str(e)
-                results["errors"] += 1
-                logger.error(f"Failed segment '{seg.id}': {e}")
-    
+            enqueue_tts(project_id, seg.id)
+            enqueued += 1
     save_project(project)
-    return results
+    return {"status": "queued", "enqueued": enqueued}
 
 
 @router.get("/projects/{project_id}/export")
@@ -811,9 +738,90 @@ async def export_full_book(project_id: str):
     )
 
 
+@router.get("/projects/{project_id}/download-all")
+async def download_all_assets(project_id: str):
+    """
+    Download all project assets (audio WAVs, visuals images/videos, portraits) as a ZIP file.
+    Organized into audio/, visuals/, portraits/ subfolders.
+    """
+    import zipfile
+
+    project = _get_project_or_404(project_id)
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', project.name or project_id)[:50]
+
+    # Build in-memory zip
+    buf = io.BytesIO()
+    added = 0
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        # Audio WAVs — audio/{chapter_title}/{segment_id}.wav
+        for ch in project.chapters:
+            ch_safe = re.sub(r'[^a-zA-Z0-9_-]', '_', ch.title or f"chapter_{project.chapters.index(ch)}")[:50]
+            for seg in ch.segments:
+                if seg.audio_path and os.path.exists(seg.audio_path):
+                    zf.write(seg.audio_path, f"audio/{ch_safe}/{seg.id}.wav")
+                    added += 1
+
+        # Visuals — visuals/{segment_id}.ext
+        for ch in project.chapters:
+            for seg in ch.segments:
+                if seg.visual_path and os.path.exists(seg.visual_path):
+                    ext = os.path.splitext(seg.visual_path)[1]
+                    zf.write(seg.visual_path, f"visuals/{seg.id}{ext}")
+                    added += 1
+
+        # Portraits — portraits/{character_name}.ext
+        for char_ref in project.characters:
+            if char_ref.portrait_path and os.path.exists(char_ref.portrait_path):
+                ext = os.path.splitext(char_ref.portrait_path)[1]
+                safe_char = re.sub(r'[^a-zA-Z0-9_-]', '_', char_ref.name)[:50]
+                zf.write(char_ref.portrait_path, f"portraits/{safe_char}{ext}")
+                added += 1
+            for i, vpath in enumerate(char_ref.portrait_variants or []):
+                if vpath and os.path.exists(vpath):
+                    ext = os.path.splitext(vpath)[1]
+                    safe_char = re.sub(r'[^a-zA-Z0-9_-]', '_', char_ref.name)[:50]
+                    zf.write(vpath, f"portraits/{safe_char}_v{i+1}{ext}")
+                    added += 1
+
+        # Assembled video if it exists
+        video_path = os.path.join(get_project_dir(project_id), "video", "full_book.mp4")
+        if os.path.exists(video_path):
+            zf.write(video_path, "full_book.mp4")
+            added += 1
+
+    if added == 0:
+        raise HTTPException(status_code=400, detail="No assets found for this project. Generate audio and/or visuals first.")
+
+    buf.seek(0)
+    logger.info(f"Serving download-all zip for project {project_id}: {added} files")
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={safe_name}_assets.zip"},
+    )
+
+
 # ============================================================
 # Visual Generation Endpoints
 # ============================================================
+
+
+@router.post("/projects/{project_id}/reset-stuck-visuals", response_model=ProjectDetailResponse)
+async def reset_stuck_visuals(project_id: str):
+    """Reset any segments stuck in 'generating' visual status back to retryable state."""
+    project = _get_project_or_404(project_id)
+    reset_count = 0
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if seg.visual_status == "generating":
+                seg.visual_status = "none" if not seg.scene_prompt else "pending"
+                reset_count += 1
+    if reset_count:
+        save_project(project)
+        logger.info(f"Reset {reset_count} stuck visual generation(s) for project {project_id}")
+    return project_to_detail_response(project)
+
 
 @router.get("/projects/{project_id}/segments/{segment_id}/visual")
 async def get_segment_visual(project_id: str, segment_id: str):
@@ -837,9 +845,63 @@ async def get_segment_visual(project_id: str, segment_id: str):
     )
 
 @router.post("/projects/{project_id}/segments/{segment_id}/generate-visual", response_model=ProjectDetailResponse)
-async def generate_segment_visual(project_id: str, segment_id: str, mode: str = None):
-    """Generate a visual (image or video) for a single segment using ComfyUI."""
-    from .comfyui_service import generate_visual as comfyui_generate, COMFYUI_VISUAL_MODE
+async def generate_segment_visual(
+    project_id: str,
+    segment_id: str,
+    mode: str = None,
+    frames: int = None,
+    fps: int = None,
+    width: int = None,
+    height: int = None,
+    animation: str = None,
+):
+    """Enqueue visual generation for a single segment."""
+    from .generation_queue import enqueue_visual
+    project = _get_project_or_404(project_id)
+    _, _, segment = _find_segment(project, segment_id)
+    # Persist animation style choice immediately
+    if animation is not None:
+        segment.animation_style = animation
+    segment.visual_status = "queued"
+    save_project(project)
+    depth = enqueue_visual(
+        project_id=project_id,
+        segment_id=segment_id,
+        mode=mode,
+        frames=frames,
+        fps=fps,
+        width=width,
+        height=height,
+        animation=animation,
+    )
+    logger.info(f"Enqueued visual generation for {segment_id} (depth {depth})")
+    return project_to_detail_response(project)
+
+
+@router.post("/projects/{project_id}/segments/{segment_id}/generate-scene-prompt", response_model=ProjectDetailResponse)
+async def generate_segment_scene_prompt(project_id: str, segment_id: str):
+    """Enqueue scene prompt generation for a single segment."""
+    from .generation_queue import enqueue_prompt
+    project = _get_project_or_404(project_id)
+    _, _, segment = _find_segment(project, segment_id)
+    depth = enqueue_prompt(project_id, segment_id)
+    logger.info(f"Enqueued prompt generation for {segment_id} (depth {depth})")
+    return project_to_detail_response(project)
+
+
+@router.patch("/projects/{project_id}/segments/{segment_id}/video-fill-mode", response_model=ProjectDetailResponse)
+async def set_video_fill_mode(project_id: str, segment_id: str, mode: str):
+    """Set the video_fill_mode for a segment. Options: loop | hold | fade."""
+    if mode not in ("loop", "hold", "fade"):
+        raise HTTPException(status_code=400, detail="mode must be loop, hold, or fade")
+    project = _get_project_or_404(project_id)
+    _, _, segment = _find_segment(project, segment_id)
+    segment.video_fill_mode = mode
+    save_project(project)
+    return project_to_detail_response(project)
+
+
+
     from .audiobook_llm import generate_scene_prompt, generate_visual_style
 
     project = _get_project_or_404(project_id)
@@ -850,149 +912,62 @@ async def generate_segment_visual(project_id: str, segment_id: str, mode: str = 
         if style:
             project.visual_style = style
             save_project(project)
-            logger.info(f"Auto-generated visual style: {style}")
 
-    # Find the segment and its neighbours
-    segment, chapter = None, None
+    # Find segment + context
     all_segments = [(ch, seg) for ch in project.chapters for seg in ch.segments]
-    seg_idx = None
+    segment, chapter, seg_idx = None, None, None
     for i, (ch, seg) in enumerate(all_segments):
         if seg.id == segment_id:
-            segment = seg
-            chapter = ch
-            seg_idx = i
+            segment, chapter, seg_idx = seg, ch, i
             break
 
     if not segment:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    # Get context from adjacent segments
     prev_scene = all_segments[seg_idx - 1][1].scene_prompt if seg_idx > 0 else ""
     next_text = all_segments[seg_idx + 1][1].text if seg_idx < len(all_segments) - 1 else ""
 
-    # Step 1: Generate scene prompt via LLM if we don't have one
-    if not segment.scene_prompt:
-        scene = generate_scene_prompt(
-            text=segment.text,
-            chapter_title=chapter.title if chapter else "",
-            character=segment.character or "Narrator",
-            emotion=segment.emotion or "neutral",
-            visual_style=project.visual_style,
-            prev_scene=prev_scene or "",
-            next_text=next_text or "",
-        )
-        if not scene:
-            raise HTTPException(status_code=500, detail="LLM failed to generate scene prompt")
-        segment.scene_prompt = scene
-        save_project(project)
+    scene = generate_scene_prompt(
+        text=segment.text,
+        chapter_title=chapter.title if chapter else "",
+        character=segment.character or "Narrator",
+        emotion=segment.emotion or "neutral",
+        visual_style=project.visual_style,
+        prev_scene=prev_scene or "",
+        next_text=next_text or "",
+    )
+    if not scene:
+        raise HTTPException(status_code=500, detail="LLM failed to generate scene prompt")
 
-    # Step 2: Generate visual via ComfyUI
-    segment.visual_status = "generating"
+    segment.scene_prompt = scene
+    # Reset visual status so user knows a new visual is needed
+    if segment.visual_status == "done":
+        segment.visual_status = "pending"
     save_project(project)
-
-    try:
-        visual_dir = os.path.join(get_project_dir(project_id), "visuals")
-        # Find character portrait reference for this segment
-        ref_image = _find_character_portrait(project, segment)
-        path, actual_mode = await comfyui_generate(
-            prompt=segment.scene_prompt,
-            output_dir=visual_dir,
-            prefix=f"seg_{segment.id}",
-            mode=mode or COMFYUI_VISUAL_MODE,
-            duration=segment.duration,
-            ref_image=ref_image,
-        )
-        segment.visual_path = path
-        segment.visual_mode = actual_mode
-        segment.visual_type = "video" if "video" in actual_mode else "image"
-        segment.visual_status = "done"
-        logger.info(f"Generated {actual_mode} for segment {segment_id}: {path}")
-    except Exception as e:
-        segment.visual_status = "error"
-        logger.error(f"Visual generation failed for segment {segment_id}: {e}")
-        save_project(project)
-        raise HTTPException(status_code=500, detail=f"ComfyUI generation failed: {str(e)}")
-
-    save_project(project)
+    logger.info(f"Regenerated scene prompt for segment {segment_id}")
     return project_to_detail_response(project)
+
 
 
 @router.post("/projects/{project_id}/generate-visuals", response_model=ProjectDetailResponse)
 async def generate_all_visuals(project_id: str, mode: str = None):
-    """Generate visuals for all segments that don't already have one."""
-    from .comfyui_service import generate_visual as comfyui_generate, COMFYUI_VISUAL_MODE
-    from .audiobook_llm import generate_scene_prompt, generate_visual_style
-
+    """Enqueue visual generation for all segments that don't already have one."""
+    from .generation_queue import enqueue_visual
     project = _get_project_or_404(project_id)
-    visual_dir = os.path.join(get_project_dir(project_id), "visuals")
-    visual_mode = mode or COMFYUI_VISUAL_MODE
-
-    # Auto-generate visual style if missing
-    if not project.visual_style and project.raw_text:
-        style = generate_visual_style(project.raw_text)
-        if style:
-            project.visual_style = style
-            save_project(project)
-            logger.info(f"Auto-generated visual style: {style}")
-
-    # Build flat list of all segments for context access
-    all_segments = [(ch, seg) for ch in project.chapters for seg in ch.segments]
-
-    generated = 0
-    errors = 0
-
-    for i, (ch, seg) in enumerate(all_segments):
-        if seg.visual_status == "done":
-            continue  # Skip already-generated
-
-        # Context from adjacent segments
-        prev_scene = all_segments[i - 1][1].scene_prompt if i > 0 else ""
-        next_text = all_segments[i + 1][1].text if i < len(all_segments) - 1 else ""
-
-        # Generate scene prompt with style + context
-        if not seg.scene_prompt:
-            scene = generate_scene_prompt(
-                text=seg.text,
-                chapter_title=ch.title,
-                character=seg.character or "Narrator",
-                emotion=seg.emotion or "neutral",
-                visual_style=project.visual_style,
-                prev_scene=prev_scene or "",
-                next_text=next_text or "",
-            )
-            if not scene:
-                seg.visual_status = "error"
-                errors += 1
+    enqueued = 0
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if seg.visual_status == "done":
                 continue
-            seg.scene_prompt = scene
-
-        # Generate visual
-        seg.visual_status = "generating"
-        save_project(project)
-
-        try:
-            ref_image = _find_character_portrait(project, seg)
-            path, actual_mode = await comfyui_generate(
-                prompt=seg.scene_prompt,
-                output_dir=visual_dir,
-                prefix=f"seg_{seg.id}",
-                mode=visual_mode,
-                duration=seg.duration,
-                ref_image=ref_image,
+            seg.visual_status = "queued"
+            enqueue_visual(
+                project_id=project_id,
+                segment_id=seg.id,
+                mode=mode,
             )
-            seg.visual_path = path
-            seg.visual_mode = actual_mode
-            seg.visual_type = "video" if "video" in actual_mode else "image"
-            seg.visual_status = "done"
-            generated += 1
-        except Exception as e:
-            seg.visual_status = "error"
-            errors += 1
-            logger.error(f"Visual generation failed for segment {seg.id}: {e}")
-
-        save_project(project)
-
-    logger.info(f"Batch visual generation: {generated} generated, {errors} errors")
+            enqueued += 1
+    save_project(project)
+    logger.info(f"Enqueued {enqueued} visual generation jobs for project {project_id}")
     return project_to_detail_response(project)
 
 
@@ -1064,13 +1039,18 @@ async def extract_characters_endpoint(project_id: str):
         chunks = [project.raw_text]
 
     all_characters_data = []
-    for chunk in chunks:
-        chars = extract_characters(chunk)
-        if chars:
-            all_characters_data.extend(chars)
+    max_retries = 3
+    for attempt in range(max_retries):
+        for chunk in chunks:
+            chars = extract_characters(chunk)
+            if chars:
+                all_characters_data.extend(chars)
+        if all_characters_data:
+            break
+        logger.warning(f"Character extraction attempt {attempt + 1}/{max_retries} returned empty, retrying...")
 
     if not all_characters_data:
-        raise HTTPException(status_code=500, detail="LLM failed to extract characters")
+        raise HTTPException(status_code=500, detail="LLM failed to extract characters after multiple attempts")
 
     # Merge with existing characters (preserve portraits)
     existing = {c.name.lower(): c for c in project.characters}
@@ -1084,13 +1064,18 @@ async def extract_characters_endpoint(project_id: str):
         name = char_data["name"]
         name_lower = name.lower()
         if name_lower in new_chars_dict:
-            # Update description if it is longer/more detailed than existing, 
-            # or just overwrite (current logic was overwrite)
+            # Update fields with new extraction data
             new_chars_dict[name_lower].description = char_data["description"]
+            if char_data.get("portrait_prompt"):
+                new_chars_dict[name_lower].portrait_prompt = char_data["portrait_prompt"]
+            if char_data.get("voice_prompt"):
+                new_chars_dict[name_lower].voice_prompt = char_data["voice_prompt"]
         else:
             new_chars_dict[name_lower] = CharacterRef(
                 name=name,
                 description=char_data["description"],
+                portrait_prompt=char_data.get("portrait_prompt"),
+                voice_prompt=char_data.get("voice_prompt"),
             )
 
     project.characters = list(new_chars_dict.values())
@@ -1147,8 +1132,13 @@ async def generate_portraits(project_id: str):
 
 
 @router.put("/projects/{project_id}/characters/{character_name}")
-async def update_character(project_id: str, character_name: str, description: str = None):
-    """Update a character's description. Set description to regenerate portrait next time."""
+async def update_character(
+    project_id: str, character_name: str,
+    description: str = None,
+    portrait_prompt: str = None,
+    voice_prompt: str = None,
+):
+    """Update a character's description, portrait prompt, or voice prompt."""
     project = _get_project_or_404(project_id)
 
     char_ref = None
@@ -1160,21 +1150,183 @@ async def update_character(project_id: str, character_name: str, description: st
     if not char_ref:
         raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
 
-    if description:
+    if description is not None:
         char_ref.description = description
         # Clear portrait so it gets regenerated
         char_ref.portrait_path = None
         char_ref.portrait_comfyui = None
+    
+    if portrait_prompt is not None:
+        char_ref.portrait_prompt = portrait_prompt
+        # Clear portrait so it gets regenerated with new prompt
+        char_ref.portrait_path = None
+        char_ref.portrait_comfyui = None
+    
+    if voice_prompt is not None:
+        char_ref.voice_prompt = voice_prompt
+
+    save_project(project)
+    return project_to_detail_response(project)
+
+
+@router.post("/projects/{project_id}/characters/{character_name}/generate-portrait-variant")
+async def generate_portrait_variant(project_id: str, character_name: str):
+    """Generate a new portrait variant for a character and return updated project."""
+    from .audiobook_llm import generate_portrait_prompt
+    from .comfyui_service import generate_image, upload_image
+
+    project = _get_project_or_404(project_id)
+    char_ref = None
+    for c in project.characters:
+        if c.name.lower() == character_name.lower():
+            char_ref = c
+            break
+    if not char_ref:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+
+    if not char_ref.description:
+        raise HTTPException(status_code=400, detail="Character has no description. Run character extraction first.")
+
+    # Use stored portrait_prompt if available, otherwise generate via LLM
+    portrait_prompt = char_ref.portrait_prompt
+    if not portrait_prompt:
+        portrait_prompt = generate_portrait_prompt(char_ref.name, char_ref.description)
+    if not portrait_prompt:
+        raise HTTPException(status_code=500, detail="Failed to generate portrait prompt")
+
+    portrait_dir = os.path.join(get_project_dir(project_id), "portraits")
+    os.makedirs(portrait_dir, exist_ok=True)
+
+    safe_name = re.sub(r'[^a-zA-Z0-9]', '_', char_ref.name.lower())
+    variant_idx = len(char_ref.portrait_variants) + 1
+    try:
+        path = await generate_image(
+            prompt=portrait_prompt,
+            output_dir=portrait_dir,
+            prefix=f"portrait_{safe_name}_v{variant_idx}",
+            width=768,
+            height=1024,
+        )
+        char_ref.portrait_variants.append(path)
+
+        # If this is the first portrait, also set it as the primary
+        if not char_ref.portrait_path or not os.path.exists(char_ref.portrait_path):
+            char_ref.portrait_path = path
+            comfyui_name = await upload_image(path)
+            char_ref.portrait_comfyui = comfyui_name
+
+        save_project(project)
+        logger.info(f"Generated portrait variant {variant_idx} for {char_ref.name}")
+        return project_to_detail_response(project)
+    except Exception as e:
+        logger.error(f"Portrait variant generation failed for {char_ref.name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/projects/{project_id}/characters/{character_name}/select-portrait")
+async def select_portrait(project_id: str, character_name: str, variant_index: int = 0):
+    """Select a specific portrait variant as the primary portrait for a character."""
+    from .comfyui_service import upload_image
+
+    project = _get_project_or_404(project_id)
+    char_ref = None
+    for c in project.characters:
+        if c.name.lower() == character_name.lower():
+            char_ref = c
+            break
+    if not char_ref:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+
+    if variant_index < 0 or variant_index >= len(char_ref.portrait_variants):
+        raise HTTPException(status_code=400, detail=f"Invalid variant index {variant_index}")
+
+    selected_path = char_ref.portrait_variants[variant_index]
+    if not os.path.exists(selected_path):
+        raise HTTPException(status_code=404, detail="Portrait file not found on disk")
+
+    char_ref.portrait_path = selected_path
+    try:
+        comfyui_name = await upload_image(selected_path)
+        char_ref.portrait_comfyui = comfyui_name
+    except Exception as e:
+        logger.warning(f"Failed to upload portrait to ComfyUI: {e}")
 
     save_project(project)
     return project_to_detail_response(project)
 
 
 @router.get("/projects/{project_id}/characters/{character_name}/portrait")
-async def get_character_portrait(project_id: str, character_name: str):
-    """Serve the portrait image for a character."""
+async def get_character_portrait(project_id: str, character_name: str, variant: int = -1):
+    """Serve a character's portrait image. Use variant=-1 for primary, or 0..N for variants."""
     from fastapi.responses import FileResponse
 
+    project = _get_project_or_404(project_id)
+    char_ref = None
+    for c in project.characters:
+        if c.name.lower() == character_name.lower():
+            char_ref = c
+            break
+    if not char_ref:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+
+    if variant >= 0:
+        if variant >= len(char_ref.portrait_variants):
+            raise HTTPException(status_code=404, detail="Variant not found")
+        path = char_ref.portrait_variants[variant]
+    else:
+        path = char_ref.portrait_path
+
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="No portrait available")
+
+    return FileResponse(path, media_type="image/png")
+
+
+@router.post("/projects/{project_id}/characters/{character_name}/preview-voice")
+async def preview_character_voice(project_id: str, character_name: str):
+    """Generate a short TTS voice preview for a character."""
+    project = _get_project_or_404(project_id)
+
+    # Find the character's voice
+    voice_name = project.character_voice_map.get(character_name)
+    if not voice_name:
+        # Try case-insensitive
+        for k, v in project.character_voice_map.items():
+            if k.lower() == character_name.lower():
+                voice_name = v
+                break
+    if not voice_name:
+        voice_name = project.narrator_voice or ""
+
+    if not voice_name:
+        raise HTTPException(status_code=400, detail="No voice assigned to this character")
+
+    if not tts_service:
+        raise HTTPException(status_code=503, detail="TTS service unavailable")
+
+    # Use a short preview sentence
+    preview_text = f"Hello, my name is {character_name}. Pleased to make your acquaintance."
+    try:
+        audio_data, sample_rate = await asyncio.to_thread(
+            tts_service.generate_speech, preview_text, voice_name
+        )
+        # Convert numpy audio to WAV bytes
+        wav_buffer = io.BytesIO()
+        sf.write(wav_buffer, audio_data, sample_rate, format="WAV")
+        wav_bytes = wav_buffer.getvalue()
+        return Response(
+            content=wav_bytes,
+            media_type="audio/wav",
+            headers={"Content-Disposition": f"inline; filename=preview_{character_name}.wav"},
+        )
+    except Exception as e:
+        logger.error(f"Voice preview failed for {character_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/characters/{character_name}/design-voice", response_model=ProjectDetailResponse)
+async def design_character_voice(project_id: str, character_name: str):
+    """Design a unique TTS voice for a character using their voice_prompt via MOSS VoiceGenerator."""
     project = _get_project_or_404(project_id)
 
     char_ref = None
@@ -1186,24 +1338,125 @@ async def get_character_portrait(project_id: str, character_name: str):
     if not char_ref:
         raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
 
-    if not char_ref.portrait_path or not os.path.exists(char_ref.portrait_path):
-        raise HTTPException(status_code=404, detail="Portrait not generated yet")
+    voice_description = char_ref.voice_prompt
+    if not voice_description:
+        raise HTTPException(status_code=400, detail="No voice prompt set for this character. Run character extraction or set a voice prompt first.")
 
-    ext = os.path.splitext(char_ref.portrait_path)[1].lower()
-    media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
-    media_type = media_types.get(ext, "image/png")
+    if not tts_service:
+        raise HTTPException(status_code=503, detail="TTS service unavailable")
 
-    safe_name = re.sub(r'[^a-zA-Z0-9]', '_', char_ref.name.lower())
-    return FileResponse(
-        path=char_ref.portrait_path,
-        media_type=media_type,
-        filename=f"portrait_{safe_name}{ext}",
-    )
+    if not hasattr(tts_service, 'design_voice'):
+        raise HTTPException(status_code=503, detail="Voice design not supported by current TTS backend")
+
+    try:
+        # Create a sanitized voice name from the character name
+        import re as _re
+        voice_name = _re.sub(r'[^a-zA-Z0-9_-]', '_', character_name).strip('_')
+        voice_name = f"char_{voice_name}"
+
+        logger.info(f"Designing voice '{voice_name}' for character '{character_name}' with prompt: {voice_description[:100]}...")
+
+        # Use MOSS VoiceGenerator to design the voice
+        voice_path = await asyncio.to_thread(tts_service.design_voice, voice_name, voice_description)
+
+        # Assign the designed voice to the character in the voice map
+        project.character_voice_map[character_name] = voice_name
+        save_project(project)
+
+        logger.info(f"Designed voice '{voice_name}' for character '{character_name}' saved to {voice_path}")
+        return project_to_detail_response(project)
+    except Exception as e:
+        logger.error(f"Voice design failed for {character_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class UpdateNarratorVoicePromptRequest(BaseModel):
+    narrator_voice_prompt: str
+
+
+@router.post("/projects/{project_id}/generate-narrator-voice", response_model=ProjectDetailResponse)
+async def generate_narrator_voice(project_id: str):
+    """Generate a narrator voice prompt from book text via LLM, then design the voice via MOSS."""
+    project = _get_project_or_404(project_id)
+
+    if not project.raw_text:
+        raise HTTPException(status_code=400, detail="No book text available")
+
+    # Step 1: Generate narrator voice description from book text
+    voice_desc = llm_generate_narrator_voice_prompt(project.raw_text)
+    if not voice_desc:
+        raise HTTPException(status_code=503, detail="LLM failed to generate narrator voice description")
+
+    project.narrator_voice_prompt = voice_desc
+    save_project(project)
+    logger.info(f"Generated narrator voice prompt for project '{project_id}': {voice_desc[:100]}...")
+
+    # Step 2: Design voice via MOSS if available
+    if tts_service and hasattr(tts_service, 'design_voice'):
+        try:
+            voice_name = "narrator_voice"
+            await asyncio.to_thread(tts_service.design_voice, voice_name, voice_desc)
+            project.narrator_voice = voice_name
+
+            # Re-assign narrator voice to all non-character segments
+            for ch in project.chapters:
+                assign_segment_voices(ch.segments, project.character_voice_map, project.narrator_voice)
+
+            save_project(project)
+            logger.info(f"Designed narrator voice '{voice_name}' for project '{project_id}'")
+        except Exception as e:
+            logger.error(f"Failed to design narrator voice: {e}")
+            # Still return — the prompt was saved even if voice design failed
+
+    return project_to_detail_response(project)
+
+
+@router.put("/projects/{project_id}/narrator-voice-prompt", response_model=ProjectDetailResponse)
+async def update_narrator_voice_prompt(project_id: str, request: UpdateNarratorVoicePromptRequest):
+    """Update the narrator voice prompt text (manual edit)."""
+    project = _get_project_or_404(project_id)
+    project.narrator_voice_prompt = request.narrator_voice_prompt
+    save_project(project)
+    logger.info(f"Updated narrator voice prompt for project '{project_id}'")
+    return project_to_detail_response(project)
+
+
+@router.post("/projects/{project_id}/design-narrator-voice", response_model=ProjectDetailResponse)
+async def design_narrator_voice(project_id: str):
+    """Redesign the narrator voice from the current narrator_voice_prompt via MOSS."""
+    project = _get_project_or_404(project_id)
+
+    if not project.narrator_voice_prompt:
+        raise HTTPException(status_code=400, detail="No narrator voice prompt set. Generate one first or set it manually.")
+
+    if not tts_service:
+        raise HTTPException(status_code=503, detail="TTS service unavailable")
+
+    if not hasattr(tts_service, 'design_voice'):
+        raise HTTPException(status_code=503, detail="Voice design not supported by current TTS backend")
+
+    try:
+        voice_name = "narrator_voice"
+        logger.info(f"Redesigning narrator voice with prompt: {project.narrator_voice_prompt[:100]}...")
+        await asyncio.to_thread(tts_service.design_voice, voice_name, project.narrator_voice_prompt)
+
+        project.narrator_voice = voice_name
+
+        # Re-assign narrator voice to all non-character segments
+        for ch in project.chapters:
+            assign_segment_voices(ch.segments, project.character_voice_map, project.narrator_voice)
+
+        save_project(project)
+        logger.info(f"Redesigned narrator voice '{voice_name}' for project '{project_id}'")
+        return project_to_detail_response(project)
+    except Exception as e:
+        logger.error(f"Narrator voice design failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/projects/{project_id}/export-video")
 async def export_video(project_id: str):
-    """Assemble all segment visuals + audio into a final MP4 video."""
+    """Start video assembly as a background task. Returns immediately with status='queued'."""
     from .video_assembler import build_project_video
 
     project = _get_project_or_404(project_id)
@@ -1222,20 +1475,66 @@ async def export_video(project_id: str):
                     status_code=400,
                     detail=f"Segment '{seg.id}' is missing audio. Generate all audio first.",
                 )
-            segments_data.append((seg.visual_path, seg.audio_path, seg.visual_type or "image"))
+            segments_data.append((seg.visual_path, seg.audio_path, seg.visual_type or "image", seg.animation_style, seg.video_fill_mode))
 
     if not segments_data:
         raise HTTPException(status_code=400, detail="No segments with audio and visuals found")
 
+    # Prevent concurrent exports for the same project
+    if project_id not in _export_locks:
+        _export_locks[project_id] = asyncio.Lock()
+    lock = _export_locks[project_id]
+    if lock.locked():
+        raise HTTPException(status_code=409, detail="Export already in progress for this project")
+
     video_dir = os.path.join(get_project_dir(project_id), "video")
 
-    try:
-        video_path = build_project_video(segments_data, video_dir)
-    except Exception as e:
-        logger.error(f"Video assembly failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Video assembly failed: {str(e)}")
+    # Update status immediately
+    project.video_status = "generating"
+    save_project(project)
 
-    return {"status": "ok", "video_path": video_path, "message": "Video assembled successfully"}
+    async def _run_assembly():
+        async with lock:
+            import shutil
+            # Wipe old clips so stale files from previous/aborted runs are never reused
+            clips_dir = os.path.join(video_dir, "clips")
+            if os.path.exists(clips_dir):
+                shutil.rmtree(clips_dir)
+            proj = load_project(project_id)
+            try:
+                path = await asyncio.to_thread(build_project_video, segments_data, video_dir)
+                proj.video_status = "done"
+                proj.video_path = path
+                logger.info(f"Video assembly complete: {path}")
+            except Exception as e:
+                proj.video_status = "error"
+                proj.video_error = str(e)
+                logger.error(f"Video assembly failed: {e}")
+            finally:
+                save_project(proj)
+
+    asyncio.ensure_future(_run_assembly())
+    return {"status": "queued", "message": "Video assembly started in background"}
+
+
+@router.get("/projects/{project_id}/export-status")
+async def export_status(project_id: str):
+    """Poll video assembly status: queued | generating | done | error."""
+    project = _get_project_or_404(project_id)
+    status = getattr(project, "video_status", "idle")
+    error = getattr(project, "video_error", None)
+    video_path = getattr(project, "video_path", None)
+
+    video_ready = False
+    if video_path and os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+        video_ready = True
+
+    return {
+        "status": status,
+        "video_ready": video_ready,
+        "error": error if status == "error" else None,
+    }
+
 
 
 @router.get("/projects/{project_id}/video")
@@ -1266,3 +1565,11 @@ async def comfyui_health():
         "healthy": is_healthy,
         "url": COMFYUI_API_URL,
     }
+
+
+@router.get("/queue-status")
+async def queue_status():
+    """Return the current depth and active job for each generation queue."""
+    from .generation_queue import get_queue_status
+    return get_queue_status()
+

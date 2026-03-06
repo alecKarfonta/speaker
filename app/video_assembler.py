@@ -26,7 +26,7 @@ def _run_ffmpeg(args: List[str], description: str = "ffmpeg") -> None:
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         logger.error(f"{description} failed: {result.stderr}")
-        raise RuntimeError(f"{description} failed: {result.stderr[:500]}")
+        raise RuntimeError(f"{description} failed:\n{result.stderr[-2000:]}")
 
 
 def _probe_duration(path: str) -> float:
@@ -47,45 +47,87 @@ def create_segment_clip(
     audio_path: str,
     output_path: str,
     visual_type: str = "image",
+    animation_style: Optional[str] = None,
+    video_fill_mode: str = "hold",
 ) -> str:
     """
     Create a single segment clip by combining a visual and audio file.
 
-    For images: loops the still image with Ken Burns zoom for audio duration.
-    For videos: loops/trims the video to match audio duration exactly.
+    For images: applies a Ken Burns / pan animation over the still image.
+    For videos: handles duration mismatch via video_fill_mode (loop/hold/fade).
     Both: output normalized to 1920x1080, with brief fade in/out.
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     audio_dur = _probe_duration(audio_path)
 
     if visual_type == "image":
-        _create_image_clip(visual_path, audio_path, output_path, audio_dur)
+        _create_image_clip(visual_path, audio_path, output_path, audio_dur,
+                           animation_style=animation_style)
     else:
-        _create_video_clip(visual_path, audio_path, output_path, audio_dur)
+        _create_video_clip(visual_path, audio_path, output_path, audio_dur,
+                           video_fill_mode=video_fill_mode)
 
     return output_path
 
 
 def _create_image_clip(
-    visual_path: str, audio_path: str, output_path: str, audio_dur: float
+    visual_path: str, audio_path: str, output_path: str, audio_dur: float,
+    animation_style: Optional[str] = None,
 ) -> None:
-    """Ken Burns zoom/pan over a still image for the audio duration."""
+    """Apply a Ken Burns / pan animation over a still image for the audio duration.
+
+    animation_style options:
+        zoom_in    — slow zoom toward center (default random option A)
+        zoom_out   — slow zoom back from center (default random option B)
+        pan_left   — camera drifts left to right
+        pan_right  — camera drifts right to left
+        pan_up     — camera drifts upward
+        static     — no camera movement, just the still image
+        random     — randomly pick zoom_in or zoom_out (backward-compatible default)
+        None       — same as random
+    """
     fps = 25
     total_frames = int(audio_dur * fps) + 1
 
-    # Randomise direction: zoom-in or zoom-out
-    direction = random.choice([0, 1])
-    if direction == 0:
+    style = animation_style or "random"
+
+    if style == "random":
+        style = random.choice(["zoom_in", "zoom_out"])
+
+    if style == "zoom_in":
         zoom_expr = f"min(1+0.15*on/{total_frames},1.15)"
-    else:
+        x_expr = "iw/2-(iw/zoom/2)"
+        y_expr = "ih/2-(ih/zoom/2)"
+    elif style == "zoom_out":
         zoom_expr = f"max(1.15-0.15*on/{total_frames},1.0)"
+        x_expr = "iw/2-(iw/zoom/2)"
+        y_expr = "ih/2-(ih/zoom/2)"
+    elif style == "pan_left":
+        # Slight zoom, pan from left edge toward right
+        zoom_expr = "1.05"
+        x_expr = f"(iw-iw/zoom)*on/{total_frames}"
+        y_expr = "ih/2-(ih/zoom/2)"
+    elif style == "pan_right":
+        # Slight zoom, pan from right edge toward left
+        zoom_expr = "1.05"
+        x_expr = f"(iw-iw/zoom)*(1-on/{total_frames})"
+        y_expr = "ih/2-(ih/zoom/2)"
+    elif style == "pan_up":
+        # Slight zoom, drift upward
+        zoom_expr = "1.05"
+        x_expr = "iw/2-(iw/zoom/2)"
+        y_expr = f"(ih-ih/zoom)*(1-on/{total_frames})"
+    else:  # static
+        zoom_expr = "1.0"
+        x_expr = "iw/2-(iw/zoom/2)"
+        y_expr = "ih/2-(ih/zoom/2)"
 
     _run_ffmpeg([
         "-i", visual_path,
         "-i", audio_path,
         "-filter_complex",
         f"[0:v]scale=1920:1080,zoompan=z='{zoom_expr}':d={total_frames}"
-        f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps={fps},"
+        f":x='{x_expr}':y='{y_expr}':s=1920x1080:fps={fps},"
         f"fade=t=in:st=0:d=0.3,fade=t=out:st={max(0, audio_dur - 0.3):.2f}:d=0.3[v]",
         "-map", "[v]",
         "-map", "1:a",
@@ -96,52 +138,176 @@ def _create_image_clip(
         "-pix_fmt", "yuv420p",
         "-shortest",
         output_path,
-    ], f"segment clip (Ken Burns): {os.path.basename(output_path)}")
+    ], f"segment clip ({style}): {os.path.basename(output_path)}")
+
+
+def _is_animated_webp(path: str) -> bool:
+    """Check if a file is an animated WebP by scanning for ANIM/ANMF RIFF chunks."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(64)
+        return b"ANIM" in header or b"ANMF" in header
+    except Exception:
+        return False
+
+
+def _convert_animated_webp_to_mp4(webp_path: str, output_path: str) -> None:
+    """
+    Convert an animated WebP to a silent MP4 using Pillow to extract frames.
+    This bypasses ffmpeg's broken webp_pipe demuxer for ANIM/ANMF chunks.
+    """
+    from PIL import Image
+    import tempfile
+    import shutil
+
+    tmp_dir = tempfile.mkdtemp(prefix="webp_frames_")
+    try:
+        img = Image.open(webp_path)
+
+        frame_count = 0
+        frame_durations = []  # ms per frame
+
+        while True:
+            duration = img.info.get("duration", 100)  # ms, default 100ms
+            frame_durations.append(duration)
+            # Convert RGBA → RGB for x264 compatibility
+            frame_rgb = img.convert("RGB")
+            frame_path = os.path.join(tmp_dir, f"frame_{frame_count:05d}.png")
+            frame_rgb.save(frame_path, "PNG")
+            frame_count += 1
+            try:
+                img.seek(img.tell() + 1)
+            except EOFError:
+                break
+
+        if frame_count == 0:
+            raise RuntimeError("No frames extracted from animated WebP")
+
+        # Compute average FPS from frame durations
+        avg_ms = sum(frame_durations) / len(frame_durations)
+        fps = round(1000.0 / max(avg_ms, 10))  # clamp to sane fps
+        logger.info(f"Extracted {frame_count} frames at avg {fps} fps from {os.path.basename(webp_path)}")
+
+        # Build MP4 from frames
+        _run_ffmpeg([
+            "-framerate", str(fps),
+            "-i", os.path.join(tmp_dir, "frame_%05d.png"),
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            output_path,
+        ], f"frames → MP4: {os.path.basename(webp_path)}")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 
 def _create_video_clip(
-    visual_path: str, audio_path: str, output_path: str, audio_dur: float
+    visual_path: str, audio_path: str, output_path: str, audio_dur: float,
+    video_fill_mode: str = "hold",
 ) -> None:
     """
     Video clip synced to audio duration.
-    If video is shorter than audio, loop it. If longer, trim it.
-    Output scaled to 1920x1080 with fade in/out.
+    Handles animated WebP (ComfyUI output) by pre-converting to MP4.
+
+    video_fill_mode controls what happens when visual is shorter than audio:
+      hold  — freeze last frame then fade to black (default, cinematic)
+      loop  — loop the video from the beginning
+      fade  — video plays once, then fadeout begins immediately at video end
     """
-    video_dur = _probe_duration(visual_path)
-    fade_d = 0.3
+    # ── Animated WebP pre-conversion ──────────────────────────────────────
+    ext = os.path.splitext(visual_path)[1].lower()
+    tmp_mp4 = None
+    if ext == ".webp" or _is_animated_webp(visual_path):
+        tmp_mp4 = visual_path.rsplit(".", 1)[0] + "_tmp.mp4"
+        try:
+            _convert_animated_webp_to_mp4(visual_path, tmp_mp4)
+            visual_path = tmp_mp4
+            logger.info(f"Converted animated WebP to tmp MP4: {tmp_mp4}")
+        except Exception as e:
+            logger.warning(f"Animated WebP conversion failed ({e}), falling back to still image")
+            _create_image_clip(visual_path, audio_path, output_path, audio_dur)
+            if tmp_mp4 and os.path.exists(tmp_mp4):
+                os.remove(tmp_mp4)
+            return
 
-    # Build input args
-    input_args = []
-    if video_dur > 0 and video_dur < audio_dur:
-        # Loop video to cover audio duration
-        loops_needed = math.ceil(audio_dur / video_dur)
-        input_args = ["-stream_loop", str(loops_needed - 1), "-i", visual_path]
-    else:
-        input_args = ["-i", visual_path]
+    # ── Standard video clip assembly ─────────────────────────────────────
+    try:
+        video_dur = _probe_duration(visual_path)
+        fade_d = 0.3
+        fps = 25  # normalize output FPS
 
-    input_args += ["-i", audio_path]
+        needs_fill = video_dur > 0 and video_dur < audio_dur
+        mode = video_fill_mode if needs_fill else "trim"
 
-    # Video filter: scale to 1920x1080, fade in/out
-    vf = (
-        f"scale=1920:1080:force_original_aspect_ratio=decrease,"
-        f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
-        f"fade=t=in:st=0:d={fade_d},"
-        f"fade=t=out:st={max(0, audio_dur - fade_d):.2f}:d={fade_d}"
-    )
+        if mode == "loop":
+            loops_needed = math.ceil(audio_dur / video_dur)
+            input_args = ["-stream_loop", str(loops_needed - 1), "-i", visual_path, "-i", audio_path]
+            vf = (
+                f"fps={fps},"
+                f"scale=1920:1080:force_original_aspect_ratio=decrease,"
+                f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"fade=t=in:st=0:d={fade_d},"
+                f"fade=t=out:st={max(0, audio_dur - fade_d):.2f}:d={fade_d}"
+            )
+        elif mode == "fade":
+            # Play video once; fade to black starting at video end
+            fade_start = max(0, video_dur - fade_d)
+            input_args = ["-i", visual_path, "-i", audio_path]
+            vf = (
+                f"fps={fps},"
+                f"scale=1920:1080:force_original_aspect_ratio=decrease,"
+                f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"tpad=stop_mode=add:stop_duration={audio_dur - video_dur + fade_d:.2f}:color=black,"
+                f"fade=t=in:st=0:d={fade_d},"
+                f"fade=t=out:st={fade_start:.2f}:d={fade_d}"
+            )
+        elif mode == "hold":
+            # Freeze last frame, fade out at end of audio
+            pad_frames = math.ceil((audio_dur - video_dur) * fps) + 1
+            input_args = ["-i", visual_path, "-i", audio_path]
+            vf = (
+                f"fps={fps},"
+                f"scale=1920:1080:force_original_aspect_ratio=decrease,"
+                f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"tpad=stop_mode=clone:stop={pad_frames},"
+                f"fade=t=in:st=0:d={fade_d},"
+                f"fade=t=out:st={max(0, audio_dur - fade_d):.2f}:d={fade_d}"
+            )
+        else:  # trim (video >= audio or unknown)
+            input_args = ["-i", visual_path, "-i", audio_path]
+            vf = (
+                f"fps={fps},"
+                f"scale=1920:1080:force_original_aspect_ratio=decrease,"
+                f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"fade=t=in:st=0:d={fade_d},"
+                f"fade=t=out:st={max(0, audio_dur - fade_d):.2f}:d={fade_d}"
+            )
 
-    _run_ffmpeg(
-        input_args + [
-            "-t", f"{audio_dur:.2f}",
-            "-vf", vf,
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-pix_fmt", "yuv420p",
-            output_path,
-        ],
-        f"segment clip (video): {os.path.basename(output_path)}",
-    )
+        _run_ffmpeg(
+            input_args + [
+                "-t", f"{audio_dur:.2f}",
+                "-filter_complex", f"[0:v]{vf}[vout]",
+                "-map", "[vout]",
+                "-map", "1:a",
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                output_path,
+            ],
+            f"segment clip (video/{mode}): {os.path.basename(output_path)}",
+        )
+    finally:
+        if tmp_mp4 and os.path.exists(tmp_mp4):
+            os.remove(tmp_mp4)
+
+
+
 
 
 def assemble_chapter(
@@ -194,7 +360,7 @@ def _concat_with_crossfade(
 ) -> str:
     """
     Concatenate clips with xfade/acrossfade transitions.
-    For N clips, builds a chain of N-1 xfade filters.
+    All inputs are first normalized to fps=25 to ensure matching timebases.
     """
     n = len(clips)
 
@@ -206,26 +372,25 @@ def _concat_with_crossfade(
     for clip in clips:
         inputs += ["-i", clip]
 
-    # Build xfade filter chain:
-    # [0:v][1:v]xfade=transition=fade:duration=D:offset=O[v01];
-    # [v01][2:v]xfade=...
+    # Normalize each input to 25fps + matching timebase before xfade.
+    # Without this, clips encoded at different FPS (e.g. 8fps from animated WebP
+    # vs 25fps from image Ken Burns) have different timebases and xfade fails.
+    FPS = 25
+    norm_filters = []
+    for i in range(n):
+        norm_filters.append(f"[{i}:v]fps={FPS},settb=1/{FPS}[nv{i}]")
+        norm_filters.append(f"[{i}:a]asetpts=PTS-STARTPTS[na{i}]")
+
+    # Build xfade chain on normalized streams
     video_filters = []
     audio_filters = []
-
-    # Calculate offsets: each xfade starts at (cumulative_duration - crossfade)
-    # The crossfade eats into the end of clip_i and start of clip_{i+1}
     cumulative = durations[0]
 
     for i in range(1, n):
         offset = max(0, cumulative - crossfade)
 
-        # Video xfade
-        if i == 1:
-            vin_a = "[0:v]"
-        else:
-            vin_a = f"[v{i-1}]"
-
-        vin_b = f"[{i}:v]"
+        vin_a = f"[nv{i-1}]" if i == 1 else f"[v{i-1}]"
+        vin_b = f"[nv{i}]"
         vout = f"[v{i}]" if i < n - 1 else "[vout]"
 
         video_filters.append(
@@ -233,23 +398,17 @@ def _concat_with_crossfade(
             f":offset={offset:.2f}{vout}"
         )
 
-        # Audio crossfade
-        if i == 1:
-            ain_a = "[0:a]"
-        else:
-            ain_a = f"[a{i-1}]"
-
-        ain_b = f"[{i}:a]"
+        ain_a = f"[na{i-1}]" if i == 1 else f"[a{i-1}]"
+        ain_b = f"[na{i}]"
         aout = f"[a{i}]" if i < n - 1 else "[aout]"
 
         audio_filters.append(
             f"{ain_a}{ain_b}acrossfade=d={crossfade:.2f}:c1=tri:c2=tri{aout}"
         )
 
-        # After xfade, effective cumulative shortens by crossfade
         cumulative = offset + durations[i]
 
-    filter_complex = ";".join(video_filters + audio_filters)
+    filter_complex = ";".join(norm_filters + video_filters + audio_filters)
 
     _run_ffmpeg(
         inputs + [
@@ -261,12 +420,14 @@ def _concat_with_crossfade(
             "-c:a", "aac",
             "-b:a", "192k",
             "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
             output_path,
         ],
         f"chapter assembly (crossfade): {os.path.basename(output_path)}",
     )
 
     return output_path
+
 
 
 def assemble_full_book(
@@ -278,7 +439,7 @@ def assemble_full_book(
 
 
 def build_project_video(
-    segments: List[Tuple[str, str, str]],
+    segments: List[Tuple[str, str, str, Optional[str]]],
     output_dir: str,
     crossfade: float = CROSSFADE_DURATION,
 ) -> str:
@@ -286,7 +447,7 @@ def build_project_video(
     Build the full project video from segment data.
 
     Args:
-        segments: List of (visual_path, audio_path, visual_type) tuples in order
+        segments: List of (visual_path, audio_path, visual_type, animation_style, video_fill_mode) tuples.
         output_dir: Directory to write intermediate and final files
         crossfade: Duration of crossfade transition between segments (seconds)
 
@@ -297,9 +458,14 @@ def build_project_video(
     os.makedirs(clips_dir, exist_ok=True)
 
     clip_paths = []
-    for i, (visual_path, audio_path, visual_type) in enumerate(segments):
+    for i, seg_data in enumerate(segments):
+        visual_path, audio_path, visual_type = seg_data[0], seg_data[1], seg_data[2]
+        animation_style = seg_data[3] if len(seg_data) > 3 else None
+        video_fill_mode = seg_data[4] if len(seg_data) > 4 else "hold"
         clip_path = os.path.join(clips_dir, f"segment_{i:04d}.mp4")
-        create_segment_clip(visual_path, audio_path, clip_path, visual_type)
+        create_segment_clip(visual_path, audio_path, clip_path, visual_type,
+                            animation_style=animation_style,
+                            video_fill_mode=video_fill_mode)
         clip_paths.append(clip_path)
 
     final_path = os.path.join(output_dir, "full_book.mp4")
@@ -307,3 +473,4 @@ def build_project_video(
 
     logger.info(f"Built project video: {final_path} ({len(clip_paths)} segments)")
     return final_path
+

@@ -8,13 +8,6 @@ const API_BASE = '';
 
 export type SegmentStatus = 'pending' | 'generating' | 'done' | 'error';
 
-export interface CharacterRef {
-    name: string;
-    description: string;
-    portrait_path: string | null;
-    portrait_comfyui: string | null;
-}
-
 export interface SegmentResponse {
     id: string;
     text: string;
@@ -28,8 +21,9 @@ export interface SegmentResponse {
     scene_prompt: string | null;
     has_visual: boolean;
     visual_type: string | null;
-    visual_mode: string | null;
     visual_status: string;
+    animation_style: string | null;
+    video_fill_mode: string;
 }
 
 export interface ChapterResponse {
@@ -59,8 +53,25 @@ export interface ProjectDetail {
     error_segments: number;
     total_characters: number;
     visual_ready: number;
-    visual_style: string;
-    characters: CharacterRef[];
+    visual_style?: string;
+    characters?: CharacterRef[];
+    narrator_voice_prompt?: string;
+}
+
+export interface CharacterRef {
+    name: string;
+    description: string;
+    portrait_prompt?: string;
+    voice_prompt?: string;
+    visual_profile?: {
+        face?: string;
+        skin?: string;
+        build?: string;
+        clothing?: string;
+    };
+    portrait_path?: string;
+    portrait_comfyui?: string;
+    portrait_variants?: string[];
 }
 
 export interface ProjectSummary {
@@ -109,7 +120,7 @@ export async function createProject(
             name,
             text,
             chapter_pattern: chapterPattern,
-            narrator_voice: narratorVoice,
+            narrator_voice: narratorVoice || '',
         }),
     });
     return handleResponse<ProjectDetail>(res);
@@ -121,24 +132,28 @@ export async function getProject(projectId: string): Promise<ProjectDetail> {
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
-    const res = await fetch(`${API_BASE}/audiobook/projects/${projectId}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Failed to delete project');
+    await fetch(`${API_BASE}/audiobook/projects/${projectId}`, { method: 'DELETE' });
 }
 
 export async function reparseProject(
     projectId: string,
     chapterPattern: string
 ): Promise<ProjectDetail> {
-    const res = await fetch(`${API_BASE}/audiobook/projects/${projectId}/parse`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chapter_pattern: chapterPattern }),
-    });
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/reparse`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chapter_pattern: chapterPattern }),
+        }
+    );
     return handleResponse<ProjectDetail>(res);
 }
 
 export async function getCharacters(projectId: string) {
-    const res = await fetch(`${API_BASE}/audiobook/projects/${projectId}/characters`);
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/characters`
+    );
     return handleResponse<{
         detected_characters: string[];
         character_voice_map: Record<string, string>;
@@ -151,21 +166,24 @@ export async function updateCharacterMap(
     characterVoiceMap: Record<string, string>,
     narratorVoice?: string
 ): Promise<ProjectDetail> {
-    const res = await fetch(`${API_BASE}/audiobook/projects/${projectId}/characters`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            character_voice_map: characterVoiceMap,
-            narrator_voice: narratorVoice,
-        }),
-    });
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/characters`,
+        {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                character_voice_map: characterVoiceMap,
+                narrator_voice: narratorVoice || '',
+            }),
+        }
+    );
     return handleResponse<ProjectDetail>(res);
 }
 
 export async function updateSegment(
     projectId: string,
     segmentId: string,
-    update: { text?: string; voice_name?: string }
+    update: { text?: string; voice_name?: string; scene_prompt?: string }
 ): Promise<ProjectDetail> {
     const res = await fetch(
         `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}`,
@@ -186,7 +204,7 @@ export async function generateSegment(
         `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}/generate`,
         { method: 'POST' }
     );
-    return handleResponse(res);
+    return handleResponse<{ status: string; duration: number; segment_id: string }>(res);
 }
 
 export function getSegmentAudioUrl(projectId: string, segmentId: string): string {
@@ -252,6 +270,10 @@ export function getFullExportUrl(projectId: string): string {
     return `${API_BASE}/audiobook/projects/${projectId}/export`;
 }
 
+export function getDownloadAllUrl(projectId: string): string {
+    return `${API_BASE}/audiobook/projects/${projectId}/download-all`;
+}
+
 // --- AI Analysis ---
 
 export async function analyzeCharacters(projectId: string): Promise<ProjectDetail> {
@@ -279,34 +301,36 @@ export async function importProject(file: File): Promise<ProjectDetail> {
     return handleResponse<ProjectDetail>(res);
 }
 
-// --- Character Portrait Extraction ---
-
-export async function extractCharacters(projectId: string): Promise<ProjectDetail> {
-    const res = await fetch(
-        `${API_BASE}/audiobook/projects/${projectId}/extract-characters`,
-        { method: 'POST' }
-    );
-    return handleResponse<ProjectDetail>(res);
-}
-
-export async function generatePortraits(projectId: string): Promise<ProjectDetail> {
-    const res = await fetch(
-        `${API_BASE}/audiobook/projects/${projectId}/generate-portraits`,
-        { method: 'POST' }
-    );
-    return handleResponse<ProjectDetail>(res);
-}
-
-export function getPortraitUrl(projectId: string, characterName: string): string {
-    return `${API_BASE}/audiobook/projects/${projectId}/characters/${encodeURIComponent(characterName)}/portrait`;
-}
-
 // --- Visual Generation ---
 
-export async function generateVisual(projectId: string, segmentId: string, mode?: string): Promise<ProjectDetail> {
-    const params = mode ? `?mode=${mode}` : '';
+export interface VisualParams {
+    mode?: string;
+    frames?: number;
+    fps?: number;
+    width?: number;
+    height?: number;
+    animation?: string;
+}
+
+export async function generateVisual(projectId: string, segmentId: string, params?: VisualParams): Promise<ProjectDetail> {
+    const p = new URLSearchParams();
+    if (params?.mode) p.set('mode', params.mode);
+    if (params?.frames != null) p.set('frames', String(params.frames));
+    if (params?.fps != null) p.set('fps', String(params.fps));
+    if (params?.width != null) p.set('width', String(params.width));
+    if (params?.height != null) p.set('height', String(params.height));
+    if (params?.animation) p.set('animation', params.animation);
+    const qs = p.toString() ? `?${p.toString()}` : '';
     const res = await fetch(
-        `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}/generate-visual${params}`,
+        `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}/generate-visual${qs}`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function generateScenePrompt(projectId: string, segmentId: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}/generate-scene-prompt`,
         { method: 'POST' }
     );
     return handleResponse<ProjectDetail>(res);
@@ -356,4 +380,137 @@ export function getVideoUrl(projectId: string): string {
 export async function checkComfyuiHealth(): Promise<{ healthy: boolean; url: string }> {
     const res = await fetch(`${API_BASE}/audiobook/comfyui/health`);
     return handleResponse<{ healthy: boolean; url: string }>(res);
+}
+
+// --- Character Profile ---
+
+export async function extractCharacters(projectId: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/extract-characters`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function generatePortraits(projectId: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/generate-portraits`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function generatePortraitVariant(projectId: string, characterName: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/characters/${encodeURIComponent(characterName)}/generate-portrait-variant`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function selectPortrait(projectId: string, characterName: string, variantIndex: number): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/characters/${encodeURIComponent(characterName)}/select-portrait?variant_index=${variantIndex}`,
+        { method: 'PUT' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export function getPortraitUrl(projectId: string, characterName: string, variant: number = -1): string {
+    return `${API_BASE}/audiobook/projects/${projectId}/characters/${encodeURIComponent(characterName)}/portrait${variant >= 0 ? `?variant=${variant}` : ''}`;
+}
+
+export function getVoicePreviewUrl(projectId: string, characterName: string): string {
+    return `${API_BASE}/audiobook/projects/${projectId}/characters/${encodeURIComponent(characterName)}/preview-voice`;
+}
+
+export async function updateCharacter(
+    projectId: string,
+    characterName: string,
+    fields: { description?: string; portrait_prompt?: string; voice_prompt?: string }
+): Promise<ProjectDetail> {
+    const params = new URLSearchParams();
+    if (fields.description !== undefined) params.set('description', fields.description);
+    if (fields.portrait_prompt !== undefined) params.set('portrait_prompt', fields.portrait_prompt);
+    if (fields.voice_prompt !== undefined) params.set('voice_prompt', fields.voice_prompt);
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/characters/${encodeURIComponent(characterName)}?${params.toString()}`,
+        { method: 'PUT' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function designVoice(projectId: string, characterName: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/characters/${encodeURIComponent(characterName)}/design-voice`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+// --- Narrator Voice ---
+
+export async function generateNarratorVoice(projectId: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/generate-narrator-voice`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function updateNarratorVoicePrompt(projectId: string, narratorVoicePrompt: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/narrator-voice-prompt`,
+        {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ narrator_voice_prompt: narratorVoicePrompt }),
+        }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function designNarratorVoice(projectId: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/design-narrator-voice`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+// --- Queue Status ---
+
+export interface QueueStatus {
+    tts: { queued: number; active: { segment_id: string; project_id: string } | null };
+    prompt: { queued: number; active: { segment_id: string; project_id: string } | null };
+    visual: { queued: number; active: { segment_id: string; project_id: string } | null };
+    recent: Array<{ type: string; segment_id: string; status: string; error?: string }>;
+}
+
+export async function getQueueStatus(): Promise<QueueStatus> {
+    const res = await fetch(`${API_BASE}/audiobook/queue-status`);
+    return handleResponse<QueueStatus>(res);
+}
+
+export interface ExportStatus {
+    status: 'idle' | 'generating' | 'done' | 'error';
+    video_ready: boolean;
+    error: string | null;
+}
+
+export async function getExportStatus(projectId: string): Promise<ExportStatus> {
+    const res = await fetch(`${API_BASE}/audiobook/projects/${projectId}/export-status`);
+    return handleResponse<ExportStatus>(res);
+}
+
+export async function setVideoFillMode(
+    projectId: string,
+    segmentId: string,
+    mode: 'loop' | 'hold' | 'fade'
+): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}/video-fill-mode?mode=${mode}`,
+        { method: 'PATCH' }
+    );
+    return handleResponse<ProjectDetail>(res);
 }

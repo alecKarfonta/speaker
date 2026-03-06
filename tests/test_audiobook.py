@@ -118,6 +118,38 @@ class TestSegmentSplitting:
         for seg in segments:
             assert seg.status == SegmentStatus.PENDING
 
+    def test_normalize_heals_single_newline_midword(self):
+        """Single-newline mid-word break (e.g. 'p\\naragraphs') must be joined."""
+        from app.audiobook_parser import _normalize_text_for_segmentation
+        text = "something mentioned in furtive p\naragraphs of mixed abhorrence."
+        result = _normalize_text_for_segmentation(text)
+        assert "paragraphs" in result
+        assert "p\n" not in result
+
+    def test_normalize_heals_double_newline_midword(self):
+        """Double-newline mid-word break (PyMuPDF artifact) must not split the word."""
+        from app.audiobook_parser import _normalize_text_for_segmentation
+        text = "something mentioned in furtive p\n\naragraphs of mixed abhorrence."
+        result = _normalize_text_for_segmentation(text)
+        assert "paragraphs" in result
+
+    def test_lovecraft_excerpt_no_fragment_segments(self):
+        """Realistic Lovecraft excerpt with PDF-style mid-word breaks should not
+        produce sub-word segments."""
+        excerpt = (
+            "There was a formula—a sort of list of things to say and do—which I recognised "
+            "as something black and forbidden; something which I had read of before in furtive p\n"
+            "aragraphs of mixed abhorrence and fascination penned by those strange ancient delvers "
+            "into the universe's guarded secrets whose decaying texts I loved to absorb."
+        )
+        segments = split_chapter_into_segments(excerpt, max_chars=800)
+        for seg in segments:
+            # No segment should be a tiny word fragment
+            assert len(seg.text) >= 20, f"Suspiciously short segment: {seg.text!r}"
+            # No segment text should end with a single character before a word break
+            words = seg.text.split()
+            assert len(words) >= 3, f"Segment has too few words: {seg.text!r}"
+
 
 class TestCharacterDetection:
     def test_detect_from_dialogue(self):
@@ -369,6 +401,14 @@ class TestParsers:
         from app.audiobook_parsers import parse_uploaded_file
         with pytest.raises(ValueError, match="Unsupported"):
             parse_uploaded_file("book.docx", b"Some content")
+
+    def test_clean_pdf_rejoins_non_hyphenated_midword_breaks(self):
+        """PDF column layout often wraps words without a hyphen (e.g. 'p\naragraphs')."""
+        from app.audiobook_parsers import _clean_pdf_text
+        text = "something written in furtive p\naragraphs of mixed abhorrence."
+        result = _clean_pdf_text(text)
+        assert "paragraphs" in result
+        assert "p\n" not in result
 
     def test_supported_extensions_set(self):
         from app.audiobook_parsers import SUPPORTED_EXTENSIONS

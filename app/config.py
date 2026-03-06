@@ -93,15 +93,15 @@ class Settings(BaseModel):
     
     # AI Character Analysis (OpenAI-compatible LLM endpoint)
     instruct_llm_api_url: str = Field(
-        default="http://192.168.1.196:8600/v1/chat/completions",
+        default_factory=lambda: os.environ.get("INSTRUCT_LLM_API_URL", "http://192.168.1.196:8600/v1/chat/completions"),
         description="OpenAI-compatible chat completions endpoint for AI analysis"
     )
     instruct_llm_model: str = Field(
-        default="Huihui-Qwen3-Next-80B-A3B-Thinking-abliterated",
+        default_factory=lambda: os.environ.get("INSTRUCT_LLM_MODEL", "Qwen3-Coder-Next"),
         description="Model name to use for character analysis"
     )
     instruct_llm_api_key: str = Field(
-        default="placeholder-api-key",
+        default_factory=lambda: os.environ.get("INSTRUCT_LLM_API_KEY", "placeholder-api-key"),
         description="API key for LLM service"
     )
     instruct_llm_max_tokens: int = Field(

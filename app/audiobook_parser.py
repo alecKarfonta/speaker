@@ -19,12 +19,22 @@ CHAPTER_PATTERNS = {
     "numbered_dot": r"^\d+\.\s+[A-Z][^\n]*",
 }
 
+# Full set of speech/dialogue attribution verbs (shared between detection and assignment)
+SPEECH_VERBS = (
+    "said|asked|replied|exclaimed|whispered|shouted|muttered|cried|called|yelled|"
+    "answered|remarked|continued|added|began|explained|insisted|suggested|demanded|"
+    "declared|announced|agreed|admitted|argued|begged|complained|confessed|confirmed|"
+    "denied|gasped|groaned|grumbled|hissed|howled|laughed|moaned|mumbled|murmured|"
+    "observed|pleaded|promised|protested|questioned|recalled|repeated|responded|"
+    "roared|sang|screamed|sighed|snapped|sobbed|stammered|stated|urged|warned|wondered"
+)
+
 # Patterns for detecting dialogue and character attribution
 DIALOGUE_PATTERNS = [
     # "dialogue," said Character  /  "dialogue," Character said
-    r'"[^"]+"\s*,?\s*(?:said|asked|replied|exclaimed|whispered|shouted|muttered|cried|called|yelled|answered|remarked|continued|added|began|explained|insisted|suggested|demanded|declared|announced|agreed|admitted|argued|begged|complained|confessed|confirmed|denied|gasped|groaned|grumbled|hissed|howled|laughed|moaned|mumbled|murmured|observed|pleaded|promised|protested|questioned|recalled|repeated|responded|roared|sang|screamed|sighed|snapped|sobbed|stammered|stated|urged|warned|wondered)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)',
+    rf'"[^"]+"\s*,?\s*(?:{SPEECH_VERBS})\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)',
     # Character said, "dialogue"
-    r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+(?:said|asked|replied|exclaimed|whispered|shouted|muttered|cried|called|yelled|answered|remarked|continued|added|began|explained|insisted|suggested|demanded|declared|announced|agreed|admitted|argued|begged|complained|confessed|confirmed|denied|gasped|groaned|grumbled|hissed|howled|laughed|moaned|mumbled|murmured|observed|pleaded|promised|protested|questioned|recalled|repeated|responded|roared|sang|screamed|sighed|snapped|sobbed|stammered|stated|urged|warned|wondered)\s*,?\s*"[^"]+"',
+    rf'([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+(?:{SPEECH_VERBS})\s*,?\s*"[^"]+"',
 ]
 
 # Words that look like character names but aren't
@@ -193,21 +203,33 @@ def split_chapter_into_segments(
     # Flush remaining
     if current_text.strip():
         segments.append(Segment(text=current_text.strip()))
-    
-    # Merge segments that are too short with their neighbor
+
+    # Two-pass merge: fold segments that are too short into their neighbors.
+    # Pass 1 (forward): if a segment is short, append the NEXT segment to it.
+    # Pass 2 (backward): if the LAST segment is short, append it to the previous.
     if len(segments) > 1:
-        merged = [segments[0]]
-        for seg in segments[1:]:
-            if len(merged[-1].text) < min_chars:
-                merged[-1].text += "\n\n" + seg.text
-            else:
-                merged.append(seg)
-        # Also check the last segment
+        # Forward pass — absorb short segments into the next one
+        merged: list = []
+        i = 0
+        while i < len(segments):
+            seg = segments[i]
+            if len(seg.text) < min_chars and i + 1 < len(segments):
+                # Merge forward: combine with next segment
+                next_seg = segments[i + 1]
+                next_seg.text = seg.text.rstrip() + " " + next_seg.text.lstrip()
+                # Don't append seg; skip it (next_seg will be handled next loop)
+                i += 1
+                continue
+            merged.append(seg)
+            i += 1
+
+        # Backward pass — absorb a short trailing segment into the previous
         if len(merged) > 1 and len(merged[-1].text) < min_chars:
-            merged[-2].text += "\n\n" + merged[-1].text
+            merged[-2].text = merged[-2].text.rstrip() + " " + merged[-1].text.lstrip()
             merged.pop()
+
         segments = merged
-    
+
     return segments
 
 
@@ -220,29 +242,48 @@ def _normalize_text_for_segmentation(text: str) -> str:
     text = text.strip()
     if not text:
         return ""
-    
+
     # Normalize line endings
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    
-    # Preserve explicit paragraph breaks (double+ newlines) with a placeholder
+
+    # ---------------------------------------------------------------
+    # Heal word-wrap artifacts BEFORE marking paragraph boundaries.
+    # This prevents a mid-word break like "p\naragraphs" from being
+    # locked into a paragraph split when surrounded by double newlines.
+    # ---------------------------------------------------------------
+
+    # 1. Re-join hyphenated word breaks  (conti-\ntinued → continued)
+    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
+
+    # 2. Re-join non-hyphenated mid-word line breaks (PDF column artifacts).
+    #    A line ending with a lowercase letter/digit immediately followed
+    #    by a line starting with a lowercase letter is almost certainly a
+    #    wrapped word rather than a new sentence or paragraph boundary.
+    #    Handle both single-newline and double-newline variants so that even
+    #    "p\n\naragraphs" (double newline around the break) is healed.
+    #    e.g. "furtive p\naragraphs" → "furtive paragraphs"
+    #         "furtive p\n\naragraphs" → "furtive paragraphs"
+    text = re.sub(r"([a-z0-9])\n\n?([a-z])", r"\1\2", text)
+
+    # ---------------------------------------------------------------
+    # Now it is safe to mark true paragraph breaks and join the rest.
+    # ---------------------------------------------------------------
+
+    # Preserve true paragraph breaks (double+ newlines) with a placeholder
     text = re.sub(r"\n\s*\n", "\n<PARA>\n", text)
-    
-    # Lines ending with a hyphen are word-wrapped
-    text = re.sub(r"(\w)-\n\s*(\w)", r"\1\2", text)
-    
+
     # Replace ALL remaining single newlines with spaces
-    # (We already preserved real paragraph breaks as <PARA>)
     text = re.sub(r"\n", " ", text)
-    
+
     # Restore paragraph breaks
     text = text.replace("<PARA>", "\n\n")
-    
+
     # Clean up multiple spaces
     text = re.sub(r"[ \t]{2,}", " ", text)
-    
+
     # Re-normalize multiple blank lines
     text = re.sub(r"\n{3,}", "\n\n", text)
-    
+
     return text.strip()
 
 
@@ -404,8 +445,8 @@ def assign_segment_voices(
         # Check if segment is primarily dialogue from a known character
         assigned = False
         for char_name, voice_name in character_map.items():
-            # Check if this character speaks in this segment
-            char_pattern = rf'(?:said|asked|replied|exclaimed|whispered|shouted)\s+{re.escape(char_name)}|{re.escape(char_name)}\s+(?:said|asked|replied|exclaimed|whispered|shouted)'
+            # Check if this character speaks in this segment (uses full speech verb set)
+            char_pattern = rf'(?:{SPEECH_VERBS})\s+{re.escape(char_name)}|{re.escape(char_name)}\s+(?:{SPEECH_VERBS})'
             if re.search(char_pattern, seg.text, re.IGNORECASE):
                 seg.voice_name = voice_name
                 seg.character = char_name

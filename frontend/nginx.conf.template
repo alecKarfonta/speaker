@@ -43,7 +43,7 @@ server {
     }
 
     # WebSocket proxy for audiobook real-time generation updates
-    location /ws {
+    location /audiobook/ws/ {
         set $upstream_audiobook ${TTS_BACKEND_HOST};
         proxy_pass http://$upstream_audiobook;
         proxy_http_version 1.1;

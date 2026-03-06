@@ -36,6 +36,8 @@ class Segment(BaseModel):
     visual_type: Optional[str] = None  # "image" or "video"
     visual_mode: Optional[str] = None  # image | image_ref | faceid_image | video | faceid_video
     visual_status: str = "none"  # none | pending | generating | done | error
+    animation_style: Optional[str] = None  # zoom_in | zoom_out | pan_left | pan_right | pan_up | static | random | None
+    video_fill_mode: str = "hold"  # loop | hold (last frame → fade) | fade (immediate fade to black)
 
 
 class Chapter(BaseModel):
@@ -69,7 +71,11 @@ class CharacterRef(BaseModel):
     """Character reference with appearance description and portrait for visual consistency."""
     name: str
     description: str = ""  # Detailed physical appearance description
+    portrait_prompt: Optional[str] = None  # Image generation prompt for portrait (SD/ComfyUI style)
+    voice_prompt: Optional[str] = None  # Voice description for MOSS voice generator
+    visual_profile: Optional[Dict[str, str]] = None  # face, skin, build, clothing
     portrait_path: Optional[str] = None  # Local path to hero portrait image
+    portrait_variants: List[str] = []  # Paths to all portrait variant images
     portrait_comfyui: Optional[str] = None  # Filename on ComfyUI input directory
 
 
@@ -84,10 +90,15 @@ class AudiobookProject(BaseModel):
     chapters: List[Chapter] = []
     character_voice_map: Dict[str, str] = {}  # character_name -> voice_name
     narrator_voice: str = ""
+    narrator_voice_prompt: str = ""  # Voice description for narrator (used by MOSS voice designer)
     detected_characters: List[str] = []
     character_descriptions: Dict[str, str] = {}  # AI-generated character descriptions
     visual_style: str = ""  # Persistent visual style prompt for scene continuity
     characters: List[CharacterRef] = []  # Character references with portraits
+    # Video export status
+    video_status: str = "idle"  # idle | generating | done | error
+    video_path: str = ""
+    video_error: str = ""
 
     @property
     def total_segments(self) -> int:
@@ -122,6 +133,7 @@ class UpdateCharacterMapRequest(BaseModel):
 class UpdateSegmentRequest(BaseModel):
     text: Optional[str] = None
     voice_name: Optional[str] = None
+    scene_prompt: Optional[str] = None  # Editable visual generation prompt
 
 
 class ReparseRequest(BaseModel):
@@ -160,6 +172,8 @@ class SegmentResponse(BaseModel):
     visual_type: Optional[str] = None
     visual_mode: Optional[str] = None
     visual_status: str = "none"
+    animation_style: Optional[str] = None
+    video_fill_mode: str = "hold"
 
 
 class ChapterResponse(BaseModel):
@@ -191,6 +205,7 @@ class ProjectDetailResponse(BaseModel):
     visual_ready: int = 0  # segments with visuals generated
     visual_style: str = ""  # project visual style for continuity
     characters: List[dict] = []  # character references with portraits
+    narrator_voice_prompt: str = ""  # editable narrator voice description
 
 
 # --- Persistence helpers ---
@@ -216,12 +231,28 @@ def save_project(project: AudiobookProject) -> None:
 
 
 def load_project(project_id: str) -> Optional[AudiobookProject]:
-    """Load project from disk."""
+    """Load project from disk. Recovers stuck 'generating' states from interrupted requests."""
     path = get_project_json_path(project_id)
     if not os.path.exists(path):
         return None
     with open(path, "r") as f:
-        return AudiobookProject.model_validate_json(f.read())
+        project = AudiobookProject.model_validate_json(f.read())
+
+    # Recover stuck states — if the server restarted mid-generation,
+    # segments may be permanently stuck in "generating".
+    dirty = False
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if seg.visual_status == "generating":
+                seg.visual_status = "none" if not seg.scene_prompt else "pending"
+                dirty = True
+            if seg.status == SegmentStatus.GENERATING:
+                seg.status = SegmentStatus.PENDING
+                dirty = True
+    if dirty:
+        save_project(project)
+
+    return project
 
 
 def list_projects() -> List[ProjectSummary]:
@@ -254,11 +285,12 @@ def list_projects() -> List[ProjectSummary]:
 
 
 def delete_project_from_disk(project_id: str) -> bool:
-    """Delete a project directory entirely."""
-    import shutil
+    """Soft-delete a project by renaming its directory (recoverable)."""
+    import time
     project_dir = get_project_dir(project_id)
     if os.path.exists(project_dir):
-        shutil.rmtree(project_dir)
+        trash_dir = project_dir + f"_deleted_{int(time.time())}"
+        os.rename(project_dir, trash_dir)
         return True
     return False
 
@@ -282,6 +314,8 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
                 visual_type=seg.visual_type,
                 visual_mode=seg.visual_mode,
                 visual_status=seg.visual_status,
+                animation_style=seg.animation_style,
+                video_fill_mode=seg.video_fill_mode,
                 has_audio=seg.audio_path is not None and os.path.exists(seg.audio_path) if seg.audio_path else False,
             )
             for seg in ch.segments
@@ -320,4 +354,5 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
         visual_ready=vis_ready,
         visual_style=project.visual_style,
         characters=[c.model_dump() for c in project.characters],
+        narrator_voice_prompt=project.narrator_voice_prompt,
     )

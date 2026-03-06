@@ -1,0 +1,157 @@
+{
+    "1": {
+        "class_type": "CheckpointLoaderSimple",
+        "_meta": {
+            "title": "Load SDXL Lightning"
+        },
+        "inputs": {
+            "ckpt_name": "sdxl_lightning_4step.safetensors"
+        }
+    },
+    "2": {
+        "class_type": "IPAdapterUnifiedLoaderFaceID",
+        "_meta": {
+            "title": "Load IP-Adapter FaceID"
+        },
+        "inputs": {
+            "model": [
+                "1",
+                0
+            ],
+            "preset": "FACEID PLUS V2",
+            "lora_strength": 0.6,
+            "provider": "CUDA"
+        }
+    },
+    "3": {
+        "class_type": "LoadImage",
+        "_meta": {
+            "title": "Character Portrait"
+        },
+        "inputs": {
+            "image": "PLACEHOLDER_REF_IMAGE"
+        }
+    },
+    "4": {
+        "class_type": "IPAdapterAdvanced",
+        "_meta": {
+            "title": "Apply FaceID"
+        },
+        "inputs": {
+            "model": [
+                "2",
+                0
+            ],
+            "ipadapter": [
+                "2",
+                1
+            ],
+            "image": [
+                "3",
+                0
+            ],
+            "weight": 1.2,
+            "weight_type": "linear",
+            "combine_embeds": "concat",
+            "start_at": 0.0,
+            "end_at": 1.0,
+            "embeds_scaling": "V only"
+        }
+    },
+    "5": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Positive Prompt"
+        },
+        "inputs": {
+            "text": "PLACEHOLDER_PROMPT",
+            "clip": [
+                "1",
+                1
+            ]
+        }
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Negative Prompt"
+        },
+        "inputs": {
+            "text": "blurry, low quality, text, watermark, logo, distorted, deformed, extra limbs, ugly, bad anatomy, bad hands, cropped, cut off",
+            "clip": [
+                "1",
+                1
+            ]
+        }
+    },
+    "7": {
+        "class_type": "EmptyLatentImage",
+        "_meta": {
+            "title": "Empty Latent"
+        },
+        "inputs": {
+            "width": 1344,
+            "height": 768,
+            "batch_size": 1
+        }
+    },
+    "8": {
+        "class_type": "KSampler",
+        "_meta": {
+            "title": "KSampler"
+        },
+        "inputs": {
+            "model": [
+                "4",
+                0
+            ],
+            "seed": 42,
+            "steps": 4,
+            "cfg": 1.5,
+            "sampler_name": "euler",
+            "scheduler": "sgm_uniform",
+            "positive": [
+                "5",
+                0
+            ],
+            "negative": [
+                "6",
+                0
+            ],
+            "latent_image": [
+                "7",
+                0
+            ],
+            "denoise": 1.0
+        }
+    },
+    "9": {
+        "class_type": "VAEDecode",
+        "_meta": {
+            "title": "VAE Decode"
+        },
+        "inputs": {
+            "samples": [
+                "8",
+                0
+            ],
+            "vae": [
+                "1",
+                2
+            ]
+        }
+    },
+    "11": {
+        "class_type": "SaveImage",
+        "_meta": {
+            "title": "Save Image"
+        },
+        "inputs": {
+            "images": [
+                "9",
+                0
+            ],
+            "filename_prefix": "audiobook_scene"
+        }
+    }
+}

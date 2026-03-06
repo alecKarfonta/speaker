@@ -226,6 +226,13 @@ def _clean_pdf_text(text: str) -> str:
     # Re-join hyphenated words at line breaks (common in PDFs)
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
 
+    # Re-join non-hyphenated mid-word line breaks (PDF column layout artifacts).
+    # A line ending with a lowercase letter/digit followed by a line starting
+    # with a lowercase letter/digit is almost certainly a wrapped word, not a
+    # new sentence or paragraph.
+    # e.g. "furtive p\naragraphs" → "furtive paragraphs"
+    text = re.sub(r"([a-z0-9])\n([a-z])", r"\1\2", text)
+
     return text.strip()
 
 

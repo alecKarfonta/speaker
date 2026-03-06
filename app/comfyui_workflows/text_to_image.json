@@ -175,22 +175,6 @@
             ]
         }
     },
-    "13": {
-        "class_type": "ImageScale",
-        "_meta": {
-            "title": "Scale to 1080p"
-        },
-        "inputs": {
-            "image": [
-                "9",
-                0
-            ],
-            "upscale_method": "lanczos",
-            "width": 1920,
-            "height": 1080,
-            "crop": "center"
-        }
-    },
     "10": {
         "class_type": "SaveImage",
         "_meta": {
@@ -198,7 +182,7 @@
         },
         "inputs": {
             "images": [
-                "13",
+                "9",
                 0
             ],
             "filename_prefix": "audiobook_visual"

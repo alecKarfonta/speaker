@@ -36,6 +36,12 @@ Respond ONLY with valid JSON in this exact format, no other text:
     {{
       "name": "Character Name",
       "description": "Brief description of the character",
+      "visual_profile": {{
+        "face": "eyes, hair, facial hair, structure",
+        "skin": "complexion, texture, scars",
+        "build": "body type, height, posture",
+        "clothing": "typical attire, accessories"
+      }},
       "voice_description": "Detailed description of the character's voice (e.g. 'A deep, raspy voice of an old man' or 'A bright, cheerful young girl')",
       "voice_traits": {{
         "age": "young/middle-aged/elderly",
@@ -162,8 +168,32 @@ def _call_llm(
 
 
 def _strip_thinking_blocks(text: str) -> str:
-    """Remove <think>...</think> blocks from Qwen3 thinking model output."""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    """Remove <think>...</think> blocks from Qwen3 thinking model output.
+    If stripping leaves nothing, try to extract useful content from inside the blocks."""
+    # Try stripping closed think blocks
+    stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    if stripped:
+        return stripped
+
+    # If stripping left nothing, the actual content might be inside the think block
+    # or after an unclosed <think> tag
+    think_match = re.search(r"<think>(.*?)(?:</think>|$)", text, flags=re.DOTALL)
+    if think_match:
+        inner = think_match.group(1).strip()
+        # Look for JSON inside the think block
+        json_match = re.search(r'[\[{].*[}\]]', inner, flags=re.DOTALL)
+        if json_match:
+            logger.info("Extracted JSON from inside <think> block")
+            return json_match.group()
+
+    # Also handle unclosed <think> — content after it
+    if "<think>" in text and "</think>" not in text:
+        after = text.split("<think>", 1)[0].strip()
+        if after:
+            return after
+
+    # Last resort: return original text with tags stripped
+    return re.sub(r"</?think>", "", text).strip()
 
 
 def _extract_json(text: str) -> Optional[dict]:
@@ -256,6 +286,7 @@ def analyze_characters(
         # Build character_voice_map from suggestions
         character_voice_map = {}
         character_descriptions = {}
+        character_visual_profiles = {}
         detected_characters = []
 
         for char in characters:
@@ -294,6 +325,10 @@ def analyze_characters(
                 
                 character_descriptions[name] = voice_desc
 
+            if "visual_profile" in char:
+                character_visual_profiles[name] = char["visual_profile"]
+
+
         narrator_voice = narrator.get("suggested_voice", "")
         if narrator_voice and narrator_voice not in available_voices:
             narrator_voice = available_voices[0] if available_voices else ""
@@ -305,6 +340,7 @@ def analyze_characters(
             "detected_characters": detected_characters,
             "character_voice_map": character_voice_map,
             "character_descriptions": character_descriptions,
+            "character_visual_profiles": character_visual_profiles,
             "narrator_voice": narrator_voice,
             "narrator_description": narrator_desc,
         }
@@ -323,7 +359,7 @@ def detect_segment_emotion(text: str) -> Optional[str]:
         return None
 
     prompt = EMOTION_ANALYSIS_PROMPT.format(text=text[:500])
-    response = _call_llm(prompt, max_tokens=20, temperature=0.1)
+    response = _call_llm(prompt, max_tokens=500, temperature=0.1)
 
     if not response:
         return None
@@ -385,7 +421,7 @@ def generate_scene_prompt(
     response = _call_llm(
         prompt,
         system_message="You are a visual scene describer. Respond with only the scene description, nothing else.",
-        max_tokens=150,
+        max_tokens=1000,
         temperature=0.5,
     )
     if response:
@@ -408,7 +444,7 @@ def generate_visual_style(text: str) -> Optional[str]:
     response = _call_llm(
         prompt,
         system_message="You are a visual art director. Respond with only the style description.",
-        max_tokens=80,
+        max_tokens=1000,
         temperature=0.4,
     )
     if response:
@@ -422,9 +458,15 @@ def generate_visual_style(text: str) -> Optional[str]:
 # ============================================================
 
 CHARACTER_EXTRACTION_TEMPLATE = """Analyze the following book text and identify all important named characters.
-For each character, provide a detailed physical appearance description suitable for generating portrait images.
-Include: approximate age, gender, hair color/style, eye color, skin tone, build/height, distinguishing features, and typical clothing/attire.
-Be specific and visual — these descriptions will be used to generate consistent character portraits.
+For each character, provide:
+1. A detailed physical appearance description suitable for generating portrait images.
+   Include: approximate age, gender, hair color/style, eye color, skin tone, build/height, distinguishing features, and typical clothing/attire.
+2. A portrait generation prompt optimized for AI image generation (Stable Diffusion style).
+   Format: single paragraph, include "portrait, upper body, facing camera" and quality keywords.
+3. A voice description for a text-to-speech voice generator.
+   Describe: gender, approximate age, vocal quality (deep/soft/raspy/breathy/warm/cold), speaking pace, accent if applicable, emotional tone.
+
+Be specific and visual — these descriptions will be used to generate consistent character portraits and voices.
 
 Book text (excerpt):
 {text}
@@ -434,7 +476,9 @@ Respond ONLY with valid JSON, no other text:
 [
   {{
     "name": "Character Name",
-    "description": "Detailed physical appearance: age, gender, hair, eyes, build, clothing, distinguishing features"
+    "description": "Detailed physical appearance: age, gender, hair, eyes, build, clothing, distinguishing features",
+    "portrait_prompt": "portrait, upper body, facing camera, [age] [gender] with [hair] and [eyes], [clothing], [style keywords], masterpiece, high quality, detailed",
+    "voice_prompt": "A [quality] [gender] voice, approximately [age] years old, [pace] speaking pace, [tone] tone, [accent if any]"
   }}
 ]
 ```"""
@@ -449,31 +493,85 @@ def extract_characters(text: str) -> Optional[List[Dict[str, str]]]:
     response = _call_llm(
         prompt,
         system_message="You are a literary analyst specializing in visual character descriptions. Respond with only valid JSON.",
-        max_tokens=1000,
+        max_tokens=4000,
         temperature=0.3,
     )
     if not response:
         return None
 
     # Parse JSON from response
+    def _try_parse_characters(text: str):
+        """Try to parse character list from text, with multiple fallback strategies."""
+        # Strip markdown code fences if present
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        
+        # Try to extract JSON array
+        json_match = re.search(r'\[.*\]', text, re.DOTALL)
+        if not json_match:
+            return None
+        
+        raw = json_match.group()
+        
+        # Try direct parsing first
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+        
+        # Fix trailing commas before ] or }
+        fixed = re.sub(r',\s*([}\]])', r'\1', raw)
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+        
+        # Fix unescaped newlines in strings
+        fixed2 = re.sub(r'(?<=": ")(.*?)(?=")', lambda m: m.group().replace('\n', ' '), fixed, flags=re.DOTALL)
+        try:
+            return json.loads(fixed2)
+        except json.JSONDecodeError:
+            pass
+        
+        # Last resort: extract individual objects with regex
+        objects = re.findall(r'\{[^{}]*\}', raw, re.DOTALL)
+        if objects:
+            results = []
+            for obj_str in objects:
+                try:
+                    obj_str = re.sub(r',\s*}', '}', obj_str)
+                    results.append(json.loads(obj_str))
+                except json.JSONDecodeError:
+                    continue
+            if results:
+                return results
+        
+        return None
+
     try:
-        # Try to extract JSON array from the response
-        json_match = re.search(r'\[.*\]', response, re.DOTALL)
-        if json_match:
-            characters = json.loads(json_match.group())
-            # Validate structure
+        characters = _try_parse_characters(response)
+        if characters:
             result = []
             for c in characters:
                 if isinstance(c, dict) and "name" in c:
-                    result.append({
+                    entry = {
                         "name": c["name"],
                         "description": c.get("description", ""),
-                    })
+                    }
+                    if c.get("portrait_prompt"):
+                        entry["portrait_prompt"] = c["portrait_prompt"]
+                    if c.get("voice_prompt"):
+                        entry["voice_prompt"] = c["voice_prompt"]
+                    result.append(entry)
             if result:
                 logger.info(f"Extracted {len(result)} characters from book text")
                 return result
-    except json.JSONDecodeError as e:
-        logger.warning(f"Failed to parse character extraction JSON: {e}")
+            else:
+                logger.warning(f"No valid characters in parsed JSON: {characters[:200]}")
+        else:
+            logger.warning(f"Could not parse JSON from LLM response: {response[:300]}")
+    except Exception as e:
+        logger.warning(f"Failed to parse character extraction: {e}")
 
     return None
 
@@ -497,10 +595,54 @@ def generate_portrait_prompt(name: str, description: str) -> Optional[str]:
     response = _call_llm(
         prompt,
         system_message="You are an expert at writing image generation prompts. Respond with only the prompt.",
-        max_tokens=150,
+        max_tokens=1000,
         temperature=0.4,
     )
     if response:
         return response.strip().strip('"').strip()
     return None
+
+
+NARRATOR_VOICE_PROMPT_TEMPLATE = """Analyze this book text and describe the ideal narrator voice for reading this book aloud as an audiobook.
+
+Consider the book's genre, tone, setting, and target audience.
+
+Describe the narrator voice with these attributes:
+- Gender (male/female/androgynous)
+- Approximate age (young adult, middle-aged, elderly)
+- Vocal quality (warm, authoritative, gentle, dramatic, gravelly, silky, etc.)
+- Speaking pace (slow and measured, moderate, brisk and energetic)
+- Emotional tone (calm, passionate, mysterious, cheerful, somber)
+- Accent or dialect if the setting suggests one (British, Southern American, neutral, etc.)
+
+Respond with ONLY the voice description — a single paragraph under 80 words. Do NOT include the book title or author.
+
+Book text (excerpt):
+---
+{text}
+---
+
+Narrator voice description:"""
+
+
+def generate_narrator_voice_prompt(text: str) -> Optional[str]:
+    """
+    Analyze book text and generate a voice description for the narrator.
+    Returns a concise voice description suitable for MOSS VoiceGenerator.
+    """
+    # Use first ~2000 chars to capture genre/tone
+    sample = text[:2000]
+    prompt = NARRATOR_VOICE_PROMPT_TEMPLATE.format(text=sample)
+    response = _call_llm(
+        prompt,
+        system_message="You are an audiobook casting director. Respond with only the voice description.",
+        max_tokens=500,
+        temperature=0.4,
+    )
+    if response:
+        desc = response.strip().strip('"').strip()
+        logger.info(f"Generated narrator voice prompt: {desc[:100]}...")
+        return desc
+    return None
+
 

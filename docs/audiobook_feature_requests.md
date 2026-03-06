@@ -44,4 +44,8 @@ Support proper book file formats beyond raw text:
 Let the user preview each segment — click a segment row and see its video clip playing with the narration audio overlaid. Right now you generate everything blindly and only see results after a full export. With per-segment preview you get instant feedback: bad scene prompt? Regenerate just that one. Audio pacing off? Adjust. This makes the creative workflow interactive instead of batch-and-pray.
 
 3. ✏️ Scene Prompt Editor
-The LLM generates scene prompts automatically, but the user can't see or edit them before visual generation. A bad scene prompt = wasted 2 minutes of GPU time. Adding a prompt editor panel — show the generated prompt, let users tweak it ("make the castle darker", "add rain"), then regenerate — gives creative control. It should use the llm to create a prompt for each section based on the book text, but I should also be able to edit and rerun the gneration
+The LLM generates scene prompts automatically, but the user can't see or edit them before visual generation. A bad scene prompt = wasted 2 minutes of GPU time. Adding a prompt editor panel — show the generated prompt, let users tweak it ("make the castle darker", "add rain"), then regenerate — gives creative control. The backend already supp
+
+
+
+- [ ] We should be cleaning text and turning graphics into descriptions from a vlm + writer llm refinement. The writer llm will be a special public model from anthropic we will use only for the highest level tasks like writing or summarizing elements of the submitted pdf visuals like charts.

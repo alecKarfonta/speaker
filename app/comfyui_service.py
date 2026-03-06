@@ -40,22 +40,30 @@ def _inject_params(workflow: Dict[str, Any], prompt: str,
                    output_height: int = None,
                    video_length: int = None,
                    fps: int = None,
-                   ref_image: str = None) -> Dict[str, Any]:
+                   ref_image: str = None,
+                   ref_image2: str = None) -> Dict[str, Any]:
     """
     Inject prompt, dimensions, seed, and batch_size into a workflow.
     Finds nodes by class_type and updates their inputs.
     output_width/output_height set the final ImageScale node dimensions.
     video_length sets the frame count for video latent nodes.
+    ref_image: character portrait filename (uploaded to ComfyUI).
+    ref_image2: background image filename (uploaded to ComfyUI).
     """
     for node_id, node in workflow.items():
         ct = node.get("class_type", "")
         inputs = node.get("inputs", {})
         meta_title = node.get("_meta", {}).get("title", "").lower()
 
-        # Set positive prompt (first CLIPTextEncode or one titled "Positive")
+        # Set positive prompt on CLIPTextEncode nodes
         if ct == "CLIPTextEncode":
             if "positive" in meta_title or inputs.get("text") == "PLACEHOLDER_PROMPT":
                 inputs["text"] = prompt
+
+        # Set prompt on TextEncodeQwenImageEditPlus (multi-ref scene gen)
+        if ct == "TextEncodeQwenImageEditPlus":
+            if inputs.get("prompt") == "PLACEHOLDER_PROMPT":
+                inputs["prompt"] = prompt
 
         # Set dimensions and batch_size on EmptyLatentImage
         if ct == "EmptyLatentImage":
@@ -94,10 +102,14 @@ def _inject_params(workflow: Dict[str, Any], prompt: str,
             if ct == "SaveAnimatedWEBP" and "fps" in inputs:
                 inputs["fps"] = float(fps)
 
-        # Set reference image on LoadImage node
-        if ref_image is not None:
-            if ct == "LoadImage":
+        # Set reference image on LoadImage nodes
+        if ref_image is not None and ct == "LoadImage":
+            # First LoadImage: character portrait
+            if inputs.get("image") == "PLACEHOLDER_REF_IMAGE":
                 inputs["image"] = ref_image
+            # Second LoadImage: background
+            elif ref_image2 is not None and inputs.get("image") == "PLACEHOLDER_BG_IMAGE":
+                inputs["image"] = ref_image2
 
         # Set dimensions and frame length on LTXVImgToVideo
         if ct == "LTXVImgToVideo":
@@ -105,6 +117,27 @@ def _inject_params(workflow: Dict[str, Any], prompt: str,
             inputs["height"] = height
             if video_length is not None:
                 inputs["length"] = video_length
+
+    # Dynamically inject background image into TextEncodeQwenImageEditPlus
+    if ref_image2 is not None:
+        for node_id, node in workflow.items():
+            if node.get("class_type") == "TextEncodeQwenImageEditPlus":
+                # Add a LoadImage node for the background if not already present
+                bg_node_id = None
+                for nid, n in workflow.items():
+                    if n.get("class_type") == "LoadImage" and n.get("_meta", {}).get("title", "") == "Background Image":
+                        bg_node_id = nid
+                        break
+                if not bg_node_id:
+                    # Create a new LoadImage node for the background
+                    bg_node_id = "99"
+                    workflow[bg_node_id] = {
+                        "class_type": "LoadImage",
+                        "_meta": {"title": "Background Image"},
+                        "inputs": {"image": ref_image2}
+                    }
+                node["inputs"]["image2"] = [bg_node_id, 0]
+                break
 
     return workflow
 
@@ -213,81 +246,6 @@ async def generate_image(prompt: str, output_dir: str, prefix: str = "visual",
     return path
 
 
-async def generate_image_with_ref(prompt: str, ref_image_comfyui: str,
-                                   output_dir: str, prefix: str = "visual_ref",
-                                   width: int = None, height: int = None,
-                                   denoise: float = 0.65) -> str:
-    """Generate a still image using a reference image (img2img style).
-    Loads the ref image, VAE-encodes to latent, then denoises with the scene prompt.
-    Lower denoise = more faithful to ref; higher = more creative with prompt.
-    """
-    base_w = 512
-    base_h = 512
-    out_w = width or COMFYUI_IMAGE_WIDTH
-    out_h = height or COMFYUI_IMAGE_HEIGHT
-    seed = random.randint(0, 2**32 - 1)
-
-    logger.info(f"Image gen (ref): ref={ref_image_comfyui}, denoise={denoise}")
-
-    workflow = _load_workflow("text_to_image_ref.json")
-    workflow = _inject_params(workflow, prompt, base_w, base_h, seed,
-                              ref_image=ref_image_comfyui,
-                              output_width=out_w, output_height=out_h)
-
-    # Override denoise on the img2img sampler (node 7)
-    if "7" in workflow and "inputs" in workflow["7"]:
-        workflow["7"]["inputs"]["denoise"] = denoise
-
-    await free_vram()
-    prompt_id = await queue_prompt(workflow)
-    result = await poll_completion(prompt_id)
-    path = await download_output(result, output_dir, prefix)
-    if not path:
-        raise RuntimeError(f"ComfyUI image-with-ref produced no output for prompt_id={prompt_id}")
-    return path
-
-
-async def generate_image_with_faceid(
-    prompt: str,
-    ref_image_comfyui: str,
-    output_dir: str,
-    prefix: str = "faceid",
-    width: int = None,
-    height: int = None,
-    face_weight: float = 0.85,
-) -> str:
-    """Generate a scene image with character face identity preserved via IPAdapter FaceID.
-    Uses SDXL Lightning + IPAdapter FaceID + InsightFace to extract face identity from
-    the portrait and inject it into the scene generation.
-    
-    Args:
-        face_weight: How strongly to apply face identity (0.0-1.5). 
-                     0.85 = strong likeness while allowing scene variation.
-    """
-    out_w = width or COMFYUI_IMAGE_WIDTH
-    out_h = height or COMFYUI_IMAGE_HEIGHT
-    seed = random.randint(0, 2**32 - 1)
-
-    logger.info(f"FaceID gen: ref={ref_image_comfyui}, weight={face_weight}")
-
-    workflow = _load_workflow("text_to_image_faceid.json")
-    workflow = _inject_params(workflow, prompt, 1024, 1024, seed,
-                              ref_image=ref_image_comfyui,
-                              output_width=out_w, output_height=out_h)
-
-    # Override face weight on the IPAdapterFaceID node (node 8)
-    if "8" in workflow and "inputs" in workflow["8"]:
-        workflow["8"]["inputs"]["weight"] = face_weight
-
-    await free_vram()
-    prompt_id = await queue_prompt(workflow)
-    result = await poll_completion(prompt_id, timeout=120)
-    path = await download_output(result, output_dir, prefix)
-    if not path:
-        raise RuntimeError(f"ComfyUI FaceID generation produced no output for prompt_id={prompt_id}")
-    return path
-
-
 async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
                          width: int = None, height: int = None,
                          frames: int = None, fps: int = None,
@@ -329,58 +287,40 @@ async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
 
 async def generate_visual(prompt: str, output_dir: str, prefix: str = "visual",
                           mode: str = None, duration: float = None,
-                          ref_image: str = None) -> Tuple[str, str]:
+                          ref_image: str = None,
+                          width: int = None, height: int = None,
+                          frames: int = None, fps: int = None) -> Tuple[str, str]:
     """
     Generate a visual (image or video) based on mode.
-
-    Supported modes:
-      - 'image'         — Plain Qwen-Image scene (no character ref)
-      - 'image_ref'     — img2img with portrait reference (subtle likeness)
-      - 'faceid_image'  — SDXL + IPAdapter FaceID (strong face identity)
-      - 'video'         — Plain LTX-2 scene video (no character ref)
-      - 'faceid_video'  — FaceID scene image → LTX-2 video (character persists)
-
-    If ref_image is provided (ComfyUI filename), it's used for ref/faceid modes.
-    Returns (path, actual_mode) where actual_mode is the mode that was used.
+    If ref_image is provided (ComfyUI filename), uses character-consistent
+    scene generation via TextEncodeQwenImageEditPlus.
+    Returns (path, type) where type is 'image' or 'video'.
     """
     visual_mode = mode or COMFYUI_VISUAL_MODE
-
-    if visual_mode == "faceid_image":
-        if not ref_image:
-            logger.warning("faceid_image requested but no ref_image, falling back to image")
-            path = await generate_image(prompt, output_dir, prefix)
-            return path, "image"
-        path = await generate_image_with_faceid(prompt, ref_image, output_dir, prefix)
-        return path, "faceid_image"
-
-    elif visual_mode == "faceid_video":
-        if not ref_image:
-            logger.warning("faceid_video requested but no ref_image, falling back to video")
-            path = await generate_video(prompt, output_dir, prefix, duration=duration)
-            return path, "video"
-        # Two-step: generate FaceID scene image, then animate it
-        scene_path = await generate_image_with_faceid(
-            prompt, ref_image, output_dir, prefix=f"{prefix}_scene"
-        )
-        scene_ref = await upload_image(scene_path)
-        path = await generate_video_with_ref(
-            prompt, scene_ref, output_dir, prefix, duration=duration
-        )
-        return path, "faceid_video"
-
-    elif visual_mode == "image_ref":
+    if visual_mode == "video":
         if ref_image:
-            path = await generate_image_with_ref(prompt, ref_image, output_dir, prefix)
+            # Character-consistent video: scene image with portrait → animate
+            path = await generate_scene_video(
+                prompt, ref_image, output_dir, prefix,
+                duration=duration, width=width, height=height,
+                frames=frames, fps=fps,
+            )
         else:
-            path = await generate_image(prompt, output_dir, prefix)
-        return path, "image_ref" if ref_image else "image"
-
-    elif visual_mode == "video":
-        path = await generate_video(prompt, output_dir, prefix, duration=duration)
+            path = await generate_video(
+                prompt, output_dir, prefix,
+                duration=duration, width=width, height=height,
+                frames=frames, fps=fps,
+            )
         return path, "video"
-
-    else:  # "image" or default
-        path = await generate_image(prompt, output_dir, prefix)
+    else:
+        if ref_image:
+            # Character-consistent image: scene with portrait reference
+            path = await generate_scene_image(
+                prompt, ref_image, output_dir, prefix,
+                width=width, height=height,
+            )
+        else:
+            path = await generate_image(prompt, output_dir, prefix, width=width, height=height)
         return path, "image"
 
 
@@ -448,6 +388,91 @@ async def generate_video_with_ref(
     path = await download_output(result, output_dir, prefix)
     if not path:
         raise RuntimeError(f"ComfyUI ref video generation produced no output for prompt_id={prompt_id}")
+    return path
+
+
+async def generate_scene_image(
+    prompt: str,
+    ref_image_comfyui: str,
+    output_dir: str,
+    prefix: str = "visual",
+    width: int = None,
+    height: int = None,
+    bg_image_comfyui: str = None,
+) -> str:
+    """
+    Generate a scene image with a character portrait as face reference.
+    Uses IP-Adapter FaceID Plus V2 with SDXL Lightning for character-consistent
+    generation. The portrait's facial identity is injected into the diffusion
+    process so the generated scene follows the prompt while preserving the
+    character's appearance.
+    """
+    # SDXL widescreen resolution (closest native to 16:9)
+    base_w = 1344
+    base_h = 768
+    out_w = width or COMFYUI_IMAGE_WIDTH
+    out_h = height or COMFYUI_IMAGE_HEIGHT
+    seed = random.randint(0, 2**32 - 1)
+
+    logger.info(f"Scene image gen (IP-Adapter FaceID): ref={ref_image_comfyui}")
+
+    workflow = _load_workflow("ref_scene_image.json")
+    workflow = _inject_params(
+        workflow, prompt, base_w, base_h, seed,
+        output_width=out_w, output_height=out_h,
+        ref_image=ref_image_comfyui,
+    )
+
+    prompt_id = await queue_prompt(workflow)
+    result = await poll_completion(prompt_id, timeout=300)
+    path = await download_output(result, output_dir, prefix)
+    if not path:
+        raise RuntimeError(f"ComfyUI scene image generation produced no output for prompt_id={prompt_id}")
+    return path
+
+
+async def generate_scene_video(
+    prompt: str,
+    ref_image_comfyui: str,
+    output_dir: str,
+    prefix: str = "visual",
+    width: int = None,
+    height: int = None,
+    frames: int = None,
+    fps: int = None,
+    duration: float = None,
+    bg_image_comfyui: str = None,
+) -> str:
+    """
+    Two-call approach for character-consistent video:
+    1. Generate a scene image with IP-Adapter FaceID (SDXL Lightning)
+    2. Animate it with LTX-2 Image-to-Video
+
+    This produces much better results than a single combined workflow because
+    each model runs at its optimal resolution and settings.
+    """
+    import tempfile
+
+    logger.info(f"Scene video gen: generating scene image first with IP-Adapter FaceID")
+
+    # Step 1: Generate scene image with IP-Adapter FaceID
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        scene_image_path = await generate_scene_image(
+            prompt, ref_image_comfyui, tmp_dir, prefix="scene_frame",
+            width=768, height=512,  # Match LTX-2 input resolution
+        )
+
+        # Step 2: Upload the scene image to ComfyUI for I2V
+        scene_comfyui_name = await upload_image(scene_image_path)
+        logger.info(f"Scene image uploaded as: {scene_comfyui_name}, animating with LTX-2")
+
+        # Step 3: Animate with LTX-2 I2V
+        path = await generate_video_with_ref(
+            prompt, scene_comfyui_name, output_dir, prefix,
+            duration=duration, width=width, height=height,
+            frames=frames, fps=fps,
+        )
+
     return path
 
 

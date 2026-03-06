@@ -3,7 +3,7 @@
  */
 import { create } from 'zustand';
 import * as api from '../services/audiobookApi';
-import type { ProjectDetail, ProjectSummary } from '../services/audiobookApi';
+import type { ProjectDetail, ProjectSummary, VisualParams, QueueStatus } from '../services/audiobookApi';
 
 interface AudiobookState {
     // Data
@@ -17,7 +17,11 @@ interface AudiobookState {
     extractingCharacters: boolean; // character extraction / portrait generation in progress
     generating: Set<string>; // segment IDs currently generating
     playingSegmentId: string | null;
+    visualMode: 'image' | 'video';
+    visualSettings: { frames: number; fps: number; width: number; height: number };
     error: string | null;
+    queueStatus: QueueStatus | null;
+    videoExporting: boolean;
 
     // Actions
     fetchProjects: () => Promise<void>;
@@ -26,7 +30,7 @@ interface AudiobookState {
     createProject: (name: string, text: string, chapterPattern?: string) => Promise<void>;
     deleteProject: (projectId: string) => Promise<void>;
     updateCharacterMap: (map: Record<string, string>, narratorVoice?: string) => Promise<void>;
-    updateSegment: (segmentId: string, update: { text?: string; voice_name?: string }) => Promise<void>;
+    updateSegment: (segmentId: string, update: { text?: string; voice_name?: string; scene_prompt?: string }) => Promise<void>;
     generateSegment: (segmentId: string) => Promise<void>;
     generateChapter: (chapterIdx: number) => Promise<void>;
     generateAll: () => Promise<void>;
@@ -37,11 +41,16 @@ interface AudiobookState {
     splitSegment: (segmentId: string, splitAt?: number) => Promise<void>;
     mergeSegment: (segmentId: string) => Promise<void>;
     retryFailed: () => Promise<void>;
-    generateVisual: (segmentId: string, mode?: string) => Promise<void>;
+    generateScenePrompt: (segmentId: string) => Promise<void>;
+    generateVisual: (segmentId: string, params?: VisualParams) => Promise<void>;
     generateAllVisuals: (mode?: string) => Promise<void>;
     exportVideo: () => Promise<void>;
     setPlayingSegment: (segmentId: string | null) => void;
+    setCurrentProject: (project: ProjectDetail) => void;
+    setVisualMode: (mode: 'image' | 'video') => void;
+    setVisualSettings: (settings: Partial<{ frames: number; fps: number; width: number; height: number }>) => void;
     clearError: () => void;
+    fetchQueueStatus: () => Promise<void>;
 }
 
 export const useAudiobookStore = create<AudiobookState>((set, get) => ({
@@ -53,7 +62,11 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     extractingCharacters: false,
     generating: new Set(),
     playingSegmentId: null,
+    visualMode: 'image',
+    visualSettings: { frames: 25, fps: 10, width: 768, height: 512 },
     error: null,
+    queueStatus: null,
+    videoExporting: false,
 
     fetchProjects: async () => {
         try {
@@ -68,7 +81,7 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
         try {
             const res = await fetch('/voices');
             const data = await res.json();
-            set({ availableVoices: data.voices || [] });
+            set({ availableVoices: Array.isArray(data) ? data : (data.voices || []) });
         } catch (e: any) {
             set({ error: e.message });
         }
@@ -268,24 +281,89 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
         }
     },
 
-    generateVisual: async (segmentId, mode) => {
-        const { currentProject } = get();
+    generateScenePrompt: async (segmentId) => {
+        const { currentProject, generating } = get();
         if (!currentProject) return;
-        set({ loading: true, error: null });
+        set((s) => ({ generating: new Set([...s.generating, `prompt:${segmentId}`]) }));
         try {
-            const updated = await api.generateVisual(currentProject.id, segmentId, mode);
-            set({ currentProject: updated, loading: false });
+            const updated = await api.generateScenePrompt(currentProject.id, segmentId);
+            set((s) => {
+                const next = new Set(s.generating);
+                next.delete(`prompt:${segmentId}`);
+                return { currentProject: updated, generating: next };
+            });
         } catch (e: any) {
-            set({ error: e.message, loading: false });
+            set((s) => {
+                const next = new Set(s.generating);
+                next.delete(`prompt:${segmentId}`);
+                return { error: e.message, generating: next };
+            });
         }
     },
 
+    generateVisual: async (segmentId, params) => {
+        const { currentProject, visualMode, visualSettings } = get();
+        if (!currentProject) return;
+        // Keep in generating set — we'll clear it only when the worker finishes
+        set((s) => ({ loading: false, error: null, generating: new Set([...s.generating, segmentId]) }));
+        try {
+            const merged: VisualParams = {
+                mode: params?.mode ?? visualMode,
+                frames: params?.frames ?? visualSettings.frames,
+                fps: params?.fps ?? visualSettings.fps,
+                width: params?.width ?? visualSettings.width,
+                height: params?.height ?? visualSettings.height,
+                ...params,
+            };
+            await api.generateVisual(currentProject.id, segmentId, merged);
+
+            // Poll until the queue worker marks visual_status as done or error
+            const poll = async () => {
+                try {
+                    const updated = await api.getProject(currentProject.id);
+                    // Find the segment in the updated project
+                    let done = false;
+                    for (const ch of updated.chapters) {
+                        for (const seg of ch.segments) {
+                            if (seg.id === segmentId) {
+                                if (seg.visual_status === 'done' || seg.visual_status === 'error') {
+                                    done = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    set((s) => {
+                        const next = new Set(s.generating);
+                        if (done) next.delete(segmentId);
+                        return { currentProject: updated, generating: next };
+                    });
+                    if (!done) setTimeout(poll, 3000);
+                } catch {
+                    set((s) => {
+                        const next = new Set(s.generating);
+                        next.delete(segmentId);
+                        return { generating: next };
+                    });
+                }
+            };
+            setTimeout(poll, 3000);
+        } catch (e: any) {
+            set((s) => {
+                const next = new Set(s.generating);
+                next.delete(segmentId);
+                return { error: e.message, generating: next };
+            });
+        }
+    },
+
+
     generateAllVisuals: async (mode) => {
-        const { currentProject } = get();
+        const { currentProject, visualMode } = get();
         if (!currentProject) return;
         set({ loading: true, error: null });
         try {
-            const updated = await api.generateAllVisuals(currentProject.id, mode);
+            const updated = await api.generateAllVisuals(currentProject.id, mode || visualMode);
             set({ currentProject: updated, loading: false });
         } catch (e: any) {
             set({ error: e.message, loading: false });
@@ -295,15 +373,39 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     exportVideo: async () => {
         const { currentProject } = get();
         if (!currentProject) return;
-        set({ loading: true, error: null });
+        set({ videoExporting: true, error: null });
         try {
             await api.exportVideo(currentProject.id);
-            set({ loading: false });
+            // Poll /export-status every 3s until done or error
+            const poll = async () => {
+                const result = await api.getExportStatus(currentProject.id);
+                if (result.status === 'done' || result.video_ready) {
+                    set({ videoExporting: false });
+                    return;
+                } else if (result.status === 'error') {
+                    set({ videoExporting: false, error: result.error || 'Video assembly failed' });
+                    return;
+                }
+                setTimeout(poll, 3000);
+            };
+            setTimeout(poll, 3000);
         } catch (e: any) {
-            set({ error: e.message, loading: false });
+            set({ error: e.message, videoExporting: false });
         }
     },
 
     setPlayingSegment: (segmentId) => set({ playingSegmentId: segmentId }),
+    setCurrentProject: (project) => set({ currentProject: project }),
+    setVisualMode: (mode) => set({ visualMode: mode }),
+    setVisualSettings: (settings) => set((s) => ({ visualSettings: { ...s.visualSettings, ...settings } })),
     clearError: () => set({ error: null }),
+
+    fetchQueueStatus: async () => {
+        try {
+            const status = await api.getQueueStatus();
+            set({ queueStatus: status });
+        } catch {
+            // silently ignore — queue endpoint may not be available during startup
+        }
+    },
 }));
