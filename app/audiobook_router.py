@@ -800,7 +800,7 @@ async def generate_segment_visual(project_id: str, segment_id: str, mode: str = 
         visual_dir = os.path.join(get_project_dir(project_id), "visuals")
         # Find character portrait reference for this segment
         ref_image = _find_character_portrait(project, segment)
-        path, vtype = await comfyui_generate(
+        path, actual_mode = await comfyui_generate(
             prompt=segment.scene_prompt,
             output_dir=visual_dir,
             prefix=f"seg_{segment.id}",
@@ -809,9 +809,10 @@ async def generate_segment_visual(project_id: str, segment_id: str, mode: str = 
             ref_image=ref_image,
         )
         segment.visual_path = path
-        segment.visual_type = vtype
+        segment.visual_mode = actual_mode
+        segment.visual_type = "video" if "video" in actual_mode else "image"
         segment.visual_status = "done"
-        logger.info(f"Generated {vtype} for segment {segment_id}: {path}")
+        logger.info(f"Generated {actual_mode} for segment {segment_id}: {path}")
     except Exception as e:
         segment.visual_status = "error"
         logger.error(f"Visual generation failed for segment {segment_id}: {e}")
@@ -877,7 +878,7 @@ async def generate_all_visuals(project_id: str, mode: str = None):
 
         try:
             ref_image = _find_character_portrait(project, seg)
-            path, vtype = await comfyui_generate(
+            path, actual_mode = await comfyui_generate(
                 prompt=seg.scene_prompt,
                 output_dir=visual_dir,
                 prefix=f"seg_{seg.id}",
@@ -886,7 +887,8 @@ async def generate_all_visuals(project_id: str, mode: str = None):
                 ref_image=ref_image,
             )
             seg.visual_path = path
-            seg.visual_type = vtype
+            seg.visual_mode = actual_mode
+            seg.visual_type = "video" if "video" in actual_mode else "image"
             seg.visual_status = "done"
             generated += 1
         except Exception as e:

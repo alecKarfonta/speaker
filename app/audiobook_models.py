@@ -34,6 +34,7 @@ class Segment(BaseModel):
     scene_prompt: Optional[str] = None
     visual_path: Optional[str] = None
     visual_type: Optional[str] = None  # "image" or "video"
+    visual_mode: Optional[str] = None  # image | image_ref | faceid_image | video | faceid_video
     visual_status: str = "none"  # none | pending | generating | done | error
 
 
@@ -157,6 +158,7 @@ class SegmentResponse(BaseModel):
     scene_prompt: Optional[str] = None
     has_visual: bool = False
     visual_type: Optional[str] = None
+    visual_mode: Optional[str] = None
     visual_status: str = "none"
 
 
@@ -278,6 +280,7 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
                 scene_prompt=seg.scene_prompt,
                 has_visual=seg.visual_path is not None and os.path.exists(seg.visual_path) if seg.visual_path else False,
                 visual_type=seg.visual_type,
+                visual_mode=seg.visual_mode,
                 visual_status=seg.visual_status,
                 has_audio=seg.audio_path is not None and os.path.exists(seg.audio_path) if seg.audio_path else False,
             )

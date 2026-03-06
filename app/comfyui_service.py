@@ -247,6 +247,47 @@ async def generate_image_with_ref(prompt: str, ref_image_comfyui: str,
     return path
 
 
+async def generate_image_with_faceid(
+    prompt: str,
+    ref_image_comfyui: str,
+    output_dir: str,
+    prefix: str = "faceid",
+    width: int = None,
+    height: int = None,
+    face_weight: float = 0.85,
+) -> str:
+    """Generate a scene image with character face identity preserved via IPAdapter FaceID.
+    Uses SDXL Lightning + IPAdapter FaceID + InsightFace to extract face identity from
+    the portrait and inject it into the scene generation.
+    
+    Args:
+        face_weight: How strongly to apply face identity (0.0-1.5). 
+                     0.85 = strong likeness while allowing scene variation.
+    """
+    out_w = width or COMFYUI_IMAGE_WIDTH
+    out_h = height or COMFYUI_IMAGE_HEIGHT
+    seed = random.randint(0, 2**32 - 1)
+
+    logger.info(f"FaceID gen: ref={ref_image_comfyui}, weight={face_weight}")
+
+    workflow = _load_workflow("text_to_image_faceid.json")
+    workflow = _inject_params(workflow, prompt, 1024, 1024, seed,
+                              ref_image=ref_image_comfyui,
+                              output_width=out_w, output_height=out_h)
+
+    # Override face weight on the IPAdapterFaceID node (node 8)
+    if "8" in workflow and "inputs" in workflow["8"]:
+        workflow["8"]["inputs"]["weight"] = face_weight
+
+    await free_vram()
+    prompt_id = await queue_prompt(workflow)
+    result = await poll_completion(prompt_id, timeout=120)
+    path = await download_output(result, output_dir, prefix)
+    if not path:
+        raise RuntimeError(f"ComfyUI FaceID generation produced no output for prompt_id={prompt_id}")
+    return path
+
+
 async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
                          width: int = None, height: int = None,
                          frames: int = None, fps: int = None,
@@ -291,24 +332,55 @@ async def generate_visual(prompt: str, output_dir: str, prefix: str = "visual",
                           ref_image: str = None) -> Tuple[str, str]:
     """
     Generate a visual (image or video) based on mode.
-    If mode is 'video' and duration is provided, video length matches audio duration.
-    If ref_image is provided (ComfyUI filename), uses image-guided generation.
-    Returns (path, type) where type is 'image' or 'video'.
+
+    Supported modes:
+      - 'image'         — Plain Qwen-Image scene (no character ref)
+      - 'image_ref'     — img2img with portrait reference (subtle likeness)
+      - 'faceid_image'  — SDXL + IPAdapter FaceID (strong face identity)
+      - 'video'         — Plain LTX-2 scene video (no character ref)
+      - 'faceid_video'  — FaceID scene image → LTX-2 video (character persists)
+
+    If ref_image is provided (ComfyUI filename), it's used for ref/faceid modes.
+    Returns (path, actual_mode) where actual_mode is the mode that was used.
     """
     visual_mode = mode or COMFYUI_VISUAL_MODE
-    if visual_mode == "video":
-        if ref_image:
-            path = await generate_video_with_ref(
-                prompt, ref_image, output_dir, prefix, duration=duration
-            )
-        else:
+
+    if visual_mode == "faceid_image":
+        if not ref_image:
+            logger.warning("faceid_image requested but no ref_image, falling back to image")
+            path = await generate_image(prompt, output_dir, prefix)
+            return path, "image"
+        path = await generate_image_with_faceid(prompt, ref_image, output_dir, prefix)
+        return path, "faceid_image"
+
+    elif visual_mode == "faceid_video":
+        if not ref_image:
+            logger.warning("faceid_video requested but no ref_image, falling back to video")
             path = await generate_video(prompt, output_dir, prefix, duration=duration)
-        return path, "video"
-    else:
+            return path, "video"
+        # Two-step: generate FaceID scene image, then animate it
+        scene_path = await generate_image_with_faceid(
+            prompt, ref_image, output_dir, prefix=f"{prefix}_scene"
+        )
+        scene_ref = await upload_image(scene_path)
+        path = await generate_video_with_ref(
+            prompt, scene_ref, output_dir, prefix, duration=duration
+        )
+        return path, "faceid_video"
+
+    elif visual_mode == "image_ref":
         if ref_image:
             path = await generate_image_with_ref(prompt, ref_image, output_dir, prefix)
         else:
             path = await generate_image(prompt, output_dir, prefix)
+        return path, "image_ref" if ref_image else "image"
+
+    elif visual_mode == "video":
+        path = await generate_video(prompt, output_dir, prefix, duration=duration)
+        return path, "video"
+
+    else:  # "image" or default
+        path = await generate_image(prompt, output_dir, prefix)
         return path, "image"
 
 

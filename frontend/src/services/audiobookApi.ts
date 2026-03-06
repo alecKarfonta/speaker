@@ -28,6 +28,7 @@ export interface SegmentResponse {
     scene_prompt: string | null;
     has_visual: boolean;
     visual_type: string | null;
+    visual_mode: string | null;
     visual_status: string;
 }
 
