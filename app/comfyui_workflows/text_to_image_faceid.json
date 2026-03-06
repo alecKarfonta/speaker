@@ -1,0 +1,194 @@
+{
+    "1": {
+        "class_type": "CheckpointLoaderSimple",
+        "_meta": {
+            "title": "Load SDXL Lightning"
+        },
+        "inputs": {
+            "ckpt_name": "sdxl_lightning_4step.safetensors"
+        }
+    },
+    "2": {
+        "class_type": "IPAdapterModelLoader",
+        "_meta": {
+            "title": "Load IPAdapter FaceID"
+        },
+        "inputs": {
+            "ipadapter_file": "ip-adapter-faceid-plusv2_sdxl.bin"
+        }
+    },
+    "3": {
+        "class_type": "IPAdapterInsightFaceLoader",
+        "_meta": {
+            "title": "Load InsightFace"
+        },
+        "inputs": {
+            "provider": "CUDA"
+        }
+    },
+    "4": {
+        "class_type": "CLIPVisionLoader",
+        "_meta": {
+            "title": "Load CLIP Vision"
+        },
+        "inputs": {
+            "clip_name": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors"
+        }
+    },
+    "5": {
+        "class_type": "LoadImage",
+        "_meta": {
+            "title": "Load Portrait (Reference Face)"
+        },
+        "inputs": {
+            "image": "PLACEHOLDER_REF_IMAGE"
+        }
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Positive Prompt"
+        },
+        "inputs": {
+            "text": "PLACEHOLDER_PROMPT",
+            "clip": [
+                "1",
+                1
+            ]
+        }
+    },
+    "7": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Negative Prompt"
+        },
+        "inputs": {
+            "text": "blurry, low quality, text, watermark, logo, words, distorted, deformed face, extra limbs, bad anatomy, ugly, disfigured",
+            "clip": [
+                "1",
+                1
+            ]
+        }
+    },
+    "8": {
+        "class_type": "IPAdapterFaceID",
+        "_meta": {
+            "title": "Apply FaceID to Model"
+        },
+        "inputs": {
+            "model": [
+                "1",
+                0
+            ],
+            "ipadapter": [
+                "2",
+                0
+            ],
+            "image": [
+                "5",
+                0
+            ],
+            "weight": 0.85,
+            "weight_faceidv2": 1.0,
+            "weight_type": "linear",
+            "combine_embeds": "concat",
+            "start_at": 0.0,
+            "end_at": 1.0,
+            "embeds_scaling": "V only",
+            "clip_vision": [
+                "4",
+                0
+            ],
+            "insightface": [
+                "3",
+                0
+            ]
+        }
+    },
+    "9": {
+        "class_type": "EmptyLatentImage",
+        "_meta": {
+            "title": "Empty Latent (1024x1024 SDXL)"
+        },
+        "inputs": {
+            "width": 1024,
+            "height": 1024,
+            "batch_size": 1
+        }
+    },
+    "10": {
+        "class_type": "KSampler",
+        "_meta": {
+            "title": "KSampler (SDXL Lightning 4-step)"
+        },
+        "inputs": {
+            "model": [
+                "8",
+                0
+            ],
+            "seed": 42,
+            "steps": 4,
+            "cfg": 1.5,
+            "sampler_name": "euler",
+            "scheduler": "sgm_uniform",
+            "positive": [
+                "6",
+                0
+            ],
+            "negative": [
+                "7",
+                0
+            ],
+            "latent_image": [
+                "9",
+                0
+            ],
+            "denoise": 1.0
+        }
+    },
+    "11": {
+        "class_type": "VAEDecode",
+        "_meta": {
+            "title": "VAE Decode"
+        },
+        "inputs": {
+            "samples": [
+                "10",
+                0
+            ],
+            "vae": [
+                "1",
+                2
+            ]
+        }
+    },
+    "12": {
+        "class_type": "ImageScale",
+        "_meta": {
+            "title": "Scale to Output"
+        },
+        "inputs": {
+            "image": [
+                "11",
+                0
+            ],
+            "upscale_method": "lanczos",
+            "width": 1920,
+            "height": 1080,
+            "crop": "center"
+        }
+    },
+    "13": {
+        "class_type": "SaveImage",
+        "_meta": {
+            "title": "Save Image"
+        },
+        "inputs": {
+            "images": [
+                "12",
+                0
+            ],
+            "filename_prefix": "audiobook_faceid"
+        }
+    }
+}

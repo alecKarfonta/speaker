@@ -82,6 +82,13 @@ def register_default_backends():
             f"GLM-TTS backend not available (missing dependencies): {e}"
         )
 
+    # Always register a stub backend for testing without GPU
+    try:
+        from app.backends.stub_backend import StubTTSBackend
+        TTSBackendFactory.register_backend("stub", StubTTSBackend)
+    except ImportError:
+        pass
+
 
 def get_backend_from_env(
     logger: Optional[logging.Logger] = None,

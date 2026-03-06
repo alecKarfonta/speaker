@@ -11,6 +11,7 @@ import logging
 import numpy as np
 import soundfile as sf
 from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException, UploadFile, status, Response
 from datetime import datetime
 
@@ -893,7 +894,7 @@ async def generate_segment_visual(project_id: str, segment_id: str, mode: str = 
         visual_dir = os.path.join(get_project_dir(project_id), "visuals")
         # Find character portrait reference for this segment
         ref_image = _find_character_portrait(project, segment)
-        path, vtype = await comfyui_generate(
+        path, actual_mode = await comfyui_generate(
             prompt=segment.scene_prompt,
             output_dir=visual_dir,
             prefix=f"seg_{segment.id}",
@@ -902,9 +903,10 @@ async def generate_segment_visual(project_id: str, segment_id: str, mode: str = 
             ref_image=ref_image,
         )
         segment.visual_path = path
-        segment.visual_type = vtype
+        segment.visual_mode = actual_mode
+        segment.visual_type = "video" if "video" in actual_mode else "image"
         segment.visual_status = "done"
-        logger.info(f"Generated {vtype} for segment {segment_id}: {path}")
+        logger.info(f"Generated {actual_mode} for segment {segment_id}: {path}")
     except Exception as e:
         segment.visual_status = "error"
         logger.error(f"Visual generation failed for segment {segment_id}: {e}")
@@ -970,7 +972,7 @@ async def generate_all_visuals(project_id: str, mode: str = None):
 
         try:
             ref_image = _find_character_portrait(project, seg)
-            path, vtype = await comfyui_generate(
+            path, actual_mode = await comfyui_generate(
                 prompt=seg.scene_prompt,
                 output_dir=visual_dir,
                 prefix=f"seg_{seg.id}",
@@ -979,7 +981,8 @@ async def generate_all_visuals(project_id: str, mode: str = None):
                 ref_image=ref_image,
             )
             seg.visual_path = path
-            seg.visual_type = vtype
+            seg.visual_mode = actual_mode
+            seg.visual_type = "video" if "video" in actual_mode else "image"
             seg.visual_status = "done"
             generated += 1
         except Exception as e:
@@ -1165,6 +1168,37 @@ async def update_character(project_id: str, character_name: str, description: st
 
     save_project(project)
     return project_to_detail_response(project)
+
+
+@router.get("/projects/{project_id}/characters/{character_name}/portrait")
+async def get_character_portrait(project_id: str, character_name: str):
+    """Serve the portrait image for a character."""
+    from fastapi.responses import FileResponse
+
+    project = _get_project_or_404(project_id)
+
+    char_ref = None
+    for c in project.characters:
+        if c.name.lower() == character_name.lower():
+            char_ref = c
+            break
+
+    if not char_ref:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+
+    if not char_ref.portrait_path or not os.path.exists(char_ref.portrait_path):
+        raise HTTPException(status_code=404, detail="Portrait not generated yet")
+
+    ext = os.path.splitext(char_ref.portrait_path)[1].lower()
+    media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+    media_type = media_types.get(ext, "image/png")
+
+    safe_name = re.sub(r'[^a-zA-Z0-9]', '_', char_ref.name.lower())
+    return FileResponse(
+        path=char_ref.portrait_path,
+        media_type=media_type,
+        filename=f"portrait_{safe_name}{ext}",
+    )
 
 
 @router.post("/projects/{project_id}/export-video")
