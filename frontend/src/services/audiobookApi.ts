@@ -8,6 +8,13 @@ const API_BASE = '';
 
 export type SegmentStatus = 'pending' | 'generating' | 'done' | 'error';
 
+export interface CharacterRef {
+    name: string;
+    description: string;
+    portrait_path: string | null;
+    portrait_comfyui: string | null;
+}
+
 export interface SegmentResponse {
     id: string;
     text: string;
@@ -51,6 +58,8 @@ export interface ProjectDetail {
     error_segments: number;
     total_characters: number;
     visual_ready: number;
+    visual_style: string;
+    characters: CharacterRef[];
 }
 
 export interface ProjectSummary {
@@ -267,6 +276,28 @@ export async function importProject(file: File): Promise<ProjectDetail> {
         body: form,
     });
     return handleResponse<ProjectDetail>(res);
+}
+
+// --- Character Portrait Extraction ---
+
+export async function extractCharacters(projectId: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/extract-characters`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function generatePortraits(projectId: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/generate-portraits`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export function getPortraitUrl(projectId: string, characterName: string): string {
+    return `${API_BASE}/audiobook/projects/${projectId}/characters/${encodeURIComponent(characterName)}/portrait`;
 }
 
 // --- Visual Generation ---

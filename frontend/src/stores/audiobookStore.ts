@@ -14,6 +14,7 @@ interface AudiobookState {
     // UI state
     loading: boolean;
     analyzing: boolean; // AI analysis in progress
+    extractingCharacters: boolean; // character extraction / portrait generation in progress
     generating: Set<string>; // segment IDs currently generating
     playingSegmentId: string | null;
     error: string | null;
@@ -30,6 +31,8 @@ interface AudiobookState {
     generateChapter: (chapterIdx: number) => Promise<void>;
     generateAll: () => Promise<void>;
     analyzeCharacters: () => Promise<void>;
+    extractCharacters: () => Promise<void>;
+    generatePortraits: () => Promise<void>;
     importProject: (file: File) => Promise<void>;
     splitSegment: (segmentId: string, splitAt?: number) => Promise<void>;
     mergeSegment: (segmentId: string) => Promise<void>;
@@ -47,6 +50,7 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     availableVoices: [],
     loading: false,
     analyzing: false,
+    extractingCharacters: false,
     generating: new Set(),
     playingSegmentId: null,
     error: null,
@@ -188,6 +192,30 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
             set({ currentProject: updated, analyzing: false });
         } catch (e: any) {
             set({ error: e.message, analyzing: false });
+        }
+    },
+
+    extractCharacters: async () => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        set({ extractingCharacters: true, error: null });
+        try {
+            const updated = await api.extractCharacters(currentProject.id);
+            set({ currentProject: updated, extractingCharacters: false });
+        } catch (e: any) {
+            set({ error: e.message, extractingCharacters: false });
+        }
+    },
+
+    generatePortraits: async () => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        set({ extractingCharacters: true, error: null });
+        try {
+            const updated = await api.generatePortraits(currentProject.id);
+            set({ currentProject: updated, extractingCharacters: false });
+        } catch (e: any) {
+            set({ error: e.message, extractingCharacters: false });
         }
     },
 

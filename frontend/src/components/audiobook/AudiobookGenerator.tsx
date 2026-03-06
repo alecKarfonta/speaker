@@ -5,14 +5,14 @@ import {
     ChevronDown, ChevronRight, Edit3, Check, X, Upload, Users,
     Volume2, Mic, Zap, AlertCircle, Loader2, FileText, Music,
     Sparkles, Settings2, Square, Radio, Wifi, WifiOff, Clock,
-    Hash, Headphones, Layers, Image, Film,
+    Hash, Headphones, Layers, Image, Film, Palette, Search,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import Layout from '../layout/Layout';
 import { useAudiobookStore } from '../../stores/audiobookStore';
 import { useGenerationSocket } from '../../hooks/useGenerationSocket';
-import { getSegmentAudioUrl, getSegmentVisualUrl, getChapterExportUrl, getFullExportUrl, getVideoUrl } from '../../services/audiobookApi';
-import type { SegmentResponse, ChapterResponse } from '../../services/audiobookApi';
+import { getSegmentAudioUrl, getSegmentVisualUrl, getChapterExportUrl, getFullExportUrl, getVideoUrl, getPortraitUrl } from '../../services/audiobookApi';
+import type { SegmentResponse, ChapterResponse, CharacterRef } from '../../services/audiobookApi';
 
 // ============================================================
 // Design tokens
@@ -829,6 +829,103 @@ const CharacterVoicePanel: React.FC = () => {
 };
 
 // ============================================================
+// Character Portraits Panel
+// ============================================================
+const CharacterPortraitPanel: React.FC = () => {
+    const { currentProject, extractCharacters, generatePortraits, extractingCharacters } = useAudiobookStore();
+    if (!currentProject) return null;
+
+    const characters: CharacterRef[] = currentProject.characters || [];
+    const hasCharacters = characters.length > 0;
+    const hasAllPortraits = hasCharacters && characters.every((c: CharacterRef) => c.portrait_path);
+    const hasAnyPortrait = hasCharacters && characters.some((c: CharacterRef) => c.portrait_path);
+
+    return (
+        <div className="space-y-3">
+            <label className="text-[10px] font-semibold text-white/30 uppercase tracking-[0.12em] mb-1.5 block flex items-center gap-1.5">
+                <Palette size={10} /> Characters & Portraits
+            </label>
+
+            {/* Action buttons */}
+            <div className="space-y-2">
+                <button
+                    onClick={() => extractCharacters().then(() => toast.success('Characters extracted!'))}
+                    disabled={extractingCharacters}
+                    className="w-full px-3 py-2 rounded-xl text-[11px] font-semibold bg-gradient-to-r from-cyan-500/15 to-blue-500/15 hover:from-cyan-500/25 hover:to-blue-500/25 border border-cyan-500/15 text-cyan-300 hover:text-cyan-200 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+                >
+                    {extractingCharacters ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
+                    {extractingCharacters ? 'Extracting...' : '🔍 Extract Characters'}
+                </button>
+
+                {hasCharacters && (
+                    <button
+                        onClick={() => generatePortraits().then(() => toast.success('Portraits generated!'))}
+                        disabled={extractingCharacters || hasAllPortraits}
+                        className="w-full px-3 py-2 rounded-xl text-[11px] font-semibold bg-gradient-to-r from-amber-500/15 to-orange-500/15 hover:from-amber-500/25 hover:to-orange-500/25 border border-amber-500/15 text-amber-300 hover:text-amber-200 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+                    >
+                        {extractingCharacters ? <Loader2 size={13} className="animate-spin" /> : <Palette size={13} />}
+                        {hasAllPortraits ? '✅ All Portraits Ready' : '🎨 Generate Portraits'}
+                    </button>
+                )}
+            </div>
+
+            {/* Character list with portrait thumbnails */}
+            {hasCharacters && (
+                <div className="space-y-2.5">
+                    {characters.map((char: CharacterRef) => (
+                        <div key={char.name} className={`rounded-xl p-2.5 ${glass} transition-all`}>
+                            <div className="flex items-start gap-2.5">
+                                {/* Portrait thumbnail */}
+                                <div className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 border border-white/[0.08] bg-white/[0.03]">
+                                    {char.portrait_path ? (
+                                        <img
+                                            src={getPortraitUrl(currentProject.id, char.name)}
+                                            alt={char.name}
+                                            className="w-full h-full object-cover"
+                                        />
+                                    ) : (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                            <Users size={16} className="text-white/15" />
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Character info */}
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-xs font-semibold text-white/80 truncate">{char.name}</span>
+                                        {char.portrait_comfyui && (
+                                            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/15">ref</span>
+                                        )}
+                                    </div>
+                                    {char.description && (
+                                        <p className="text-[10px] text-white/25 leading-relaxed mt-0.5 line-clamp-2">
+                                            {char.description}
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {!hasCharacters && (
+                <p className="text-[10px] text-white/15 text-center py-2">
+                    Extract characters from book text to generate reference portraits
+                </p>
+            )}
+
+            {hasAnyPortrait && (
+                <p className="text-[10px] text-white/20 text-center">
+                    <span className="text-emerald-400/60">✓</span> Portraits auto-used as reference in video generation
+                </p>
+            )}
+        </div>
+    );
+};
+
+// ============================================================
 // Main Audiobook Generator Page
 // ============================================================
 const AudiobookGenerator: React.FC = () => {
@@ -934,13 +1031,21 @@ const AudiobookGenerator: React.FC = () => {
                     {/* Separator */}
                     <div className="mx-5 h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
 
-                    {/* Voice mapping */}
+                    {/* Voice mapping + Character Portraits */}
                     {currentProject && (
-                        <div className="p-5 flex-1 overflow-y-auto scrollbar-thin">
-                            <h3 className="text-[10px] font-semibold text-white/30 uppercase tracking-[0.12em] mb-3 flex items-center gap-1.5">
-                                <Mic size={10} /> Voice Mapping
-                            </h3>
-                            <CharacterVoicePanel />
+                        <div className="p-5 flex-1 overflow-y-auto scrollbar-thin space-y-5">
+                            <div>
+                                <h3 className="text-[10px] font-semibold text-white/30 uppercase tracking-[0.12em] mb-3 flex items-center gap-1.5">
+                                    <Mic size={10} /> Voice Mapping
+                                </h3>
+                                <CharacterVoicePanel />
+                            </div>
+
+                            {/* Separator */}
+                            <div className="h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
+
+                            {/* Character Portraits */}
+                            <CharacterPortraitPanel />
                         </div>
                     )}
                 </div>

@@ -213,6 +213,40 @@ async def generate_image(prompt: str, output_dir: str, prefix: str = "visual",
     return path
 
 
+async def generate_image_with_ref(prompt: str, ref_image_comfyui: str,
+                                   output_dir: str, prefix: str = "visual_ref",
+                                   width: int = None, height: int = None,
+                                   denoise: float = 0.65) -> str:
+    """Generate a still image using a reference image (img2img style).
+    Loads the ref image, VAE-encodes to latent, then denoises with the scene prompt.
+    Lower denoise = more faithful to ref; higher = more creative with prompt.
+    """
+    base_w = 512
+    base_h = 512
+    out_w = width or COMFYUI_IMAGE_WIDTH
+    out_h = height or COMFYUI_IMAGE_HEIGHT
+    seed = random.randint(0, 2**32 - 1)
+
+    logger.info(f"Image gen (ref): ref={ref_image_comfyui}, denoise={denoise}")
+
+    workflow = _load_workflow("text_to_image_ref.json")
+    workflow = _inject_params(workflow, prompt, base_w, base_h, seed,
+                              ref_image=ref_image_comfyui,
+                              output_width=out_w, output_height=out_h)
+
+    # Override denoise on the img2img sampler (node 7)
+    if "7" in workflow and "inputs" in workflow["7"]:
+        workflow["7"]["inputs"]["denoise"] = denoise
+
+    await free_vram()
+    prompt_id = await queue_prompt(workflow)
+    result = await poll_completion(prompt_id)
+    path = await download_output(result, output_dir, prefix)
+    if not path:
+        raise RuntimeError(f"ComfyUI image-with-ref produced no output for prompt_id={prompt_id}")
+    return path
+
+
 async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
                          width: int = None, height: int = None,
                          frames: int = None, fps: int = None,
@@ -271,7 +305,10 @@ async def generate_visual(prompt: str, output_dir: str, prefix: str = "visual",
             path = await generate_video(prompt, output_dir, prefix, duration=duration)
         return path, "video"
     else:
-        path = await generate_image(prompt, output_dir, prefix)
+        if ref_image:
+            path = await generate_image_with_ref(prompt, ref_image, output_dir, prefix)
+        else:
+            path = await generate_image(prompt, output_dir, prefix)
         return path, "image"
 
 

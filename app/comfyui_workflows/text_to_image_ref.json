@@ -1,0 +1,237 @@
+{
+    "1": {
+        "class_type": "UNETLoader",
+        "_meta": {
+            "title": "Load Qwen-Image Model"
+        },
+        "inputs": {
+            "unet_name": "qwen-image/qwen_image_fp8_e4m3fn.safetensors",
+            "weight_dtype": "fp8_e4m3fn"
+        }
+    },
+    "2": {
+        "class_type": "CLIPLoader",
+        "_meta": {
+            "title": "Load CLIP (Qwen VL)"
+        },
+        "inputs": {
+            "clip_name": "qwen/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+            "type": "qwen_image",
+            "device": "cpu"
+        }
+    },
+    "3": {
+        "class_type": "VAELoader",
+        "_meta": {
+            "title": "Load VAE"
+        },
+        "inputs": {
+            "vae_name": "qwen-image/qwen_image_vae.safetensors"
+        }
+    },
+    "4": {
+        "class_type": "LoraLoader",
+        "_meta": {
+            "title": "Lightning LoRA (4-step)"
+        },
+        "inputs": {
+            "model": [
+                "1",
+                0
+            ],
+            "clip": [
+                "2",
+                0
+            ],
+            "lora_name": "qwen-image-lightning/Qwen-Image-Lightning-4steps-V1.0.safetensors",
+            "strength_model": 1.0,
+            "strength_clip": 1.0
+        }
+    },
+    "5": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Positive Prompt"
+        },
+        "inputs": {
+            "text": "PLACEHOLDER_PROMPT",
+            "clip": [
+                "4",
+                1
+            ]
+        }
+    },
+    "8": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Negative Prompt"
+        },
+        "inputs": {
+            "text": "blurry, low quality, text, watermark, logo, words, letters, UI elements, distorted",
+            "clip": [
+                "4",
+                1
+            ]
+        }
+    },
+    "20": {
+        "class_type": "LoadImage",
+        "_meta": {
+            "title": "Load Reference Image"
+        },
+        "inputs": {
+            "image": "PLACEHOLDER_REF_IMAGE"
+        }
+    },
+    "21": {
+        "class_type": "ImageScale",
+        "_meta": {
+            "title": "Scale Ref to Base Size"
+        },
+        "inputs": {
+            "image": [
+                "20",
+                0
+            ],
+            "upscale_method": "lanczos",
+            "width": 512,
+            "height": 512,
+            "crop": "center"
+        }
+    },
+    "22": {
+        "class_type": "VAEEncode",
+        "_meta": {
+            "title": "VAE Encode Ref Image"
+        },
+        "inputs": {
+            "pixels": [
+                "21",
+                0
+            ],
+            "vae": [
+                "3",
+                0
+            ]
+        }
+    },
+    "7": {
+        "class_type": "KSampler",
+        "_meta": {
+            "title": "KSampler (Img2Img)"
+        },
+        "inputs": {
+            "model": [
+                "4",
+                0
+            ],
+            "seed": 42,
+            "steps": 4,
+            "cfg": 1.0,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "positive": [
+                "5",
+                0
+            ],
+            "negative": [
+                "8",
+                0
+            ],
+            "latent_image": [
+                "22",
+                0
+            ],
+            "denoise": 0.65
+        }
+    },
+    "11": {
+        "class_type": "LatentUpscaleBy",
+        "_meta": {
+            "title": "Latent Upscale 2x"
+        },
+        "inputs": {
+            "samples": [
+                "7",
+                0
+            ],
+            "upscale_method": "bislerp",
+            "scale_by": 2.0
+        }
+    },
+    "12": {
+        "class_type": "KSampler",
+        "_meta": {
+            "title": "KSampler (Refine)"
+        },
+        "inputs": {
+            "model": [
+                "4",
+                0
+            ],
+            "seed": 42,
+            "steps": 4,
+            "cfg": 1.0,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "positive": [
+                "5",
+                0
+            ],
+            "negative": [
+                "8",
+                0
+            ],
+            "latent_image": [
+                "11",
+                0
+            ],
+            "denoise": 0.35
+        }
+    },
+    "9": {
+        "class_type": "VAEDecode",
+        "_meta": {
+            "title": "VAE Decode"
+        },
+        "inputs": {
+            "samples": [
+                "12",
+                0
+            ],
+            "vae": [
+                "3",
+                0
+            ]
+        }
+    },
+    "13": {
+        "class_type": "ImageScale",
+        "_meta": {
+            "title": "Scale to 1080p"
+        },
+        "inputs": {
+            "image": [
+                "9",
+                0
+            ],
+            "upscale_method": "lanczos",
+            "width": 1920,
+            "height": 1080,
+            "crop": "center"
+        }
+    },
+    "10": {
+        "class_type": "SaveImage",
+        "_meta": {
+            "title": "Save Image"
+        },
+        "inputs": {
+            "images": [
+                "13",
+                0
+            ],
+            "filename_prefix": "audiobook_visual_ref"
+        }
+    }
+}

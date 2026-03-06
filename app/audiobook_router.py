@@ -9,7 +9,8 @@ import re
 import logging
 import numpy as np
 import soundfile as sf
-from typing import List
+from typing import List, Optional
+from pydantic import BaseModel as BaseModel
 from fastapi import APIRouter, HTTPException, UploadFile, status, Response
 from datetime import datetime
 
@@ -1043,6 +1044,37 @@ async def update_character(project_id: str, character_name: str, description: st
 
     save_project(project)
     return project_to_detail_response(project)
+
+
+@router.get("/projects/{project_id}/characters/{character_name}/portrait")
+async def get_character_portrait(project_id: str, character_name: str):
+    """Serve the portrait image for a character."""
+    from fastapi.responses import FileResponse
+
+    project = _get_project_or_404(project_id)
+
+    char_ref = None
+    for c in project.characters:
+        if c.name.lower() == character_name.lower():
+            char_ref = c
+            break
+
+    if not char_ref:
+        raise HTTPException(status_code=404, detail=f"Character '{character_name}' not found")
+
+    if not char_ref.portrait_path or not os.path.exists(char_ref.portrait_path):
+        raise HTTPException(status_code=404, detail="Portrait not generated yet")
+
+    ext = os.path.splitext(char_ref.portrait_path)[1].lower()
+    media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+    media_type = media_types.get(ext, "image/png")
+
+    safe_name = re.sub(r'[^a-zA-Z0-9]', '_', char_ref.name.lower())
+    return FileResponse(
+        path=char_ref.portrait_path,
+        media_type=media_type,
+        filename=f"portrait_{safe_name}{ext}",
+    )
 
 
 @router.post("/projects/{project_id}/export-video")
