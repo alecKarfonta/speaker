@@ -19,6 +19,28 @@ class SegmentStatus(str, Enum):
     ERROR = "error"
 
 
+class VisualAsset(BaseModel):
+    """Independent visual asset that can be shared across multiple segments."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    label: str = ""  # User-friendly name (auto-populated from scene_prompt if empty)
+    scene_prompt: Optional[str] = None
+    visual_path: Optional[str] = None
+    visual_type: Optional[str] = None  # "image" or "video"
+    visual_mode: Optional[str] = None  # image | scene_image | video | ref_video | scene_video
+    visual_status: str = "none"  # none | pending | queued | generating | done | error
+    animation_style: Optional[str] = None  # zoom_in | zoom_out | pan_left | pan_right | pan_up | static | random | None
+    video_fill_mode: str = "hold"  # loop | hold | fade
+    ref_character: Optional[str] = None  # Character name for portrait reference
+    # Generation settings (persisted so UI can repopulate after refresh)
+    gen_frames: Optional[int] = None
+    gen_fps: Optional[int] = None
+    gen_width: Optional[int] = None
+    gen_height: Optional[int] = None
+    gen_enable_audio: bool = False
+    gen_two_stage: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Segment(BaseModel):
     """Individual TTS unit — a chunk of text to be spoken by one voice."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -30,7 +52,9 @@ class Segment(BaseModel):
     audio_path: Optional[str] = None
     duration: Optional[float] = None  # seconds
     error_message: Optional[str] = None
-    # Visual generation fields
+    # Visual — linked to a VisualAsset
+    visual_id: Optional[str] = None  # FK to VisualAsset.id
+    # Legacy visual fields (kept for migration, populated from VisualAsset on serialization)
     scene_prompt: Optional[str] = None
     visual_path: Optional[str] = None
     visual_type: Optional[str] = None  # "image" or "video"
@@ -95,6 +119,7 @@ class AudiobookProject(BaseModel):
     character_descriptions: Dict[str, str] = {}  # AI-generated character descriptions
     visual_style: str = ""  # Persistent visual style prompt for scene continuity
     characters: List[CharacterRef] = []  # Character references with portraits
+    visuals: List[VisualAsset] = []  # Independent visual assets
     # Video export status
     video_status: str = "idle"  # idle | generating | done | error
     video_path: str = ""
@@ -157,6 +182,28 @@ class ProjectSummary(BaseModel):
     detected_characters: List[str]
 
 
+class VisualAssetResponse(BaseModel):
+    """API response for a visual asset."""
+    id: str
+    label: str = ""
+    scene_prompt: Optional[str] = None
+    has_visual: bool = False
+    visual_type: Optional[str] = None
+    visual_mode: Optional[str] = None
+    visual_status: str = "none"
+    animation_style: Optional[str] = None
+    video_fill_mode: str = "hold"
+    ref_character: Optional[str] = None
+    gen_frames: Optional[int] = None
+    gen_fps: Optional[int] = None
+    gen_width: Optional[int] = None
+    gen_height: Optional[int] = None
+    gen_enable_audio: bool = False
+    gen_two_stage: bool = False
+    created_at: Optional[datetime] = None
+    assigned_segments: int = 0  # how many segments use this visual
+
+
 class SegmentResponse(BaseModel):
     id: str
     text: str
@@ -174,6 +221,7 @@ class SegmentResponse(BaseModel):
     visual_status: str = "none"
     animation_style: Optional[str] = None
     video_fill_mode: str = "hold"
+    visual_id: Optional[str] = None  # linked VisualAsset id
 
 
 class ChapterResponse(BaseModel):
@@ -206,6 +254,7 @@ class ProjectDetailResponse(BaseModel):
     visual_style: str = ""  # project visual style for continuity
     characters: List[dict] = []  # character references with portraits
     narrator_voice_prompt: str = ""  # editable narrator voice description
+    visuals: List[VisualAssetResponse] = []  # independent visual assets
 
 
 # --- Persistence helpers ---
@@ -230,6 +279,34 @@ def save_project(project: AudiobookProject) -> None:
         f.write(project.model_dump_json(indent=2))
 
 
+def _migrate_inline_visuals(project: AudiobookProject) -> bool:
+    """Migrate legacy inline visual fields on segments to VisualAsset entities.
+    Returns True if any migration occurred."""
+    dirty = False
+    # Build lookup of existing visual_ids for dedup
+    existing_ids = {v.id for v in project.visuals}
+    for ch in project.chapters:
+        for seg in ch.segments:
+            # Only migrate if segment has visual data but no visual_id link
+            if seg.visual_path and not seg.visual_id:
+                asset = VisualAsset(
+                    label=(seg.scene_prompt or "")[:40].strip() or f"Visual for seg {seg.id}",
+                    scene_prompt=seg.scene_prompt,
+                    visual_path=seg.visual_path,
+                    visual_type=seg.visual_type,
+                    visual_mode=seg.visual_mode,
+                    visual_status=seg.visual_status,
+                    animation_style=seg.animation_style,
+                    video_fill_mode=seg.video_fill_mode,
+                )
+                if asset.id not in existing_ids:
+                    project.visuals.append(asset)
+                    existing_ids.add(asset.id)
+                seg.visual_id = asset.id
+                dirty = True
+    return dirty
+
+
 def load_project(project_id: str) -> Optional[AudiobookProject]:
     """Load project from disk. Recovers stuck 'generating' states from interrupted requests."""
     path = get_project_json_path(project_id)
@@ -249,6 +326,17 @@ def load_project(project_id: str) -> Optional[AudiobookProject]:
             if seg.status == SegmentStatus.GENERATING:
                 seg.status = SegmentStatus.PENDING
                 dirty = True
+
+    # Recover stuck visual assets
+    for va in project.visuals:
+        if va.visual_status == "generating":
+            va.visual_status = "none" if not va.scene_prompt else "pending"
+            dirty = True
+
+    # Migrate legacy inline visuals to VisualAsset entities
+    if _migrate_inline_visuals(project):
+        dirty = True
+
     if dirty:
         save_project(project)
 
@@ -295,31 +383,60 @@ def delete_project_from_disk(project_id: str) -> bool:
     return False
 
 
+def _resolve_visual(project: AudiobookProject, visual_id: Optional[str]) -> Optional[VisualAsset]:
+    """Find a VisualAsset by id in the project."""
+    if not visual_id:
+        return None
+    for va in project.visuals:
+        if va.id == visual_id:
+            return va
+    return None
+
+
 def project_to_detail_response(project: AudiobookProject) -> ProjectDetailResponse:
     """Convert a project to its API detail response."""
+    # Pre-compute segment count per visual for assignment display
+    visual_seg_counts: Dict[str, int] = {}
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if seg.visual_id:
+                visual_seg_counts[seg.visual_id] = visual_seg_counts.get(seg.visual_id, 0) + 1
+
     chapters = []
     for ch in project.chapters:
-        segments = [
-            SegmentResponse(
-                id=seg.id,
-                text=seg.text,
-                voice_name=seg.voice_name,
-                character=seg.character,
-                emotion=seg.emotion,
-                status=seg.status,
-                duration=seg.duration,
-                error_message=seg.error_message,
-                scene_prompt=seg.scene_prompt,
-                has_visual=seg.visual_path is not None and os.path.exists(seg.visual_path) if seg.visual_path else False,
-                visual_type=seg.visual_type,
-                visual_mode=seg.visual_mode,
-                visual_status=seg.visual_status,
-                animation_style=seg.animation_style,
-                video_fill_mode=seg.video_fill_mode,
-                has_audio=seg.audio_path is not None and os.path.exists(seg.audio_path) if seg.audio_path else False,
-            )
-            for seg in ch.segments
-        ]
+        segments = []
+        for seg in ch.segments:
+            # Resolve visual data from the linked VisualAsset (or fallback to legacy inline)
+            va = _resolve_visual(project, seg.visual_id)
+            if va:
+                vpath = va.visual_path
+                has_vis = vpath is not None and os.path.exists(vpath) if vpath else False
+                seg_resp = SegmentResponse(
+                    id=seg.id, text=seg.text, voice_name=seg.voice_name,
+                    character=seg.character, emotion=seg.emotion, status=seg.status,
+                    duration=seg.duration, error_message=seg.error_message,
+                    scene_prompt=va.scene_prompt,
+                    has_visual=has_vis,
+                    visual_type=va.visual_type, visual_mode=va.visual_mode,
+                    visual_status=va.visual_status,
+                    animation_style=va.animation_style, video_fill_mode=va.video_fill_mode,
+                    has_audio=seg.audio_path is not None and os.path.exists(seg.audio_path) if seg.audio_path else False,
+                    visual_id=seg.visual_id,
+                )
+            else:
+                seg_resp = SegmentResponse(
+                    id=seg.id, text=seg.text, voice_name=seg.voice_name,
+                    character=seg.character, emotion=seg.emotion, status=seg.status,
+                    duration=seg.duration, error_message=seg.error_message,
+                    scene_prompt=seg.scene_prompt,
+                    has_visual=seg.visual_path is not None and os.path.exists(seg.visual_path) if seg.visual_path else False,
+                    visual_type=seg.visual_type, visual_mode=seg.visual_mode,
+                    visual_status=seg.visual_status,
+                    animation_style=seg.animation_style, video_fill_mode=seg.video_fill_mode,
+                    has_audio=seg.audio_path is not None and os.path.exists(seg.audio_path) if seg.audio_path else False,
+                    visual_id=seg.visual_id,
+                )
+            segments.append(seg_resp)
         chapters.append(ChapterResponse(
             index=ch.index,
             title=ch.title,
@@ -328,12 +445,45 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
             done_segments=ch.done_segments,
             progress=ch.progress,
         ))
+
     # Compute stats
     all_segs = [seg for ch in project.chapters for seg in ch.segments]
     total_duration = sum(s.duration or 0.0 for s in all_segs)
     error_count = sum(1 for s in all_segs if s.status == SegmentStatus.ERROR)
     total_chars = sum(len(s.text) for s in all_segs)
-    vis_ready = sum(1 for s in all_segs if s.visual_status == "done")
+    # Count segments that have a visual done (via asset or legacy)
+    vis_ready = 0
+    for s in all_segs:
+        va = _resolve_visual(project, s.visual_id)
+        if va and va.visual_status == "done":
+            vis_ready += 1
+        elif not s.visual_id and s.visual_status == "done":
+            vis_ready += 1
+
+    # Build visual asset responses
+    visual_responses = [
+        VisualAssetResponse(
+            id=va.id,
+            label=va.label,
+            scene_prompt=va.scene_prompt,
+            has_visual=va.visual_path is not None and os.path.exists(va.visual_path) if va.visual_path else False,
+            visual_type=va.visual_type,
+            visual_mode=va.visual_mode,
+            visual_status=va.visual_status,
+            animation_style=va.animation_style,
+            video_fill_mode=va.video_fill_mode,
+            ref_character=va.ref_character,
+            gen_frames=va.gen_frames,
+            gen_fps=va.gen_fps,
+            gen_width=va.gen_width,
+            gen_height=va.gen_height,
+            gen_enable_audio=va.gen_enable_audio,
+            gen_two_stage=va.gen_two_stage,
+            created_at=va.created_at,
+            assigned_segments=visual_seg_counts.get(va.id, 0),
+        )
+        for va in project.visuals
+    ]
 
     return ProjectDetailResponse(
         id=project.id,
@@ -355,4 +505,5 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
         visual_style=project.visual_style,
         characters=[c.model_dump() for c in project.characters],
         narrator_voice_prompt=project.narrator_voice_prompt,
+        visuals=visual_responses,
     )

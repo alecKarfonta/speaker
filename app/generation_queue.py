@@ -47,6 +47,9 @@ class VisualJob:
     width: Optional[int] = None
     height: Optional[int] = None
     animation: Optional[str] = None
+    ref_character: Optional[str] = None  # explicit portrait override
+    enable_audio: bool = False
+    two_stage: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +238,7 @@ async def _visual_worker():
         try:
             from .comfyui_service import generate_visual as comfyui_generate, COMFYUI_VISUAL_MODE
             from .audiobook_llm import generate_scene_prompt, generate_visual_style
-            from .audiobook_router import _find_character_portrait
+            from .audiobook_router import _find_character_portrait, _find_character_portrait_by_name
 
             project = load_project(job.project_id)
             if not project:
@@ -296,7 +299,12 @@ async def _visual_worker():
 
             visual_dir = os.path.join(get_project_dir(job.project_id), "visuals")
             os.makedirs(visual_dir, exist_ok=True)
-            ref_image = _find_character_portrait(project, segment)
+
+            # Explicit portrait override from user selection, else auto-detect
+            if job.ref_character:
+                ref_image = _find_character_portrait_by_name(project, job.ref_character)
+            else:
+                ref_image = _find_character_portrait(project, segment)
 
             try:
                 path, vtype = await comfyui_generate(
@@ -310,6 +318,8 @@ async def _visual_worker():
                     fps=job.fps,
                     width=job.width,
                     height=job.height,
+                    enable_audio=job.enable_audio,
+                    two_stage=job.two_stage,
                 )
                 segment.visual_path = path
                 segment.visual_type = vtype
@@ -360,6 +370,9 @@ def enqueue_visual(
     width: int = None,
     height: int = None,
     animation: str = None,
+    ref_character: str = None,
+    enable_audio: bool = False,
+    two_stage: bool = False,
 ) -> int:
     """Add a visual generation job to the queue. Returns queue depth after enqueue."""
     visual_queue.put_nowait(VisualJob(
@@ -371,6 +384,9 @@ def enqueue_visual(
         width=width,
         height=height,
         animation=animation,
+        ref_character=ref_character,
+        enable_audio=enable_audio,
+        two_stage=two_stage,
     ))
     pos = visual_queue.qsize()
     logger.debug(f"Enqueued visual job {segment_id} (depth: {pos})")

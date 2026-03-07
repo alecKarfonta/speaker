@@ -19,11 +19,12 @@ _export_locks: Dict[str, asyncio.Lock] = {}
 from datetime import datetime
 
 from .audiobook_models import (
-    AudiobookProject, Chapter, Segment, SegmentStatus,
+    AudiobookProject, Chapter, Segment, SegmentStatus, VisualAsset,
     CreateProjectRequest, UpdateCharacterMapRequest, UpdateSegmentRequest,
     SplitSegmentRequest, ReparseRequest, ProjectSummary, ProjectDetailResponse,
+    VisualAssetResponse,
     save_project, load_project, list_projects, delete_project_from_disk,
-    project_to_detail_response, get_project_dir,
+    project_to_detail_response, get_project_dir, _resolve_visual,
 )
 from .audiobook_parser import (
     parse_book_text, detect_characters, assign_segment_voices,
@@ -854,15 +855,34 @@ async def generate_segment_visual(
     width: int = None,
     height: int = None,
     animation: str = None,
+    ref_character: str = None,
 ):
-    """Enqueue visual generation for a single segment."""
+    """Enqueue visual generation for a single segment. Auto-creates a VisualAsset if needed."""
     from .generation_queue import enqueue_visual
     project = _get_project_or_404(project_id)
     _, _, segment = _find_segment(project, segment_id)
+
+    # Auto-create a VisualAsset if segment doesn't have one
+    if not segment.visual_id:
+        asset = VisualAsset(
+            label=(segment.scene_prompt or "")[:40].strip() or f"Visual for seg {segment.id}",
+            scene_prompt=segment.scene_prompt,
+            visual_path=segment.visual_path,
+            visual_type=segment.visual_type,
+            visual_mode=segment.visual_mode,
+            visual_status=segment.visual_status,
+            animation_style=segment.animation_style,
+            video_fill_mode=segment.video_fill_mode,
+        )
+        project.visuals.append(asset)
+        segment.visual_id = asset.id
+
+    va = _resolve_visual(project, segment.visual_id)
     # Persist animation style choice immediately
-    if animation is not None:
-        segment.animation_style = animation
-    segment.visual_status = "queued"
+    if animation is not None and va:
+        va.animation_style = animation
+    if va:
+        va.visual_status = "queued"
     save_project(project)
     depth = enqueue_visual(
         project_id=project_id,
@@ -873,6 +893,7 @@ async def generate_segment_visual(
         width=width,
         height=height,
         animation=animation,
+        ref_character=ref_character,
     )
     logger.info(f"Enqueued visual generation for {segment_id} (depth {depth})")
     return project_to_detail_response(project)
@@ -971,6 +992,281 @@ async def generate_all_visuals(project_id: str, mode: str = None):
     return project_to_detail_response(project)
 
 
+# --- Visual Asset CRUD ---
+
+def _find_visual_or_404(project: AudiobookProject, visual_id: str) -> VisualAsset:
+    """Find a VisualAsset by id or raise 404."""
+    for va in project.visuals:
+        if va.id == visual_id:
+            return va
+    raise HTTPException(status_code=404, detail=f"Visual asset '{visual_id}' not found")
+
+
+@router.get("/projects/{project_id}/visuals")
+async def list_visual_assets(project_id: str):
+    """List all visual assets for a project."""
+    project = _get_project_or_404(project_id)
+    # Compute assignment counts
+    counts: Dict[str, int] = {}
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if seg.visual_id:
+                counts[seg.visual_id] = counts.get(seg.visual_id, 0) + 1
+    return [
+        VisualAssetResponse(
+            id=va.id, label=va.label, scene_prompt=va.scene_prompt,
+            has_visual=va.visual_path is not None and os.path.exists(va.visual_path) if va.visual_path else False,
+            visual_type=va.visual_type, visual_mode=va.visual_mode,
+            visual_status=va.visual_status, animation_style=va.animation_style,
+            video_fill_mode=va.video_fill_mode, ref_character=va.ref_character,
+            gen_frames=va.gen_frames, gen_fps=va.gen_fps,
+            gen_width=va.gen_width, gen_height=va.gen_height,
+            gen_enable_audio=va.gen_enable_audio, gen_two_stage=va.gen_two_stage,
+            created_at=va.created_at, assigned_segments=counts.get(va.id, 0),
+        )
+        for va in project.visuals
+    ]
+
+
+class CreateVisualRequest(BaseModel):
+    label: str = ""
+    scene_prompt: Optional[str] = None
+
+
+@router.post("/projects/{project_id}/visuals", response_model=ProjectDetailResponse, status_code=201)
+async def create_visual_asset(project_id: str, request: CreateVisualRequest):
+    """Create a new empty visual asset."""
+    project = _get_project_or_404(project_id)
+    asset = VisualAsset(
+        label=request.label or (request.scene_prompt or "")[:40].strip() or "New Visual",
+        scene_prompt=request.scene_prompt,
+    )
+    project.visuals.append(asset)
+    save_project(project)
+    logger.info(f"Created visual asset '{asset.id}' in project {project_id}")
+    return project_to_detail_response(project)
+
+
+class UpdateVisualRequest(BaseModel):
+    label: Optional[str] = None
+    scene_prompt: Optional[str] = None
+    animation_style: Optional[str] = None
+    video_fill_mode: Optional[str] = None
+    ref_character: Optional[str] = None
+
+
+@router.put("/projects/{project_id}/visuals/{visual_id}", response_model=ProjectDetailResponse)
+async def update_visual_asset(project_id: str, visual_id: str, request: UpdateVisualRequest):
+    """Update a visual asset's metadata."""
+    project = _get_project_or_404(project_id)
+    va = _find_visual_or_404(project, visual_id)
+    if request.label is not None:
+        va.label = request.label
+    if request.scene_prompt is not None:
+        va.scene_prompt = request.scene_prompt
+        # Reset visual status so user knows a new visual is needed
+        if va.visual_status == "done":
+            va.visual_status = "pending"
+    if request.animation_style is not None:
+        va.animation_style = request.animation_style
+    if request.video_fill_mode is not None:
+        if request.video_fill_mode not in ("loop", "hold", "fade"):
+            raise HTTPException(status_code=400, detail="video_fill_mode must be loop, hold, or fade")
+        va.video_fill_mode = request.video_fill_mode
+    if request.ref_character is not None:
+        va.ref_character = request.ref_character
+    save_project(project)
+    logger.info(f"Updated visual asset '{visual_id}' in project {project_id}")
+    return project_to_detail_response(project)
+
+
+@router.delete("/projects/{project_id}/visuals/{visual_id}", response_model=ProjectDetailResponse)
+async def delete_visual_asset(project_id: str, visual_id: str):
+    """Delete a visual asset and unlink it from all segments."""
+    project = _get_project_or_404(project_id)
+    va = _find_visual_or_404(project, visual_id)
+    # Unlink from all segments
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if seg.visual_id == visual_id:
+                seg.visual_id = None
+    # Remove asset
+    project.visuals = [v for v in project.visuals if v.id != visual_id]
+    save_project(project)
+    logger.info(f"Deleted visual asset '{visual_id}' from project {project_id}")
+    return project_to_detail_response(project)
+
+
+@router.post("/projects/{project_id}/visuals/{visual_id}/generate", response_model=ProjectDetailResponse)
+async def generate_visual_asset(
+    project_id: str,
+    visual_id: str,
+    mode: str = None,
+    frames: int = None,
+    fps: int = None,
+    width: int = None,
+    height: int = None,
+    animation: str = None,
+    ref_character: str = None,
+    enable_audio: bool = False,
+    two_stage: bool = False,
+):
+    """Enqueue visual generation for a visual asset.
+    Uses the first assigned segment for context (text, character)."""
+    from .generation_queue import enqueue_visual
+    project = _get_project_or_404(project_id)
+    va = _find_visual_or_404(project, visual_id)
+
+    # Find first segment assigned to this visual for context
+    context_segment_id = None
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if seg.visual_id == visual_id:
+                context_segment_id = seg.id
+                break
+        if context_segment_id:
+            break
+
+    if not context_segment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Visual must be assigned to at least one segment before generating (needs text context)"
+        )
+
+    if animation is not None:
+        va.animation_style = animation
+    if ref_character is not None:
+        va.ref_character = ref_character
+    # Persist generation settings on the visual asset
+    if mode is not None:
+        va.visual_mode = mode
+    if frames is not None:
+        va.gen_frames = frames
+    if fps is not None:
+        va.gen_fps = fps
+    if width is not None:
+        va.gen_width = width
+    if height is not None:
+        va.gen_height = height
+    va.gen_enable_audio = enable_audio
+    va.gen_two_stage = two_stage
+    va.visual_status = "queued"
+    save_project(project)
+
+    depth = enqueue_visual(
+        project_id=project_id,
+        segment_id=context_segment_id,
+        mode=mode,
+        frames=frames,
+        fps=fps,
+        width=width,
+        height=height,
+        animation=animation,
+        ref_character=ref_character,
+        enable_audio=enable_audio,
+        two_stage=two_stage,
+    )
+    logger.info(f"Enqueued visual generation for asset '{visual_id}' via segment {context_segment_id} (depth {depth})")
+    return project_to_detail_response(project)
+
+
+@router.post("/projects/{project_id}/visuals/{visual_id}/generate-prompt", response_model=ProjectDetailResponse)
+async def generate_visual_scene_prompt(project_id: str, visual_id: str):
+    """Generate a scene prompt for a visual asset using LLM.
+    Uses the first assigned segment for text context."""
+    from .audiobook_llm import generate_scene_prompt, generate_visual_style
+
+    project = _get_project_or_404(project_id)
+    va = _find_visual_or_404(project, visual_id)
+
+    # Auto-generate visual style if missing
+    if not project.visual_style and project.raw_text:
+        style = generate_visual_style(project.raw_text)
+        if style:
+            project.visual_style = style
+            save_project(project)
+
+    # Find first assigned segment for context
+    context_seg = None
+    all_segments = [(ch, seg) for ch in project.chapters for seg in ch.segments]
+    seg_idx = None
+    for i, (ch, seg) in enumerate(all_segments):
+        if seg.visual_id == visual_id:
+            context_seg = seg
+            seg_idx = i
+            break
+
+    if not context_seg:
+        raise HTTPException(
+            status_code=400,
+            detail="Visual must be assigned to at least one segment before generating a scene prompt"
+        )
+
+    prev_scene = all_segments[seg_idx - 1][1].scene_prompt if seg_idx > 0 else ""
+    next_text = all_segments[seg_idx + 1][1].text if seg_idx < len(all_segments) - 1 else ""
+    ch = all_segments[seg_idx][0]
+
+    scene = generate_scene_prompt(
+        text=context_seg.text,
+        chapter_title=ch.title if ch else "",
+        character=context_seg.character or "Narrator",
+        emotion=context_seg.emotion or "neutral",
+        visual_style=project.visual_style,
+        prev_scene=prev_scene or "",
+        next_text=next_text or "",
+    )
+    if not scene:
+        raise HTTPException(status_code=500, detail="LLM failed to generate scene prompt")
+
+    va.scene_prompt = scene
+    if not va.label or va.label == "New Visual":
+        va.label = scene[:40].strip()
+    if va.visual_status == "done":
+        va.visual_status = "pending"
+    save_project(project)
+    logger.info(f"Generated scene prompt for visual asset '{visual_id}'")
+    return project_to_detail_response(project)
+
+
+class AssignVisualRequest(BaseModel):
+    visual_id: Optional[str] = None  # None to unassign
+
+
+@router.post("/projects/{project_id}/segments/{segment_id}/assign-visual", response_model=ProjectDetailResponse)
+async def assign_visual_to_segment(project_id: str, segment_id: str, request: AssignVisualRequest):
+    """Assign (or unassign) a visual asset to a segment."""
+    project = _get_project_or_404(project_id)
+    _, _, segment = _find_segment(project, segment_id)
+
+    if request.visual_id is not None:
+        # Verify the visual exists
+        _find_visual_or_404(project, request.visual_id)
+
+    segment.visual_id = request.visual_id
+    save_project(project)
+    logger.info(f"{'Assigned' if request.visual_id else 'Unassigned'} visual for segment {segment_id}")
+    return project_to_detail_response(project)
+
+
+@router.get("/projects/{project_id}/visuals/{visual_id}/file")
+async def get_visual_asset_file(project_id: str, visual_id: str):
+    """Serve the generated visual file for a visual asset."""
+    from fastapi.responses import FileResponse
+    project = _get_project_or_404(project_id)
+    va = _find_visual_or_404(project, visual_id)
+
+    if not va.visual_path or not os.path.exists(va.visual_path):
+        raise HTTPException(status_code=404, detail="Visual not generated yet")
+
+    ext = os.path.splitext(va.visual_path)[1].lower()
+    media_type = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".webp": "image/webp", ".mp4": "video/mp4", ".gif": "image/gif",
+    }.get(ext, "application/octet-stream")
+
+    return FileResponse(path=va.visual_path, media_type=media_type, filename=f"{visual_id}{ext}")
+
+
 @router.post("/projects/{project_id}/generate-style", response_model=ProjectDetailResponse)
 async def generate_project_style(project_id: str):
     """Auto-generate a visual style from the project's text."""
@@ -1006,6 +1302,17 @@ def _find_character_portrait(project, segment) -> Optional[str]:
     char_name = segment.character.lower()
     for char_ref in project.characters:
         if char_ref.name.lower() == char_name and char_ref.portrait_comfyui:
+            return char_ref.portrait_comfyui
+    return None
+
+
+def _find_character_portrait_by_name(project, character_name: str) -> Optional[str]:
+    """Find the ComfyUI portrait filename for a named character."""
+    if not character_name or not project.characters:
+        return None
+    target = character_name.lower()
+    for char_ref in project.characters:
+        if char_ref.name.lower() == target and char_ref.portrait_comfyui:
             return char_ref.portrait_comfyui
     return None
 
@@ -1102,8 +1409,13 @@ async def generate_portraits(project_id: str):
         if char_ref.portrait_path and os.path.exists(char_ref.portrait_path):
             continue  # Already has portrait
 
-        # Generate portrait prompt from description
-        portrait_prompt = generate_portrait_prompt(char_ref.name, char_ref.description)
+        # Use existing portrait prompt if available, otherwise generate via LLM
+        portrait_prompt = char_ref.portrait_prompt
+        if not portrait_prompt:
+            portrait_prompt = generate_portrait_prompt(char_ref.name, char_ref.description)
+            if portrait_prompt:
+                char_ref.portrait_prompt = portrait_prompt
+                save_project(project)
         if not portrait_prompt:
             logger.warning(f"Failed to generate portrait prompt for {char_ref.name}")
             continue

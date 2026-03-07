@@ -24,6 +24,7 @@ export interface SegmentResponse {
     visual_status: string;
     animation_style: string | null;
     video_fill_mode: string;
+    visual_id: string | null;
 }
 
 export interface ChapterResponse {
@@ -33,6 +34,27 @@ export interface ChapterResponse {
     total_segments: number;
     done_segments: number;
     progress: number;
+}
+
+export interface VisualAsset {
+    id: string;
+    label: string;
+    scene_prompt: string | null;
+    has_visual: boolean;
+    visual_type: string | null;
+    visual_mode: string | null;
+    visual_status: string;
+    animation_style: string | null;
+    video_fill_mode: string;
+    ref_character: string | null;
+    gen_frames: number | null;
+    gen_fps: number | null;
+    gen_width: number | null;
+    gen_height: number | null;
+    gen_enable_audio: boolean;
+    gen_two_stage: boolean;
+    created_at: string | null;
+    assigned_segments: number;
 }
 
 export interface ProjectDetail {
@@ -56,6 +78,7 @@ export interface ProjectDetail {
     visual_style?: string;
     characters?: CharacterRef[];
     narrator_voice_prompt?: string;
+    visuals: VisualAsset[];
 }
 
 export interface CharacterRef {
@@ -310,6 +333,9 @@ export interface VisualParams {
     width?: number;
     height?: number;
     animation?: string;
+    ref_character?: string;
+    enable_audio?: boolean;
+    two_stage?: boolean;
 }
 
 export async function generateVisual(projectId: string, segmentId: string, params?: VisualParams): Promise<ProjectDetail> {
@@ -320,6 +346,7 @@ export async function generateVisual(projectId: string, segmentId: string, param
     if (params?.width != null) p.set('width', String(params.width));
     if (params?.height != null) p.set('height', String(params.height));
     if (params?.animation) p.set('animation', params.animation);
+    if (params?.ref_character) p.set('ref_character', params.ref_character);
     const qs = p.toString() ? `?${p.toString()}` : '';
     const res = await fetch(
         `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}/generate-visual${qs}`,
@@ -513,4 +540,97 @@ export async function setVideoFillMode(
         { method: 'PATCH' }
     );
     return handleResponse<ProjectDetail>(res);
+}
+
+// --- Visual Asset CRUD ---
+
+export async function createVisualAsset(
+    projectId: string,
+    label?: string,
+    scenePrompt?: string
+): Promise<ProjectDetail> {
+    const res = await fetch(`${API_BASE}/audiobook/projects/${projectId}/visuals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: label || '', scene_prompt: scenePrompt || null }),
+    });
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function updateVisualAsset(
+    projectId: string,
+    visualId: string,
+    update: { label?: string; scene_prompt?: string; animation_style?: string; video_fill_mode?: string; ref_character?: string }
+): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/visuals/${visualId}`,
+        {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(update),
+        }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function deleteVisualAsset(projectId: string, visualId: string): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/visuals/${visualId}`,
+        { method: 'DELETE' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function generateVisualAsset(
+    projectId: string,
+    visualId: string,
+    params?: VisualParams
+): Promise<ProjectDetail> {
+    const p = new URLSearchParams();
+    if (params?.mode) p.set('mode', params.mode);
+    if (params?.frames != null) p.set('frames', String(params.frames));
+    if (params?.fps != null) p.set('fps', String(params.fps));
+    if (params?.width != null) p.set('width', String(params.width));
+    if (params?.height != null) p.set('height', String(params.height));
+    if (params?.animation) p.set('animation', params.animation);
+    if (params?.ref_character) p.set('ref_character', params.ref_character);
+    if (params?.enable_audio) p.set('enable_audio', 'true');
+    if (params?.two_stage) p.set('two_stage', 'true');
+    const qs = p.toString() ? `?${p.toString()}` : '';
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/visuals/${visualId}/generate${qs}`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function generateVisualAssetPrompt(
+    projectId: string,
+    visualId: string
+): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/visuals/${visualId}/generate-prompt`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function assignVisual(
+    projectId: string,
+    segmentId: string,
+    visualId: string | null
+): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}/assign-visual`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ visual_id: visualId }),
+        }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export function getVisualAssetFileUrl(projectId: string, visualId: string): string {
+    return `${API_BASE}/audiobook/projects/${projectId}/visuals/${visualId}/file`;
 }

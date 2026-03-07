@@ -19,9 +19,15 @@ COMFYUI_API_URL = os.environ.get("COMFYUI_API_URL", "http://192.168.1.83:8188")
 COMFYUI_VISUAL_MODE = os.environ.get("COMFYUI_VISUAL_MODE", "image")  # "image" or "video"
 COMFYUI_IMAGE_WIDTH = int(os.environ.get("COMFYUI_IMAGE_WIDTH", "1024"))
 COMFYUI_IMAGE_HEIGHT = int(os.environ.get("COMFYUI_IMAGE_HEIGHT", "1024"))
-COMFYUI_VIDEO_FRAMES = int(os.environ.get("COMFYUI_VIDEO_FRAMES", "65"))
-COMFYUI_VIDEO_FPS = int(os.environ.get("COMFYUI_VIDEO_FPS", "10"))
+COMFYUI_VIDEO_FRAMES = int(os.environ.get("COMFYUI_VIDEO_FRAMES", "97"))
+COMFYUI_VIDEO_FPS = int(os.environ.get("COMFYUI_VIDEO_FPS", "24"))
 MAX_VIDEO_FRAMES = 449  # Safe VRAM limit at 768x512 on 32GB GPU
+
+# LTX-2.3 model files
+LTX23_CHECKPOINT = "ltx-2.3-22b-distilled.safetensors"
+LTX23_TEXT_ENCODER = "gemma_3_12B_it.safetensors"
+LTX23_DISTILLED_LORA = "ltx-2.3-22b-distilled-lora-384.safetensors"
+LTX23_SPATIAL_UPSCALER = "ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
 
 WORKFLOWS_DIR = os.path.join(os.path.dirname(__file__), "comfyui_workflows")
 
@@ -95,12 +101,14 @@ def _inject_params(workflow: Dict[str, Any], prompt: str,
             if output_height:
                 inputs["height"] = output_height
 
-        # Set FPS on LTXVConditioning and SaveAnimatedWEBP
+        # Set FPS on LTXVConditioning, SaveAnimatedWEBP, and VHS_VideoCombine
         if fps is not None:
             if ct == "LTXVConditioning" and "frame_rate" in inputs:
                 inputs["frame_rate"] = float(fps)
             if ct == "SaveAnimatedWEBP" and "fps" in inputs:
                 inputs["fps"] = float(fps)
+            if ct == "VHS_VideoCombine" and "frame_rate" in inputs:
+                inputs["frame_rate"] = float(fps)
 
         # Set reference image on LoadImage nodes
         if ref_image is not None and ct == "LoadImage":
@@ -117,6 +125,10 @@ def _inject_params(workflow: Dict[str, Any], prompt: str,
             inputs["height"] = height
             if video_length is not None:
                 inputs["length"] = video_length
+
+        # Update resize edge for LTX-2.3 I2V preprocessing
+        if ct == "ResizeImagesByLongerEdge":
+            inputs["longer_edge"] = max(width, height)
 
     # Dynamically inject background image into TextEncodeQwenImageEditPlus
     if ref_image2 is not None:
@@ -198,8 +210,8 @@ async def download_output(prompt_result: Dict[str, Any], output_dir: str, prefix
             subfolder = img.get("subfolder", "")
             url = f"{COMFYUI_API_URL}/view?filename={filename}&subfolder={subfolder}&type=output"
             return await _download_file(url, output_dir, prefix, filename)
-        # Check for videos/gifs
-        for vid in node_output.get("gifs", []):
+        # Check for videos/gifs (SaveAnimatedWEBP uses 'gifs', VHS_VideoCombine uses 'gifs' too)
+        for vid in node_output.get("gifs", node_output.get("videos", [])):
             filename = vid.get("filename", "")
             subfolder = vid.get("subfolder", "")
             url = f"{COMFYUI_API_URL}/view?filename={filename}&subfolder={subfolder}&type=output"
@@ -246,11 +258,219 @@ async def generate_image(prompt: str, output_dir: str, prefix: str = "visual",
     return path
 
 
+def _build_ltx23_workflow(
+    text: str, width: int, height: int, frames: int, fps: int, seed: int,
+    image_path: str = None,
+    enable_audio: bool = False,
+    two_stage: bool = False,
+    negative: str = "blurry, low quality, watermark, overlay, titles, has blurbox",
+    cfg: float = 4.0,
+    steps: int = 20,
+    lora_strength: float = 0.6,
+    upscale_cfg: float = 3.0,
+) -> Dict[str, Any]:
+    """Build a ComfyUI workflow dict for LTX-2.3 (text-to-video or image-to-video).
+    Supports optional audio generation and two-stage spatial upscale.
+    Based on the LTX-2.3 reference script.
+    """
+    prompt = {
+        # Load checkpoint
+        "1": {"class_type": "CheckpointLoaderSimple",
+              "inputs": {"ckpt_name": LTX23_CHECKPOINT}},
+        # Text encoder
+        "2": {"class_type": "LTXAVTextEncoderLoader",
+              "inputs": {"text_encoder": LTX23_TEXT_ENCODER,
+                         "ckpt_name": LTX23_CHECKPOINT,
+                         "device": "default"}},
+        # Positive prompt
+        "3": {"class_type": "CLIPTextEncode",
+              "_meta": {"title": "Positive Prompt"},
+              "inputs": {"text": text, "clip": ["2", 0]}},
+        # Negative prompt
+        "4": {"class_type": "CLIPTextEncode",
+              "_meta": {"title": "Negative Prompt"},
+              "inputs": {"text": negative, "clip": ["2", 0]}},
+        # Conditioning
+        "5": {"class_type": "LTXVConditioning",
+              "inputs": {"positive": ["3", 0], "negative": ["4", 0],
+                         "frame_rate": float(fps)}},
+        # Empty latent video
+        "13": {"class_type": "EmptyLTXVLatentVideo",
+               "inputs": {"width": width, "height": height,
+                           "length": frames, "batch_size": 1}},
+    }
+
+    # I2V: load, resize, preprocess, inplace
+    video_latent_ref = ["13", 0]
+    if image_path:
+        prompt.update({
+            "6": {"class_type": "LoadImage",
+                  "_meta": {"title": "Reference Image"},
+                  "inputs": {"image": image_path}},
+            "7": {"class_type": "ResizeImagesByLongerEdge",
+                  "inputs": {"images": ["6", 0],
+                             "longer_edge": max(width, height)}},
+            "8": {"class_type": "LTXVPreprocess",
+                  "inputs": {"image": ["7", 0], "img_compression": 33}},
+            "14": {"class_type": "LTXVImgToVideoInplace",
+                   "inputs": {"vae": ["1", 2], "image": ["8", 0],
+                              "latent": ["13", 0],
+                              "strength": 1.0, "bypass": False}},
+        })
+        video_latent_ref = ["14", 0]
+
+    # Audio latent (optional, off by default)
+    if enable_audio:
+        prompt.update({
+            "15": {"class_type": "LTXVAudioVAELoader",
+                   "inputs": {"ckpt_name": LTX23_CHECKPOINT}},
+            "16": {"class_type": "LTXVEmptyLatentAudio",
+                   "inputs": {"audio_vae": ["15", 0],
+                              "frames_number": frames,
+                              "frame_rate": fps, "batch_size": 1}},
+            "17": {"class_type": "LTXVConcatAVLatent",
+                   "inputs": {"video_latent": video_latent_ref,
+                              "audio_latent": ["16", 0]}},
+        })
+        sample_latent_ref = ["17", 0]
+    else:
+        sample_latent_ref = video_latent_ref
+
+    # Distilled LoRA
+    model_ref = ["1", 0]
+    if lora_strength > 0:
+        prompt["18"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {"model": ["1", 0],
+                       "lora_name": LTX23_DISTILLED_LORA,
+                       "strength_model": lora_strength}
+        }
+        model_ref = ["18", 0]
+
+    # Sampling
+    prompt.update({
+        "19": {"class_type": "RandomNoise",
+               "inputs": {"noise_seed": seed}},
+        "20": {"class_type": "KSamplerSelect",
+               "inputs": {"sampler_name": "euler"}},
+        "21": {"class_type": "LTXVScheduler",
+               "inputs": {"latent": sample_latent_ref, "steps": steps,
+                           "max_shift": 2.05, "base_shift": 0.95,
+                           "stretch": True, "terminal": 0.1}},
+        "22": {"class_type": "CFGGuider",
+               "inputs": {"model": model_ref,
+                           "positive": ["5", 0],
+                           "negative": ["5", 1],
+                           "cfg": cfg}},
+        "23": {"class_type": "SamplerCustomAdvanced",
+               "inputs": {"noise": ["19", 0], "guider": ["22", 0],
+                           "sampler": ["20", 0], "sigmas": ["21", 0],
+                           "latent_image": sample_latent_ref}},
+    })
+
+    # Separate AV if audio
+    if enable_audio:
+        prompt["24"] = {"class_type": "LTXVSeparateAVLatent",
+                        "inputs": {"av_latent": ["23", 0]}}
+        decode_source = "24"
+    else:
+        decode_source = "23"
+
+    # Two-stage spatial upscale (optional)
+    if two_stage:
+        prompt.update({
+            "25": {"class_type": "LTXVCropGuides",
+                   "inputs": {"positive": ["5", 0], "negative": ["5", 1],
+                              "latent": [decode_source, 0]}},
+            "26": {"class_type": "LatentUpscaleModelLoader",
+                   "inputs": {"model_name": LTX23_SPATIAL_UPSCALER}},
+            "27": {"class_type": "LTXVLatentUpsampler",
+                   "inputs": {"samples": ["25", 2],
+                              "upscale_model": ["26", 0],
+                              "vae": ["1", 2]}},
+        })
+        upscaled_video_ref = ["27", 0]
+        if image_path:
+            prompt["28"] = {
+                "class_type": "LTXVImgToVideoInplace",
+                "inputs": {"vae": ["1", 2], "image": ["8", 0],
+                           "latent": ["27", 0],
+                           "strength": 1.0, "bypass": False}
+            }
+            upscaled_video_ref = ["28", 0]
+        if enable_audio:
+            prompt["29"] = {
+                "class_type": "LTXVConcatAVLatent",
+                "inputs": {"video_latent": upscaled_video_ref,
+                           "audio_latent": [decode_source, 1]}
+            }
+            upscale_sample_ref = ["29", 0]
+        else:
+            upscale_sample_ref = upscaled_video_ref
+        prompt.update({
+            "30": {"class_type": "RandomNoise",
+                   "inputs": {"noise_seed": 0}},
+            "31": {"class_type": "KSamplerSelect",
+                   "inputs": {"sampler_name": "gradient_estimation"}},
+            "32": {"class_type": "ManualSigmas",
+                   "inputs": {"sigmas": "0.909375, 0.725, 0.421875, 0.0"}},
+            "33": {"class_type": "CFGGuider",
+                   "inputs": {"model": model_ref,
+                              "positive": ["25", 0],
+                              "negative": ["25", 1],
+                              "cfg": upscale_cfg}},
+            "34": {"class_type": "SamplerCustomAdvanced",
+                   "inputs": {"noise": ["30", 0], "guider": ["33", 0],
+                              "sampler": ["31", 0], "sigmas": ["32", 0],
+                              "latent_image": upscale_sample_ref}},
+        })
+        if enable_audio:
+            prompt["35"] = {"class_type": "LTXVSeparateAVLatent",
+                            "inputs": {"av_latent": ["34", 1]}}
+            decode_source = "35"
+        else:
+            decode_source = "34"
+
+    # Decode video
+    prompt["36"] = {"class_type": "VAEDecode",
+                    "inputs": {"samples": [decode_source, 0],
+                               "vae": ["1", 2]}}
+
+    # Output: audio mux or plain video
+    if enable_audio:
+        prompt.update({
+            "37": {"class_type": "LTXVAudioVAEDecode",
+                   "inputs": {"samples": [decode_source, 1],
+                              "audio_vae": ["15", 0]}},
+            "38": {"class_type": "CreateVideo",
+                   "inputs": {"images": ["36", 0], "audio": ["37", 0],
+                              "fps": fps}},
+            "39": {"class_type": "SaveVideo",
+                   "inputs": {"video": ["38", 0],
+                              "filename_prefix": "audiobook_video",
+                              "format": "mp4", "codec": "h264"}},
+        })
+    else:
+        prompt["39"] = {
+            "class_type": "VHS_VideoCombine",
+            "_meta": {"title": "Save Video"},
+            "inputs": {"images": ["36", 0],
+                       "frame_rate": float(fps), "loop_count": 0,
+                       "filename_prefix": "audiobook_video",
+                       "format": "video/h264-mp4",
+                       "pingpong": False, "save_output": True}
+        }
+
+    return prompt
+
+
 async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
                          width: int = None, height: int = None,
                          frames: int = None, fps: int = None,
-                         duration: float = None) -> str:
-    """Generate a video using ComfyUI LTX-2 19B distilled workflow.
+                         duration: float = None,
+                         enable_audio: bool = False,
+                         two_stage: bool = False) -> str:
+    """Generate a video using ComfyUI LTX-2.3 22B workflow.
     If duration (seconds) is provided, frames are auto-calculated from duration * fps.
     Frames are capped at MAX_VIDEO_FRAMES to prevent OOM.
     """
@@ -271,14 +491,18 @@ async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
 
     # Cap to prevent OOM
     num_frames = min(num_frames, MAX_VIDEO_FRAMES)
-    logger.info(f"Video gen: {num_frames} frames @ {video_fps}fps = {num_frames/video_fps:.1f}s")
+    stage_str = "two-stage" if two_stage else "single-stage"
+    audio_str = "+audio" if enable_audio else ""
+    logger.info(f"Video gen (LTX-2.3 {stage_str}{audio_str}): {num_frames} frames @ {video_fps}fps = {num_frames/video_fps:.1f}s")
 
-    workflow = _load_workflow("text_to_video.json")
-    workflow = _inject_params(workflow, prompt, w, h, seed,
-                              video_length=num_frames, fps=video_fps)
+    workflow = _build_ltx23_workflow(
+        text=prompt, width=w, height=h, frames=num_frames,
+        fps=video_fps, seed=seed,
+        enable_audio=enable_audio, two_stage=two_stage,
+    )
 
     prompt_id = await queue_prompt(workflow)
-    result = await poll_completion(prompt_id, timeout=600)
+    result = await poll_completion(prompt_id, timeout=900)
     path = await download_output(result, output_dir, prefix)
     if not path:
         raise RuntimeError(f"ComfyUI video generation produced no output for prompt_id={prompt_id}")
@@ -289,38 +513,68 @@ async def generate_visual(prompt: str, output_dir: str, prefix: str = "visual",
                           mode: str = None, duration: float = None,
                           ref_image: str = None,
                           width: int = None, height: int = None,
-                          frames: int = None, fps: int = None) -> Tuple[str, str]:
+                          frames: int = None, fps: int = None,
+                          enable_audio: bool = False,
+                          two_stage: bool = False) -> Tuple[str, str]:
     """
-    Generate a visual (image or video) based on mode.
-    If ref_image is provided (ComfyUI filename), uses character-consistent
-    scene generation via TextEncodeQwenImageEditPlus.
-    Returns (path, type) where type is 'image' or 'video'.
+    Generate a visual based on one of 5 explicit modes:
+      - image:       Text → image (Qwen-Image + Lightning hires-fix)
+      - video:       Text → video (LTX-2.3 22B)
+      - scene_image: Portrait ref → FaceID scene image (IP-Adapter + SDXL Lightning)
+      - ref_video:   Image ref → guided video (LTX-2.3 I2V)
+      - scene_video: Two-stage: FaceID scene image → animate with LTX-2.3
+
+    Returns (path, visual_type) where visual_type is 'image' or 'video'.
     """
     visual_mode = mode or COMFYUI_VISUAL_MODE
-    if visual_mode == "video":
-        if ref_image:
-            # Character-consistent video: scene image with portrait → animate
-            path = await generate_scene_video(
-                prompt, ref_image, output_dir, prefix,
-                duration=duration, width=width, height=height,
-                frames=frames, fps=fps,
-            )
-        else:
-            path = await generate_video(
-                prompt, output_dir, prefix,
-                duration=duration, width=width, height=height,
-                frames=frames, fps=fps,
-            )
+
+    if visual_mode == "scene_video":
+        # Two-stage: FaceID scene image → animate with LTX-2.3
+        if not ref_image:
+            raise ValueError("scene_video mode requires a character portrait (ref_image)")
+        path = await generate_scene_video(
+            prompt, ref_image, output_dir, prefix,
+            duration=duration, width=width, height=height,
+            frames=frames, fps=fps,
+            enable_audio=enable_audio, two_stage=two_stage,
+        )
         return path, "video"
+
+    elif visual_mode == "scene_image":
+        # FaceID scene image via IP-Adapter + SDXL Lightning
+        if not ref_image:
+            raise ValueError("scene_image mode requires a character portrait (ref_image)")
+        path = await generate_scene_image(
+            prompt, ref_image, output_dir, prefix,
+            width=width, height=height,
+        )
+        return path, "image"
+
+    elif visual_mode == "ref_video":
+        # Image-guided video via LTX-2.3 I2V
+        if not ref_image:
+            raise ValueError("ref_video mode requires a reference image (ref_image)")
+        path = await generate_video_with_ref(
+            prompt, ref_image, output_dir, prefix,
+            duration=duration, width=width, height=height,
+            frames=frames, fps=fps,
+            enable_audio=enable_audio, two_stage=two_stage,
+        )
+        return path, "video"
+
+    elif visual_mode == "video":
+        # Basic text-to-video
+        path = await generate_video(
+            prompt, output_dir, prefix,
+            duration=duration, width=width, height=height,
+            frames=frames, fps=fps,
+            enable_audio=enable_audio, two_stage=two_stage,
+        )
+        return path, "video"
+
     else:
-        if ref_image:
-            # Character-consistent image: scene with portrait reference
-            path = await generate_scene_image(
-                prompt, ref_image, output_dir, prefix,
-                width=width, height=height,
-            )
-        else:
-            path = await generate_image(prompt, output_dir, prefix, width=width, height=height)
+        # Default: basic text-to-image
+        path = await generate_image(prompt, output_dir, prefix, width=width, height=height)
         return path, "image"
 
 
@@ -354,9 +608,11 @@ async def generate_video_with_ref(
     frames: int = None,
     fps: int = None,
     duration: float = None,
+    enable_audio: bool = False,
+    two_stage: bool = False,
 ) -> str:
     """
-    Generate a video guided by a reference image using LTXVImgToVideo.
+    Generate a video guided by a reference image using LTX-2.3 LTXVImgToVideoInplace.
     ref_image_comfyui is the filename already uploaded to ComfyUI.
     """
     w = width or min(COMFYUI_IMAGE_WIDTH, 768)
@@ -374,17 +630,18 @@ async def generate_video_with_ref(
         num_frames = COMFYUI_VIDEO_FRAMES
 
     num_frames = min(num_frames, MAX_VIDEO_FRAMES)
-    logger.info(f"Video gen (ref): {num_frames} frames @ {video_fps}fps, ref={ref_image_comfyui}")
+    stage_str = "two-stage" if two_stage else "single-stage"
+    audio_str = "+audio" if enable_audio else ""
+    logger.info(f"Video gen (LTX-2.3 I2V {stage_str}{audio_str}): {num_frames} frames @ {video_fps}fps, ref={ref_image_comfyui}")
 
-    workflow = _load_workflow("text_to_video_ref.json")
-    workflow = _inject_params(
-        workflow, prompt, w, h, seed,
-        video_length=num_frames, fps=video_fps,
-        ref_image=ref_image_comfyui,
+    workflow = _build_ltx23_workflow(
+        text=prompt, width=w, height=h, frames=num_frames,
+        fps=video_fps, seed=seed, image_path=ref_image_comfyui,
+        enable_audio=enable_audio, two_stage=two_stage,
     )
 
     prompt_id = await queue_prompt(workflow)
-    result = await poll_completion(prompt_id, timeout=600)
+    result = await poll_completion(prompt_id, timeout=900)
     path = await download_output(result, output_dir, prefix)
     if not path:
         raise RuntimeError(f"ComfyUI ref video generation produced no output for prompt_id={prompt_id}")
@@ -442,11 +699,13 @@ async def generate_scene_video(
     fps: int = None,
     duration: float = None,
     bg_image_comfyui: str = None,
+    enable_audio: bool = False,
+    two_stage: bool = False,
 ) -> str:
     """
     Two-call approach for character-consistent video:
     1. Generate a scene image with IP-Adapter FaceID (SDXL Lightning)
-    2. Animate it with LTX-2 Image-to-Video
+    2. Animate it with LTX-2.3 Image-to-Video
 
     This produces much better results than a single combined workflow because
     each model runs at its optimal resolution and settings.
@@ -459,18 +718,19 @@ async def generate_scene_video(
     with tempfile.TemporaryDirectory() as tmp_dir:
         scene_image_path = await generate_scene_image(
             prompt, ref_image_comfyui, tmp_dir, prefix="scene_frame",
-            width=768, height=512,  # Match LTX-2 input resolution
+            width=768, height=512,  # Match LTX-2.3 input resolution
         )
 
         # Step 2: Upload the scene image to ComfyUI for I2V
         scene_comfyui_name = await upload_image(scene_image_path)
-        logger.info(f"Scene image uploaded as: {scene_comfyui_name}, animating with LTX-2")
+        logger.info(f"Scene image uploaded as: {scene_comfyui_name}, animating with LTX-2.3")
 
-        # Step 3: Animate with LTX-2 I2V
+        # Step 3: Animate with LTX-2.3 I2V
         path = await generate_video_with_ref(
             prompt, scene_comfyui_name, output_dir, prefix,
             duration=duration, width=width, height=height,
             frames=frames, fps=fps,
+            enable_audio=enable_audio, two_stage=two_stage,
         )
 
     return path

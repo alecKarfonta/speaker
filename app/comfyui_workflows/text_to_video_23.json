@@ -1,0 +1,209 @@
+{
+    "1": {
+        "class_type": "CheckpointLoaderSimple",
+        "_meta": {
+            "title": "Load LTX-2.3 22B Distilled"
+        },
+        "inputs": {
+            "ckpt_name": "ltx-2.3-22b-distilled.safetensors"
+        }
+    },
+    "2": {
+        "class_type": "LTXAVTextEncoderLoader",
+        "_meta": {
+            "title": "Load Gemma Text Encoder"
+        },
+        "inputs": {
+            "text_encoder": "gemma_3_12B_it.safetensors",
+            "ckpt_name": "ltx-2.3-22b-distilled.safetensors",
+            "device": "default"
+        }
+    },
+    "3": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Positive Prompt"
+        },
+        "inputs": {
+            "text": "PLACEHOLDER_PROMPT",
+            "clip": [
+                "2",
+                0
+            ]
+        }
+    },
+    "4": {
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "Negative Prompt"
+        },
+        "inputs": {
+            "text": "blurry, low quality, watermark, overlay, titles, has blurbox",
+            "clip": [
+                "2",
+                0
+            ]
+        }
+    },
+    "5": {
+        "class_type": "LTXVConditioning",
+        "_meta": {
+            "title": "LTX-V Conditioning"
+        },
+        "inputs": {
+            "positive": [
+                "3",
+                0
+            ],
+            "negative": [
+                "4",
+                0
+            ],
+            "frame_rate": 24.0
+        }
+    },
+    "6": {
+        "class_type": "EmptyLTXVLatentVideo",
+        "_meta": {
+            "title": "Empty Video Latent"
+        },
+        "inputs": {
+            "width": 768,
+            "height": 512,
+            "length": 97,
+            "batch_size": 1
+        }
+    },
+    "7": {
+        "class_type": "LoraLoaderModelOnly",
+        "_meta": {
+            "title": "Distilled LoRA"
+        },
+        "inputs": {
+            "model": [
+                "1",
+                0
+            ],
+            "lora_name": "ltx-2.3-22b-distilled-lora-384.safetensors",
+            "strength_model": 0.6
+        }
+    },
+    "8": {
+        "class_type": "RandomNoise",
+        "_meta": {
+            "title": "Random Noise"
+        },
+        "inputs": {
+            "noise_seed": 42
+        }
+    },
+    "9": {
+        "class_type": "KSamplerSelect",
+        "_meta": {
+            "title": "Sampler Select"
+        },
+        "inputs": {
+            "sampler_name": "euler"
+        }
+    },
+    "10": {
+        "class_type": "LTXVScheduler",
+        "_meta": {
+            "title": "LTX-V Scheduler"
+        },
+        "inputs": {
+            "latent": [
+                "6",
+                0
+            ],
+            "steps": 20,
+            "max_shift": 2.05,
+            "base_shift": 0.95,
+            "stretch": true,
+            "terminal": 0.1
+        }
+    },
+    "11": {
+        "class_type": "CFGGuider",
+        "_meta": {
+            "title": "CFG Guider"
+        },
+        "inputs": {
+            "model": [
+                "7",
+                0
+            ],
+            "positive": [
+                "5",
+                0
+            ],
+            "negative": [
+                "5",
+                1
+            ],
+            "cfg": 4.0
+        }
+    },
+    "12": {
+        "class_type": "SamplerCustomAdvanced",
+        "_meta": {
+            "title": "Advanced Sampler"
+        },
+        "inputs": {
+            "noise": [
+                "8",
+                0
+            ],
+            "guider": [
+                "11",
+                0
+            ],
+            "sampler": [
+                "9",
+                0
+            ],
+            "sigmas": [
+                "10",
+                0
+            ],
+            "latent_image": [
+                "6",
+                0
+            ]
+        }
+    },
+    "13": {
+        "class_type": "VAEDecode",
+        "_meta": {
+            "title": "VAE Decode"
+        },
+        "inputs": {
+            "samples": [
+                "12",
+                0
+            ],
+            "vae": [
+                "1",
+                2
+            ]
+        }
+    },
+    "14": {
+        "class_type": "VHS_VideoCombine",
+        "_meta": {
+            "title": "Save Video"
+        },
+        "inputs": {
+            "images": [
+                "13",
+                0
+            ],
+            "frame_rate": 24.0,
+            "loop_count": 0,
+            "filename_prefix": "audiobook_video",
+            "format": "video/h264-mp4",
+            "pingpong": false,
+            "save_output": true
+        }
+    }
+}
