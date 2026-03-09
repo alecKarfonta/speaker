@@ -1,6 +1,7 @@
 """
 WebSocket endpoint for real-time audiobook generation.
 Streams per-segment progress to connected clients with cancel support.
+Also relays visual generation events from the background worker.
 """
 
 import asyncio
@@ -17,6 +18,7 @@ from .audiobook_models import (
     AudiobookProject, SegmentStatus,
     load_project, save_project, get_project_dir,
 )
+from .generation_queue import add_visual_listener, remove_visual_listener
 
 logger = logging.getLogger("speaker.audiobook.ws")
 
@@ -176,7 +178,7 @@ async def audiobook_generation_ws(ws: WebSocket, project_id: str):
         {"action": "generate_chapter", "chapter_idx": 0}
         {"action": "cancel"}
     
-    Outbound messages:
+    Outbound messages (TTS):
         {"type": "connected", "project_id": "..."}
         {"type": "generation_started", "total": 47}
         {"type": "segment_start", "segment_id": "abc", ...}
@@ -185,6 +187,15 @@ async def audiobook_generation_ws(ws: WebSocket, project_id: str):
         {"type": "complete", "generated": 45, "errors": 2, ...}
         {"type": "cancelled", ...}
         {"type": "error", "message": "..."}
+    
+    Outbound messages (Visual — relayed from generation queue event bus):
+        {"type": "visual_start", "segment_id": "...", "mode": "..."}
+        {"type": "visual_prompt_generating", "segment_id": "..."}
+        {"type": "visual_prompt_done", "segment_id": "...", "prompt": "..."}
+        {"type": "visual_rendering", "segment_id": "...", "mode": "..."}
+        {"type": "visual_progress", "segment_id": "...", "step": 5, "total_steps": 20}
+        {"type": "visual_done", "segment_id": "...", "visual_type": "...", "visual_path": "..."}
+        {"type": "visual_error", "segment_id": "...", "error": "..."}
     """
     await ws.accept()
 
@@ -200,6 +211,19 @@ async def audiobook_generation_ws(ws: WebSocket, project_id: str):
     # Cancel event for this project
     cancel_event = asyncio.Event()
     _cancel_flags[project_id] = cancel_event
+
+    # --- Visual event relay ---
+    # Register a listener that forwards visual events for this project
+    async def _on_visual_event(event: dict):
+        if event.get("project_id") == project_id:
+            # Forward to client (strip project_id, already known)
+            msg = {k: v for k, v in event.items() if k != "project_id"}
+            try:
+                await ws.send_json(msg)
+            except Exception:
+                pass
+
+    add_visual_listener(_on_visual_event)
 
     try:
         while True:
@@ -290,10 +314,12 @@ async def audiobook_generation_ws(ws: WebSocket, project_id: str):
     except Exception as e:
         logger.error(f"WebSocket error for project '{project_id}': {e}")
     finally:
-        # Cleanup
+        # Cleanup: unregister visual listener
+        remove_visual_listener(_on_visual_event)
         cancel_event.set()
         if project_id in _active_generations:
             task = _active_generations.pop(project_id, None)
             if task and not task.done():
                 task.cancel()
         _cancel_flags.pop(project_id, None)
+

@@ -21,7 +21,7 @@ services:
       # TTS Backend for this container: "glm-tts" or "xtts"
       # Note: MOSS runs via the separate moss-tts container (port 8013)
       # The frontend proxies to moss-tts by default via TTS_BACKEND_HOST
-      - TTS_BACKEND=glm-tts
+      - TTS_BACKEND=stub
       # === OPTIMAL CONFIG FROM PARAMETER SWEEP ===
       # Best balanced: 5.95x speed, 91.6% accuracy
       - GLM_TTS_QUANTIZATION=4bit
@@ -68,12 +68,14 @@ services:
       - INSTRUCT_LLM_MODEL=Qwen3-Coder-Next
       - INSTRUCT_LLM_API_KEY=placeholder-api-key
       # ComfyUI Visual Generation
-      - COMFYUI_API_URL=http://192.168.1.83:8188
+      - COMFYUI_API_URL=http://192.168.1.77:8188
       - COMFYUI_VISUAL_MODE=video
       - COMFYUI_IMAGE_WIDTH=1920
       - COMFYUI_IMAGE_HEIGHT=1080
       - COMFYUI_VIDEO_FPS=10
     volumes:
+      # Live-mount application code — changes picked up on container restart, no rebuild needed
+      - ./app:/app/app
       # Mount GLM-TTS model checkpoints (download separately: ~8GB)
       - ./GLM-TTS/ckpt:/app/GLM-TTS/ckpt:ro
       # Shared data volumes (same as moss-tts for cross-container access)
@@ -119,11 +121,13 @@ services:
       - INSTRUCT_LLM_API_URL=http://192.168.1.196:8600/v1/chat/completions
       - INSTRUCT_LLM_MODEL=Qwen3-Coder-Next
       - INSTRUCT_LLM_API_KEY=placeholder-api-key
-      - COMFYUI_API_URL=http://192.168.1.83:8188
+      - COMFYUI_API_URL=http://192.168.1.77:8188
       - COMFYUI_IMAGE_WIDTH=1920
       - COMFYUI_IMAGE_HEIGHT=1080
       - COMFYUI_VIDEO_FPS=10
     volumes:
+      # Live-mount application code — changes picked up on container restart, no rebuild needed
+      - ./app:/app/app
       - ./output:/app/output
       - ./data/voices:/app/data/voices
       - ./data/audiobooks:/app/data/audiobooks
@@ -155,6 +159,8 @@ services:
       #   tts-api:8000    → GLM-TTS
       #   qwen-tts:8000   → Qwen3-TTS (qwen profile)
       - TTS_BACKEND_HOST=moss-tts:8000
+      # Audiobook API lives on tts-api (separated from TTS engine)
+      - AUDIOBOOK_BACKEND_HOST=tts-api:8000
     depends_on:
       - moss-tts
     networks:

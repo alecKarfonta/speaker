@@ -38,6 +38,9 @@ class VisualAsset(BaseModel):
     gen_height: Optional[int] = None
     gen_enable_audio: bool = False
     gen_two_stage: bool = False
+    gen_candidates: int = 1  # how many seed variants to generate
+    candidate_paths: List[str] = []  # paths to all candidate outputs
+    selected_candidate: int = -1  # index of chosen candidate (-1 = auto-first)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -189,6 +192,7 @@ class VisualAssetResponse(BaseModel):
     scene_prompt: Optional[str] = None
     has_visual: bool = False
     visual_type: Optional[str] = None
+    visual_path: Optional[str] = None
     visual_mode: Optional[str] = None
     visual_status: str = "none"
     animation_style: Optional[str] = None
@@ -200,6 +204,10 @@ class VisualAssetResponse(BaseModel):
     gen_height: Optional[int] = None
     gen_enable_audio: bool = False
     gen_two_stage: bool = False
+    gen_candidates: int = 1
+    candidate_paths: List[str] = []
+    candidate_count: int = 0
+    selected_candidate: int = -1
     created_at: Optional[datetime] = None
     assigned_segments: int = 0  # how many segments use this visual
 
@@ -217,6 +225,7 @@ class SegmentResponse(BaseModel):
     scene_prompt: Optional[str] = None
     has_visual: bool = False
     visual_type: Optional[str] = None
+    visual_path: Optional[str] = None
     visual_mode: Optional[str] = None
     visual_status: str = "none"
     animation_style: Optional[str] = None
@@ -307,6 +316,31 @@ def _migrate_inline_visuals(project: AudiobookProject) -> bool:
     return dirty
 
 
+def _sync_visual_assets(project: AudiobookProject) -> bool:
+    """Sync VisualAsset records from segment data when the VA is missing data.
+    Only populates VA fields that are empty — never overwrites existing VA paths,
+    since shared VAs would be clobbered by stale segment data on load."""
+    dirty = False
+    va_lookup = {v.id: v for v in project.visuals}
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if not seg.visual_id or seg.visual_id not in va_lookup:
+                continue
+            va = va_lookup[seg.visual_id]
+            # Only populate VA path if it has NONE — never overwrite existing
+            if seg.visual_path and not va.visual_path:
+                va.visual_path = seg.visual_path
+                va.visual_type = seg.visual_type
+                if seg.visual_status == "done":
+                    va.visual_status = "done"
+                dirty = True
+            # If VA is stuck queued/generating but segment is done, fix VA status
+            elif va.visual_status in ("queued", "generating") and seg.visual_status == "done":
+                va.visual_status = "done"
+                dirty = True
+    return dirty
+
+
 def load_project(project_id: str) -> Optional[AudiobookProject]:
     """Load project from disk. Recovers stuck 'generating' states from interrupted requests."""
     path = get_project_json_path(project_id)
@@ -329,12 +363,16 @@ def load_project(project_id: str) -> Optional[AudiobookProject]:
 
     # Recover stuck visual assets
     for va in project.visuals:
-        if va.visual_status == "generating":
+        if va.visual_status in ("generating", "queued"):
             va.visual_status = "none" if not va.scene_prompt else "pending"
             dirty = True
 
     # Migrate legacy inline visuals to VisualAsset entities
     if _migrate_inline_visuals(project):
+        dirty = True
+
+    # Sync stale VisualAsset data from segments
+    if _sync_visual_assets(project):
         dirty = True
 
     if dirty:
@@ -417,6 +455,7 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
                     duration=seg.duration, error_message=seg.error_message,
                     scene_prompt=va.scene_prompt,
                     has_visual=has_vis,
+                    visual_path=vpath,
                     visual_type=va.visual_type, visual_mode=va.visual_mode,
                     visual_status=va.visual_status,
                     animation_style=va.animation_style, video_fill_mode=va.video_fill_mode,
@@ -430,6 +469,7 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
                     duration=seg.duration, error_message=seg.error_message,
                     scene_prompt=seg.scene_prompt,
                     has_visual=seg.visual_path is not None and os.path.exists(seg.visual_path) if seg.visual_path else False,
+                    visual_path=seg.visual_path,
                     visual_type=seg.visual_type, visual_mode=seg.visual_mode,
                     visual_status=seg.visual_status,
                     animation_style=seg.animation_style, video_fill_mode=seg.video_fill_mode,
@@ -467,6 +507,7 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
             label=va.label,
             scene_prompt=va.scene_prompt,
             has_visual=va.visual_path is not None and os.path.exists(va.visual_path) if va.visual_path else False,
+            visual_path=va.visual_path,
             visual_type=va.visual_type,
             visual_mode=va.visual_mode,
             visual_status=va.visual_status,
@@ -479,6 +520,10 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
             gen_height=va.gen_height,
             gen_enable_audio=va.gen_enable_audio,
             gen_two_stage=va.gen_two_stage,
+            gen_candidates=va.gen_candidates,
+            candidate_paths=va.candidate_paths,
+            candidate_count=len(va.candidate_paths),
+            selected_candidate=va.selected_candidate,
             created_at=va.created_at,
             assigned_segments=visual_seg_counts.get(va.id, 0),
         )

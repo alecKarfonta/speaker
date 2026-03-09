@@ -89,6 +89,25 @@ Passage: "{text}"
 
 Scene description:"""
 
+# variant for video/I2V — focuses on action/dynamics, no art style tags
+SCENE_PROMPT_VIDEO_TEMPLATE = """You are a visual scene describer for an audiobook video system. Given a passage from a book, describe a short cinematic video scene.
+
+Rules:
+- Focus on CHARACTER ACTIONS and CAMERA MOVEMENT (e.g. "slowly turns", "camera pulls back")
+- Describe what is HAPPENING, not art style or aesthetics
+- Be specific about motion: walking, gesturing, wind blowing, light flickering
+- Do NOT include art style keywords (no "oil painting", "watercolor", etc.)
+- Do NOT include quality tags (no "masterpiece", "high quality", etc.)
+- Keep it to 1-2 sentences, under 80 words
+
+Chapter: {chapter_title}
+Character: {character}
+Emotion: {emotion}
+{context_section}
+Passage: "{text}"
+
+Scene description:"""
+
 VISUAL_STYLE_TEMPLATE = """Analyze this book text and generate a consistent visual art style description that should be used for ALL illustrations in this audiobook.
 
 Consider:
@@ -386,6 +405,7 @@ def generate_scene_prompt(
     visual_style: str = "",
     prev_scene: str = "",
     next_text: str = "",
+    for_video: bool = False,
 ) -> Optional[str]:
     """
     Generate a cinematic scene description from segment text.
@@ -395,12 +415,9 @@ def generate_scene_prompt(
         visual_style: Project-level style string for consistency
         prev_scene: The scene prompt from the previous segment (for continuity)
         next_text: Text of the next segment (for anticipating scene transitions)
+        for_video: If True, optimize prompt for I2V (action-focused, no style tags)
     """
     # Build optional sections
-    style_section = ""
-    if visual_style:
-        style_section = f"\nVisual Style (maintain this): {visual_style}\n"
-
     context_section = ""
     context_parts = []
     if prev_scene:
@@ -410,14 +427,29 @@ def generate_scene_prompt(
     if context_parts:
         context_section = "\nContext for continuity:\n" + "\n".join(context_parts) + "\n"
 
-    prompt = SCENE_PROMPT_TEMPLATE.format(
-        text=text[:800],
-        chapter_title=chapter_title or "Unknown",
-        character=character or "Narrator",
-        emotion=emotion or "neutral",
-        style_section=style_section,
-        context_section=context_section,
-    )
+    if for_video:
+        # Video mode: action-focused prompt, no style tags
+        prompt = SCENE_PROMPT_VIDEO_TEMPLATE.format(
+            text=text[:800],
+            chapter_title=chapter_title or "Unknown",
+            character=character or "Narrator",
+            emotion=emotion or "neutral",
+            context_section=context_section,
+        )
+    else:
+        # Image mode: include visual style
+        style_section = ""
+        if visual_style:
+            style_section = f"\nVisual Style (maintain this): {visual_style}\n"
+        prompt = SCENE_PROMPT_TEMPLATE.format(
+            text=text[:800],
+            chapter_title=chapter_title or "Unknown",
+            character=character or "Narrator",
+            emotion=emotion or "neutral",
+            style_section=style_section,
+            context_section=context_section,
+        )
+
     response = _call_llm(
         prompt,
         system_message="You are a visual scene describer. Respond with only the scene description, nothing else.",
@@ -426,8 +458,8 @@ def generate_scene_prompt(
     )
     if response:
         scene = response.strip().strip('"').strip()
-        # Append style to the scene prompt so it's included in the ComfyUI prompt
-        if visual_style and visual_style.lower() not in scene.lower():
+        # Only append style for image mode (style tags hurt I2V quality)
+        if not for_video and visual_style and visual_style.lower() not in scene.lower():
             scene = f"{scene}, {visual_style}"
         return scene
     return None

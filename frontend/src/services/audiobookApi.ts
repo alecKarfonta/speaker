@@ -21,6 +21,7 @@ export interface SegmentResponse {
     scene_prompt: string | null;
     has_visual: boolean;
     visual_type: string | null;
+    visual_path: string | null;
     visual_status: string;
     animation_style: string | null;
     video_fill_mode: string;
@@ -42,6 +43,7 @@ export interface VisualAsset {
     scene_prompt: string | null;
     has_visual: boolean;
     visual_type: string | null;
+    visual_path: string | null;
     visual_mode: string | null;
     visual_status: string;
     animation_style: string | null;
@@ -53,6 +55,10 @@ export interface VisualAsset {
     gen_height: number | null;
     gen_enable_audio: boolean;
     gen_two_stage: boolean;
+    gen_candidates: number;
+    candidate_paths: string[];
+    candidate_count: number;
+    selected_candidate: number;
     created_at: string | null;
     assigned_segments: number;
 }
@@ -336,6 +342,7 @@ export interface VisualParams {
     ref_character?: string;
     enable_audio?: boolean;
     two_stage?: boolean;
+    candidates?: number;
 }
 
 export async function generateVisual(projectId: string, segmentId: string, params?: VisualParams): Promise<ProjectDetail> {
@@ -596,6 +603,7 @@ export async function generateVisualAsset(
     if (params?.ref_character) p.set('ref_character', params.ref_character);
     if (params?.enable_audio) p.set('enable_audio', 'true');
     if (params?.two_stage) p.set('two_stage', 'true');
+    if (params?.candidates != null && params.candidates > 1) p.set('candidates', String(params.candidates));
     const qs = p.toString() ? `?${p.toString()}` : '';
     const res = await fetch(
         `${API_BASE}/audiobook/projects/${projectId}/visuals/${visualId}/generate${qs}`,
@@ -633,4 +641,16 @@ export async function assignVisual(
 
 export function getVisualAssetFileUrl(projectId: string, visualId: string): string {
     return `${API_BASE}/audiobook/projects/${projectId}/visuals/${visualId}/file`;
+}
+
+export function getVisualCandidateUrl(projectId: string, visualId: string, index: number): string {
+    return `${API_BASE}/audiobook/projects/${projectId}/visuals/${visualId}/candidate/${index}`;
+}
+
+export async function selectCandidate(projectId: string, visualId: string, index: number): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/visuals/${visualId}/select-candidate?index=${index}`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
 }

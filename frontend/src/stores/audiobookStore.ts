@@ -4,6 +4,7 @@
 import { create } from 'zustand';
 import * as api from '../services/audiobookApi';
 import type { ProjectDetail, ProjectSummary, VisualParams, QueueStatus } from '../services/audiobookApi';
+import type { VisualProgress } from '../hooks/useGenerationSocket';
 
 interface AudiobookState {
     // Data
@@ -17,11 +18,12 @@ interface AudiobookState {
     extractingCharacters: boolean; // character extraction / portrait generation in progress
     generating: Set<string>; // segment IDs currently generating
     playingSegmentId: string | null;
-    visualMode: 'image' | 'video';
+    visualMode: 'image' | 'video' | 'scene_image' | 'ref_video' | 'scene_video';
     visualSettings: { frames: number; fps: number; width: number; height: number };
     error: string | null;
     queueStatus: QueueStatus | null;
     videoExporting: boolean;
+    visualProgress: VisualProgress | null;
 
     // Actions
     fetchProjects: () => Promise<void>;
@@ -45,9 +47,17 @@ interface AudiobookState {
     generateVisual: (segmentId: string, params?: VisualParams) => Promise<void>;
     generateAllVisuals: (mode?: string) => Promise<void>;
     exportVideo: () => Promise<void>;
+    // Visual asset management
+    createVisualAsset: (label?: string, scenePrompt?: string) => Promise<void>;
+    updateVisualAsset: (visualId: string, update: { label?: string; scene_prompt?: string; animation_style?: string; video_fill_mode?: string; ref_character?: string }) => Promise<void>;
+    deleteVisualAsset: (visualId: string) => Promise<void>;
+    generateVisualAsset: (visualId: string, params?: VisualParams) => Promise<void>;
+    generateVisualAssetPrompt: (visualId: string) => Promise<void>;
+    selectCandidate: (visualId: string, index: number) => Promise<void>;
+    assignVisual: (segmentId: string, visualId: string | null) => Promise<void>;
     setPlayingSegment: (segmentId: string | null) => void;
     setCurrentProject: (project: ProjectDetail) => void;
-    setVisualMode: (mode: 'image' | 'video') => void;
+    setVisualMode: (mode: 'image' | 'video' | 'scene_image' | 'ref_video' | 'scene_video') => void;
     setVisualSettings: (settings: Partial<{ frames: number; fps: number; width: number; height: number }>) => void;
     clearError: () => void;
     fetchQueueStatus: () => Promise<void>;
@@ -67,6 +77,7 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     error: null,
     queueStatus: null,
     videoExporting: false,
+    visualProgress: null,
 
     fetchProjects: async () => {
         try {
@@ -400,10 +411,134 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     setVisualSettings: (settings) => set((s) => ({ visualSettings: { ...s.visualSettings, ...settings } })),
     clearError: () => set({ error: null }),
 
+    // --- Visual Asset Management ---
+    createVisualAsset: async (label, scenePrompt) => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        try {
+            const updated = await api.createVisualAsset(currentProject.id, label, scenePrompt);
+            set({ currentProject: updated });
+        } catch (e: any) {
+            set({ error: e.message });
+        }
+    },
+
+    updateVisualAsset: async (visualId, update) => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        try {
+            const updated = await api.updateVisualAsset(currentProject.id, visualId, update);
+            set({ currentProject: updated });
+        } catch (e: any) {
+            set({ error: e.message });
+        }
+    },
+
+    deleteVisualAsset: async (visualId) => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        try {
+            const updated = await api.deleteVisualAsset(currentProject.id, visualId);
+            set({ currentProject: updated });
+        } catch (e: any) {
+            set({ error: e.message });
+        }
+    },
+
+    generateVisualAsset: async (visualId, params) => {
+        const { currentProject, visualMode, visualSettings } = get();
+        if (!currentProject) return;
+        set((s) => ({ generating: new Set([...s.generating, `va:${visualId}`]) }));
+        try {
+            const merged: VisualParams = {
+                mode: params?.mode ?? visualMode,
+                frames: params?.frames ?? visualSettings.frames,
+                fps: params?.fps ?? visualSettings.fps,
+                width: params?.width ?? visualSettings.width,
+                height: params?.height ?? visualSettings.height,
+                ...params,
+            };
+            await api.generateVisualAsset(currentProject.id, visualId, merged);
+            // Poll until the visual asset is done
+            const poll = async () => {
+                try {
+                    const updated = await api.getProject(currentProject.id);
+                    const va = updated.visuals?.find((v: any) => v.id === visualId);
+                    const done = va && (va.visual_status === 'done' || va.visual_status === 'error');
+                    set((s) => {
+                        const next = new Set(s.generating);
+                        if (done) next.delete(`va:${visualId}`);
+                        return { currentProject: updated, generating: next };
+                    });
+                    if (!done) setTimeout(poll, 3000);
+                } catch {
+                    set((s) => {
+                        const next = new Set(s.generating);
+                        next.delete(`va:${visualId}`);
+                        return { generating: next };
+                    });
+                }
+            };
+            setTimeout(poll, 3000);
+        } catch (e: any) {
+            set((s) => {
+                const next = new Set(s.generating);
+                next.delete(`va:${visualId}`);
+                return { error: e.message, generating: next };
+            });
+        }
+    },
+
+    generateVisualAssetPrompt: async (visualId) => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        set((s) => ({ generating: new Set([...s.generating, `vaprompt:${visualId}`]) }));
+        try {
+            const updated = await api.generateVisualAssetPrompt(currentProject.id, visualId);
+            set((s) => {
+                const next = new Set(s.generating);
+                next.delete(`vaprompt:${visualId}`);
+                return { currentProject: updated, generating: next };
+            });
+        } catch (e: any) {
+            set((s) => {
+                const next = new Set(s.generating);
+                next.delete(`vaprompt:${visualId}`);
+                return { error: e.message, generating: next };
+            });
+        }
+    },
+
+    selectCandidate: async (visualId, index) => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        try {
+            const updated = await api.selectCandidate(currentProject.id, visualId, index);
+            set({ currentProject: updated });
+        } catch (e: any) {
+            set({ error: e.message });
+        }
+    },
+
+    assignVisual: async (segmentId, visualId) => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        try {
+            const updated = await api.assignVisual(currentProject.id, segmentId, visualId);
+            set({ currentProject: updated });
+        } catch (e: any) {
+            set({ error: e.message });
+        }
+    },
+
     fetchQueueStatus: async () => {
         try {
             const status = await api.getQueueStatus();
-            set({ queueStatus: status });
+            const prev = get().queueStatus;
+            // Only update state if data actually changed to avoid unnecessary re-renders
+            if (JSON.stringify(prev) !== JSON.stringify(status)) {
+                set({ queueStatus: status });
+            }
         } catch {
             // silently ignore — queue endpoint may not be available during startup
         }

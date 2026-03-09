@@ -1,6 +1,7 @@
 /**
  * Custom React hook for WebSocket-based audiobook generation.
  * Connects to /audiobook/ws/{projectId} and streams real-time progress.
+ * Also receives visual generation events from the backend event bus.
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAudiobookStore } from '../stores/audiobookStore';
@@ -29,6 +30,13 @@ interface WsMessage {
     index?: number;
     project_id?: string;
     project_name?: string;
+    // Visual progress fields
+    mode?: string;
+    prompt?: string;
+    step?: number;
+    total_steps?: number;
+    visual_type?: string;
+    visual_path?: string;
 }
 
 export interface GenerationProgress {
@@ -51,6 +59,27 @@ const initialProgress: GenerationProgress = {
     completedSegmentIds: [],
 };
 
+// Visual generation progress
+export interface VisualProgress {
+    segmentId: string | null;
+    status: 'idle' | 'prompt_generating' | 'prompt_done' | 'rendering' | 'progress' | 'done' | 'error';
+    mode: string;
+    step: number;
+    totalSteps: number;
+    error: string | null;
+    prompt: string | null;
+}
+
+const initialVisualProgress: VisualProgress = {
+    segmentId: null,
+    status: 'idle',
+    mode: '',
+    step: 0,
+    totalSteps: 0,
+    error: null,
+    prompt: null,
+};
+
 export function useGenerationSocket(projectId: string | null) {
     const wsRef = useRef<WebSocket | null>(null);
     const [connected, setConnected] = useState(false);
@@ -65,6 +94,15 @@ export function useGenerationSocket(projectId: string | null) {
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         return `${proto}//${window.location.host}/audiobook/ws/${projectId}`;
     }, [projectId]);
+
+    // Helper to update visual progress in the store
+    const setVisualProgress = useCallback((vp: VisualProgress) => {
+        useAudiobookStore.setState({ visualProgress: vp });
+    }, []);
+
+    const getVisualProgress = useCallback((): VisualProgress => {
+        return useAudiobookStore.getState().visualProgress || initialVisualProgress;
+    }, []);
 
     // Connect to WebSocket
     const connect = useCallback(() => {
@@ -161,6 +199,93 @@ export function useGenerationSocket(projectId: string | null) {
                     case 'error':
                         // Don't reset generation state for non-fatal errors
                         break;
+
+                    // --- Visual generation events (relayed from backend event bus) ---
+
+                    case 'visual_start':
+                        setVisualProgress({
+                            segmentId: msg.segment_id || null,
+                            status: 'rendering',
+                            mode: msg.mode || '',
+                            step: 0,
+                            totalSteps: 0,
+                            error: null,
+                            prompt: null,
+                        });
+                        break;
+
+                    case 'visual_prompt_generating': {
+                        const prev = getVisualProgress();
+                        setVisualProgress({
+                            ...prev,
+                            segmentId: msg.segment_id || prev.segmentId,
+                            status: 'prompt_generating',
+                        });
+                        break;
+                    }
+
+                    case 'visual_prompt_done': {
+                        const prev = getVisualProgress();
+                        setVisualProgress({
+                            ...prev,
+                            segmentId: msg.segment_id || prev.segmentId,
+                            status: 'prompt_done',
+                            prompt: msg.prompt || null,
+                        });
+                        break;
+                    }
+
+                    case 'visual_rendering': {
+                        const prev = getVisualProgress();
+                        setVisualProgress({
+                            ...prev,
+                            segmentId: msg.segment_id || prev.segmentId,
+                            status: 'rendering',
+                            mode: msg.mode || prev.mode,
+                            step: 0,
+                            totalSteps: 0,
+                        });
+                        break;
+                    }
+
+                    case 'visual_progress': {
+                        const prev = getVisualProgress();
+                        setVisualProgress({
+                            ...prev,
+                            segmentId: msg.segment_id || prev.segmentId,
+                            status: 'progress',
+                            step: msg.step || 0,
+                            totalSteps: msg.total_steps || 0,
+                        });
+                        break;
+                    }
+
+                    case 'visual_done':
+                        setVisualProgress({
+                            segmentId: msg.segment_id || null,
+                            status: 'done',
+                            mode: msg.visual_type || '',
+                            step: 0,
+                            totalSteps: 0,
+                            error: null,
+                            prompt: null,
+                        });
+                        // Reload project to pick up the new visual
+                        if (projectId) loadProject(projectId);
+                        break;
+
+                    case 'visual_error': {
+                        const prev = getVisualProgress();
+                        setVisualProgress({
+                            ...prev,
+                            segmentId: msg.segment_id || prev.segmentId,
+                            status: 'error',
+                            error: msg.error || 'Unknown error',
+                        });
+                        // Reload to get error state
+                        if (projectId) loadProject(projectId);
+                        break;
+                    }
                 }
             } catch (e) {
                 // Ignore parse errors
@@ -180,7 +305,7 @@ export function useGenerationSocket(projectId: string | null) {
         ws.onerror = () => {
             // onclose will handle reconnect
         };
-    }, [getWsUrl, projectId, loadProject]);
+    }, [getWsUrl, projectId, loadProject, setVisualProgress, getVisualProgress]);
 
     // Send a message to the WebSocket
     const send = useCallback((msg: Record<string, unknown>) => {

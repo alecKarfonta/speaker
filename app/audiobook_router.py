@@ -371,7 +371,15 @@ async def update_segment(project_id: str, segment_id: str, request: UpdateSegmen
 
     if request.scene_prompt is not None:
         seg.scene_prompt = request.scene_prompt
-        # If visual was already generated, allow re-generation with new prompt
+        # Also update the linked VisualAsset
+        if seg.visual_id:
+            va_lookup = {v.id: v for v in project.visuals}
+            va = va_lookup.get(seg.visual_id)
+            if va:
+                va.scene_prompt = request.scene_prompt
+                if va.visual_status == "done":
+                    va.visual_status = "pending"
+        # Legacy fallback
         if seg.visual_status == "done":
             seg.visual_status = "pending"
     
@@ -763,12 +771,18 @@ async def download_all_assets(project_id: str):
                     zf.write(seg.audio_path, f"audio/{ch_safe}/{seg.id}.wav")
                     added += 1
 
-        # Visuals — visuals/{segment_id}.ext
+        # Visuals — visuals/{segment_id}.ext (resolve through VisualAsset)
+        va_map = {v.id: v for v in project.visuals}
         for ch in project.chapters:
             for seg in ch.segments:
-                if seg.visual_path and os.path.exists(seg.visual_path):
-                    ext = os.path.splitext(seg.visual_path)[1]
-                    zf.write(seg.visual_path, f"visuals/{seg.id}{ext}")
+                vpath = None
+                if seg.visual_id and seg.visual_id in va_map:
+                    vpath = va_map[seg.visual_id].visual_path
+                if not vpath:
+                    vpath = seg.visual_path  # legacy fallback
+                if vpath and os.path.exists(vpath):
+                    ext = os.path.splitext(vpath)[1]
+                    zf.write(vpath, f"visuals/{seg.id}{ext}")
                     added += 1
 
         # Portraits — portraits/{character_name}.ext
@@ -832,17 +846,28 @@ async def get_segment_visual(project_id: str, segment_id: str):
     project = _get_project_or_404(project_id)
     _, _, seg = _find_segment(project, segment_id)
 
-    if not seg.visual_path or not os.path.exists(seg.visual_path):
+    # Resolve visual path through VisualAsset first, fallback to legacy field
+    visual_path = None
+    if seg.visual_id:
+        va_lookup = {v.id: v for v in project.visuals}
+        va = va_lookup.get(seg.visual_id)
+        if va and va.visual_path:
+            visual_path = va.visual_path
+    if not visual_path:
+        visual_path = seg.visual_path
+
+    if not visual_path or not os.path.exists(visual_path):
         raise HTTPException(status_code=404, detail="Visual not generated yet")
 
-    ext = os.path.splitext(seg.visual_path)[1].lower()
+    ext = os.path.splitext(visual_path)[1].lower()
     media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
     media_type = media_types.get(ext, "image/png")
 
     return FileResponse(
-        path=seg.visual_path,
+        path=visual_path,
         media_type=media_type,
         filename=f"{segment_id}{ext}",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
     )
 
 @router.post("/projects/{project_id}/segments/{segment_id}/generate-visual", response_model=ProjectDetailResponse)
@@ -975,11 +1000,19 @@ async def generate_all_visuals(project_id: str, mode: str = None):
     """Enqueue visual generation for all segments that don't already have one."""
     from .generation_queue import enqueue_visual
     project = _get_project_or_404(project_id)
+    va_lookup = {v.id: v for v in project.visuals}
     enqueued = 0
     for ch in project.chapters:
         for seg in ch.segments:
-            if seg.visual_status == "done":
-                continue
+            # Check VisualAsset status if linked, else legacy field
+            if seg.visual_id and seg.visual_id in va_lookup:
+                va = va_lookup[seg.visual_id]
+                if va.visual_status == "done":
+                    continue
+                va.visual_status = "queued"
+            else:
+                if seg.visual_status == "done":
+                    continue
             seg.visual_status = "queued"
             enqueue_visual(
                 project_id=project_id,
@@ -1063,6 +1096,11 @@ async def update_visual_asset(project_id: str, visual_id: str, request: UpdateVi
     if request.label is not None:
         va.label = request.label
     if request.scene_prompt is not None:
+        # Auto-sync label if it was previously auto-generated from the old prompt
+        old_auto_label = (va.scene_prompt or "")[:40].strip() or "New Visual"
+        if va.label == old_auto_label or not va.label:
+            va.label = (request.scene_prompt or "")[:40].strip() or "New Visual"
+            
         va.scene_prompt = request.scene_prompt
         # Reset visual status so user knows a new visual is needed
         if va.visual_status == "done":
@@ -1110,9 +1148,11 @@ async def generate_visual_asset(
     ref_character: str = None,
     enable_audio: bool = False,
     two_stage: bool = False,
+    candidates: int = 1,
 ):
     """Enqueue visual generation for a visual asset.
-    Uses the first assigned segment for context (text, character)."""
+    Uses the first assigned segment for context (text, character).
+    Set candidates > 1 to generate multiple seed variants for selection."""
     from .generation_queue import enqueue_visual
     project = _get_project_or_404(project_id)
     va = _find_visual_or_404(project, visual_id)
@@ -1150,6 +1190,10 @@ async def generate_visual_asset(
         va.gen_height = height
     va.gen_enable_audio = enable_audio
     va.gen_two_stage = two_stage
+    va.gen_candidates = max(1, min(candidates, 10))
+    # Clear previous candidates when regenerating
+    va.candidate_paths = []
+    va.selected_candidate = -1
     va.visual_status = "queued"
     save_project(project)
 
@@ -1165,8 +1209,9 @@ async def generate_visual_asset(
         ref_character=ref_character,
         enable_audio=enable_audio,
         two_stage=two_stage,
+        candidates=va.gen_candidates,
     )
-    logger.info(f"Enqueued visual generation for asset '{visual_id}' via segment {context_segment_id} (depth {depth})")
+    logger.info(f"Enqueued visual generation for asset '{visual_id}' via segment {context_segment_id} ({va.gen_candidates} candidates, depth {depth})")
     return project_to_detail_response(project)
 
 
@@ -1218,9 +1263,10 @@ async def generate_visual_scene_prompt(project_id: str, visual_id: str):
     if not scene:
         raise HTTPException(status_code=500, detail="LLM failed to generate scene prompt")
 
+    old_auto_label = (va.scene_prompt or "")[:40].strip() or "New Visual"
+    if va.label == old_auto_label or not va.label:
+        va.label = scene[:40].strip() or "New Visual"
     va.scene_prompt = scene
-    if not va.label or va.label == "New Visual":
-        va.label = scene[:40].strip()
     if va.visual_status == "done":
         va.visual_status = "pending"
     save_project(project)
@@ -1264,7 +1310,59 @@ async def get_visual_asset_file(project_id: str, visual_id: str):
         ".webp": "image/webp", ".mp4": "video/mp4", ".gif": "image/gif",
     }.get(ext, "application/octet-stream")
 
-    return FileResponse(path=va.visual_path, media_type=media_type, filename=f"{visual_id}{ext}")
+    return FileResponse(
+        path=va.visual_path, media_type=media_type, filename=f"{visual_id}{ext}",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
+
+
+@router.post("/projects/{project_id}/visuals/{visual_id}/select-candidate", response_model=ProjectDetailResponse)
+async def select_visual_candidate(project_id: str, visual_id: str, index: int):
+    """Select a specific candidate as the active visual for this asset."""
+    project = _get_project_or_404(project_id)
+    va = _find_visual_or_404(project, visual_id)
+
+    if not va.candidate_paths:
+        raise HTTPException(status_code=400, detail="No candidates available")
+    if index < 0 or index >= len(va.candidate_paths):
+        raise HTTPException(status_code=400, detail=f"Invalid candidate index {index}, have {len(va.candidate_paths)} candidates")
+
+    va.selected_candidate = index
+    va.visual_path = va.candidate_paths[index]
+    # Also update any linked segments
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if seg.visual_id == visual_id:
+                seg.visual_path = va.visual_path
+    save_project(project)
+    logger.info(f"Selected candidate {index} for visual '{visual_id}'")
+    return project_to_detail_response(project)
+
+
+@router.get("/projects/{project_id}/visuals/{visual_id}/candidate/{index}")
+async def get_visual_candidate_file(project_id: str, visual_id: str, index: int):
+    """Serve a specific candidate file for preview."""
+    from fastapi.responses import FileResponse
+    project = _get_project_or_404(project_id)
+    va = _find_visual_or_404(project, visual_id)
+
+    if not va.candidate_paths or index < 0 or index >= len(va.candidate_paths):
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    path = va.candidate_paths[index]
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Candidate file not found")
+
+    ext = os.path.splitext(path)[1].lower()
+    media_type = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".webp": "image/webp", ".mp4": "video/mp4", ".gif": "image/gif",
+    }.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        path=path, media_type=media_type, filename=f"{visual_id}_c{index}{ext}",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 @router.post("/projects/{project_id}/generate-style", response_model=ProjectDetailResponse)
@@ -1773,11 +1871,28 @@ async def export_video(project_id: str):
 
     project = _get_project_or_404(project_id)
 
+    # Build VisualAsset lookup
+    va_lookup = {v.id: v for v in project.visuals}
+
     # Collect all segments that have both audio and visuals
     segments_data = []
     for ch in project.chapters:
         for seg in ch.segments:
-            if not seg.visual_path or not os.path.exists(seg.visual_path):
+            # Resolve visual path: prefer VisualAsset, fall back to legacy seg field
+            visual_path = None
+            visual_type = seg.visual_type or "image"
+            animation_style = seg.animation_style
+            video_fill_mode = seg.video_fill_mode
+            if seg.visual_id and seg.visual_id in va_lookup:
+                va = va_lookup[seg.visual_id]
+                visual_path = va.visual_path
+                visual_type = va.visual_type or visual_type
+                animation_style = va.animation_style or animation_style
+                video_fill_mode = va.video_fill_mode or video_fill_mode
+            if not visual_path:
+                visual_path = seg.visual_path
+
+            if not visual_path or not os.path.exists(visual_path):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Segment '{seg.id}' is missing a visual. Generate all visuals first.",
@@ -1787,7 +1902,7 @@ async def export_video(project_id: str):
                     status_code=400,
                     detail=f"Segment '{seg.id}' is missing audio. Generate all audio first.",
                 )
-            segments_data.append((seg.visual_path, seg.audio_path, seg.visual_type or "image", seg.animation_style, seg.video_fill_mode))
+            segments_data.append((visual_path, seg.audio_path, visual_type, animation_style, video_fill_mode))
 
     if not segments_data:
         raise HTTPException(status_code=400, detail="No segments with audio and visuals found")

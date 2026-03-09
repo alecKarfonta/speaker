@@ -14,9 +14,14 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # Proxy /audiobook requests to the TTS backend
+    # SPA route: exact /audiobook serves the React app (must be before the API proxy)
+    location = /audiobook {
+        try_files /index.html =404;
+    }
+
+    # Proxy /audiobook/ API requests to the TTS backend
     location /audiobook {
-        set $upstream_audiobook ${TTS_BACKEND_HOST};
+        set $upstream_audiobook ${AUDIOBOOK_BACKEND_HOST};
         proxy_pass http://$upstream_audiobook;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -44,7 +49,7 @@ server {
 
     # WebSocket proxy for audiobook real-time generation updates
     location /audiobook/ws/ {
-        set $upstream_audiobook ${TTS_BACKEND_HOST};
+        set $upstream_audiobook ${AUDIOBOOK_BACKEND_HOST};
         proxy_pass http://$upstream_audiobook;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;

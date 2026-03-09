@@ -255,15 +255,12 @@ def _normalize_text_for_segmentation(text: str) -> str:
     # 1. Re-join hyphenated word breaks  (conti-\ntinued → continued)
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
 
-    # 2. Re-join non-hyphenated mid-word line breaks (PDF column artifacts).
+    # 2. Re-join non-hyphenated line breaks with a space.
     #    A line ending with a lowercase letter/digit immediately followed
-    #    by a line starting with a lowercase letter is almost certainly a
-    #    wrapped word rather than a new sentence or paragraph boundary.
-    #    Handle both single-newline and double-newline variants so that even
-    #    "p\n\naragraphs" (double newline around the break) is healed.
-    #    e.g. "furtive p\naragraphs" → "furtive paragraphs"
-    #         "furtive p\n\naragraphs" → "furtive paragraphs"
-    text = re.sub(r"([a-z0-9])\n\n?([a-z])", r"\1\2", text)
+    #    by a line starting with a lowercase letter is a wrapped line.
+    #    Insert a space to prevent word mashing.
+    #    e.g. "the\nbottom" → "the bottom"  (NOT "thebottom")
+    text = re.sub(r"([a-z0-9])\n\n?([a-z])", r"\1 \2", text)
 
     # ---------------------------------------------------------------
     # Now it is safe to mark true paragraph breaks and join the rest.

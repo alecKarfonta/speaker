@@ -106,13 +106,13 @@
                 "8",
                 0
             ],
-            "img_compression": 33
+            "img_compression": 18
         }
     },
     "10": {
-        "class_type": "LTXVImgToVideoInplace",
+        "class_type": "LTXVImgToVideoConditionOnly",
         "_meta": {
-            "title": "Image to Video Inplace"
+            "title": "Image to Video ConditionOnly"
         },
         "inputs": {
             "vae": [
@@ -142,7 +142,7 @@
                 0
             ],
             "lora_name": "ltx-2.3-22b-distilled-lora-384.safetensors",
-            "strength_model": 0.6
+            "strength_model": 0.5
         }
     },
     "12": {
@@ -173,7 +173,7 @@
                 "10",
                 0
             ],
-            "steps": 20,
+            "steps": 15,
             "max_shift": 2.05,
             "base_shift": 0.95,
             "stretch": true,
@@ -198,7 +198,7 @@
                 "5",
                 1
             ],
-            "cfg": 4.0
+            "cfg": 2.0
         }
     },
     "16": {

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import ReactDOM from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     BookOpen, Plus, Trash2, Play, Pause, RefreshCw, Download,
@@ -6,187 +7,24 @@ import {
     Volume2, Mic, Zap, AlertCircle, Loader2, FileText, Music,
     Sparkles, Settings2, Square, Radio, Wifi, WifiOff, Clock,
     Hash, Headphones, Layers, Image, Film, Sliders, Timer,
-    Package, Palette,
+    Package, Palette, Maximize2,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import Layout from '../layout/Layout';
 import { useAudiobookStore } from '../../stores/audiobookStore';
 import { useGenerationSocket } from '../../hooks/useGenerationSocket';
-import { getSegmentAudioUrl, getSegmentVisualUrl, getChapterExportUrl, getFullExportUrl, getVideoUrl, getDownloadAllUrl, setVideoFillMode, getPortraitUrl, getVisualAssetFileUrl } from '../../services/audiobookApi';
+import { getSegmentAudioUrl, getSegmentVisualUrl, getChapterExportUrl, getFullExportUrl, getVideoUrl, getDownloadAllUrl, setVideoFillMode, getPortraitUrl, getVisualAssetFileUrl, getVisualCandidateUrl } from '../../services/audiobookApi';
 import type { SegmentResponse, ChapterResponse, VisualParams, VisualAsset } from '../../services/audiobookApi';
 import CharacterProfileModal from './CharacterProfileModal';
+import VisualPlayer from './VisualPlayer';
+import PresentationMode from './PresentationMode';
 import QueuePanel from './QueuePanel';
 
-// ============================================================
-// Design tokens
-// ============================================================
-const glass = 'backdrop-blur-xl bg-white/[0.03] border border-white/[0.06]';
-const glassHover = 'hover:bg-white/[0.06] hover:border-white/[0.1]';
-const cardStyle = `${glass} rounded-2xl`;
-const inputStyle = 'w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-white/90 placeholder:text-white/20 focus:border-amber-500/40 focus:ring-1 focus:ring-amber-500/20 focus:outline-none transition-all';
-const selectStyle = 'bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white/80 focus:border-amber-500/40 focus:outline-none transition-all';
-const btnPrimary = 'px-5 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/20 hover:shadow-amber-500/30 hover:from-amber-400 hover:to-orange-500 transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none';
-const btnGhost = `px-4 py-2 rounded-xl text-sm font-medium ${glass} ${glassHover} text-white/70 hover:text-white transition-all`;
-
-// ============================================================
-// Collapsible sidebar section
-// ============================================================
-const SidebarSection: React.FC<{
-    icon: React.ReactNode;
-    label: string;
-    status?: string;
-    statusColor?: string;
-    defaultOpen?: boolean;
-    children: React.ReactNode;
-}> = ({ icon, label, status, statusColor = 'text-white/20', defaultOpen = true, children }) => {
-    const [open, setOpen] = useState(defaultOpen);
-    return (
-        <div className="space-y-2">
-            <button
-                onClick={() => setOpen(!open)}
-                className="w-full flex items-center gap-2 group"
-            >
-                <motion.div
-                    animate={{ rotate: open ? 90 : 0 }}
-                    transition={{ duration: 0.12 }}
-                    className="flex-shrink-0"
-                >
-                    <ChevronRight size={10} className="text-white/20" />
-                </motion.div>
-                <span className="flex items-center gap-1.5 text-[10px] font-semibold text-white/40 uppercase tracking-[0.12em]">
-                    {icon} {label}
-                </span>
-                {status && (
-                    <span className={`ml-auto text-[9px] font-medium ${statusColor} tabular-nums`}>{status}</span>
-                )}
-            </button>
-            <AnimatePresence initial={false}>
-                {open && (
-                    <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.15 }}
-                        className="overflow-hidden"
-                    >
-                        <div className="space-y-2 pl-4">
-                            {children}
-                        </div>
-                    </motion.div>
-                )}
-            </AnimatePresence>
-        </div>
-    );
-};
-
-// ============================================================
-// Status badge component
-// ============================================================
-const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
-    const config: Record<string, { bg: string; text: string; icon: React.ReactNode; label: string }> = {
-        pending: { bg: 'bg-slate-500/10 border-slate-500/20', text: 'text-slate-400', icon: <Clock size={10} />, label: 'Pending' },
-        generating: { bg: 'bg-sky-500/10 border-sky-500/20', text: 'text-sky-400', icon: <Loader2 size={10} className="animate-spin" />, label: 'Generating' },
-        done: { bg: 'bg-emerald-500/10 border-emerald-500/20', text: 'text-emerald-400', icon: <Check size={10} />, label: 'Done' },
-        error: { bg: 'bg-red-500/10 border-red-500/20', text: 'text-red-400', icon: <AlertCircle size={10} />, label: 'Error' },
-    };
-    const c = config[status] || config.pending;
-    return (
-        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${c.bg} ${c.text}`}>
-            {c.icon} {c.label}
-        </span>
-    );
-};
-
-// ============================================================
-// Progress bar
-// ============================================================
-const ProgressBar: React.FC<{ progress: number; size?: 'sm' | 'md' | 'lg'; glow?: boolean }> = ({ progress, size = 'sm', glow = false }) => (
-    <div className={`w-full bg-white/[0.04] rounded-full overflow-hidden ${size === 'lg' ? 'h-3' : size === 'md' ? 'h-2' : 'h-1.5'}`}>
-        <motion.div
-            className={`h-full rounded-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 ${glow ? 'shadow-[0_0_12px_rgba(251,191,36,0.4)]' : ''}`}
-            initial={{ width: 0 }}
-            animate={{ width: `${Math.min(Math.round(progress * 100), 100)}%` }}
-            transition={{ duration: 0.6, ease: 'easeOut' }}
-        />
-    </div>
-);
-
-// ============================================================
-// Segment Row
-// ============================================================
-// Generate a stable color for a character name
-const getCharacterColor = (name: string | null): { hue: number; border: string; bg: string; text: string; badge: string; badgeBorder: string } => {
-    if (!name) {
-        // Narrator = amber
-        return {
-            hue: 38,
-            border: 'border-l-amber-500/40',
-            bg: 'bg-amber-500/[0.04]',
-            text: 'text-amber-400/80',
-            badge: 'bg-amber-500/10',
-            badgeBorder: 'border-amber-500/15',
-        };
-    }
-    // Hash character name to a hue (avoid yellows/ambers reserved for narrator)
-    let hash = 0;
-    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
-    const hue = ((Math.abs(hash) % 280) + 60) % 360; // skip 30-60 (amber range)
-    return {
-        hue,
-        border: '',  // will use inline style
-        bg: '',
-        text: '',
-        badge: '',
-        badgeBorder: '',
-    };
-};
-
-// Animation style options for image mode (applied via ffmpeg at export time)
-const ANIMATION_STYLES = [
-    { id: 'random', label: '🔀 Random', title: 'Randomly pick zoom in or out each time' },
-    { id: 'zoom_in', label: '🔍+ Zoom In', title: 'Slow Ken Burns zoom toward center' },
-    { id: 'zoom_out', label: '🔍− Zoom Out', title: 'Slow Ken Burns zoom back from center' },
-    { id: 'pan_left', label: '◀ Pan', title: 'Camera drifts left to right' },
-    { id: 'pan_right', label: '▶ Pan', title: 'Camera drifts right to left' },
-    { id: 'pan_up', label: '⬆ Pan Up', title: 'Camera drifts upward' },
-    { id: 'static', label: '☐ Static', title: 'No camera movement' },
-];
-
-// ============================================================
-// Visual Settings Popover
-// ============================================================
-const RESOLUTION_PRESETS = [
-    { label: '512×512', w: 512, h: 512 },
-    { label: '768×512', w: 768, h: 512 },
-    { label: '1024×576', w: 1024, h: 576 },
-    { label: '1920×1080', w: 1920, h: 1080 },
-];
-
-// Benchmark: ~49s for 25 frames at 768×512 on RTX 5090 ≈ 2s/frame
-// Image: ~15s, Scene image (FaceID): ~25s, Scene video: ~25s + video time
-const estimateTime = (mode: string, frames: number, w: number, h: number): string => {
-    if (mode === 'image') return '~15s';
-    if (mode === 'scene_image') return '~25s';
-    if (mode === 'scene_video') {
-        const pixelFactor = (w * h) / (768 * 512);
-        const secs = Math.round(25 + frames * 2.0 * pixelFactor);
-        return secs < 60 ? `~${secs}s` : `~${Math.round(secs / 60)}m ${secs % 60}s`;
-    }
-    // video and ref_video
-    const pixelFactor = (w * h) / (768 * 512);
-    const secs = Math.round(frames * 2.0 * pixelFactor);
-    return secs < 60 ? `~${secs}s` : `~${Math.round(secs / 60)}m ${secs % 60}s`;
-};
-
-type VisualMode = 'image' | 'video' | 'scene_image' | 'ref_video' | 'scene_video';
-
-const VISUAL_MODES: { id: VisualMode; label: string; desc: string; icon: 'image' | 'video'; needsRef: boolean }[] = [
-    { id: 'image', label: 'Image', desc: 'Text → image', icon: 'image', needsRef: false },
-    { id: 'video', label: 'Video', desc: 'Text → video (LTX-2)', icon: 'video', needsRef: false },
-    { id: 'scene_image', label: 'FaceID Image', desc: 'Portrait → character-consistent scene', icon: 'image', needsRef: true },
-    { id: 'ref_video', label: 'Ref Video', desc: 'Image ref → guided video (LTX I2V)', icon: 'video', needsRef: true },
-    { id: 'scene_video', label: 'FaceID Video', desc: 'Portrait → scene → animate (2-stage)', icon: 'video', needsRef: true },
-];
+// ── Extracted modules ───────────────────────────────────────────────────
+import { glass, glassHover, cardStyle, inputStyle, selectStyle, btnPrimary, btnGhost } from './designTokens';
+import { ANIMATION_STYLES, RESOLUTION_PRESETS, VISUAL_MODES, estimateTime, getCharacterColor, isBrowserVideo } from './utils';
+import type { VisualMode } from './utils';
+import { SidebarSection, StatusBadge, ProgressBar } from './SharedComponents';
 
 const VisualSettingsPopover: React.FC<{
     segment: SegmentResponse;
@@ -765,7 +603,9 @@ const SegmentRow: React.FC<{
 const ChapterPlayer: React.FC<{
     chapter: ChapterResponse;
     projectId: string;
-}> = ({ chapter, projectId }) => {
+    visuals?: VisualAsset[];
+    onRequestPresentation?: () => void;
+}> = ({ chapter, projectId, visuals = [], onRequestPresentation }) => {
     const { setPlayingSegment, playingSegmentId } = useAudiobookStore();
     const audioRef = useRef<HTMLAudioElement>(null);
     const [playing, setPlaying] = useState(false);
@@ -833,6 +673,20 @@ const ChapterPlayer: React.FC<{
     return (
         <div className="px-5 py-3 border-t border-white/[0.04]">
             <audio ref={audioRef} onEnded={handleEnded} onError={() => { setPlaying(false); setPlayingSegment(null); }} />
+
+            {/* Visual player */}
+            {visuals.length > 0 && (
+                <div className="mb-3">
+                    <VisualPlayer
+                        currentSegment={playableSegments[currentIdx] || null}
+                        visuals={visuals}
+                        projectId={projectId}
+                        isPlaying={playing}
+                        duration={playableSegments[currentIdx]?.duration || 4}
+                        onRequestPresentation={onRequestPresentation}
+                    />
+                </div>
+            )}
 
             <div className="flex items-center gap-3">
                 {/* Play/pause */}
@@ -913,8 +767,9 @@ const ChapterSection: React.FC<{
     onGenerateChapter?: (idx: number) => void;
     generatingSegmentId?: string | null;
 }> = ({ chapter, projectId, voices, onGenerateChapter, generatingSegmentId }) => {
-    const { generateChapter, generateAllVisuals } = useAudiobookStore();
+    const { generateChapter, generateAllVisuals, currentProject } = useAudiobookStore();
     const [expanded, setExpanded] = useState(true);
+    const [showPresentation, setShowPresentation] = useState(false);
     const donePercent = Math.round(chapter.progress * 100);
 
     const handleGenerate = () => {
@@ -990,8 +845,25 @@ const ChapterSection: React.FC<{
                 </div>
             </button>
 
-            {/* Timeline player */}
-            <ChapterPlayer chapter={chapter} projectId={projectId} />
+            {/* Timeline player with visuals */}
+            <ChapterPlayer
+                chapter={chapter}
+                projectId={projectId}
+                visuals={currentProject?.visuals || []}
+                onRequestPresentation={() => setShowPresentation(true)}
+            />
+
+            {/* Presentation mode */}
+            <AnimatePresence>
+                {showPresentation && (
+                    <PresentationMode
+                        chapter={chapter}
+                        projectId={projectId}
+                        visuals={currentProject?.visuals || []}
+                        onClose={() => setShowPresentation(false)}
+                    />
+                )}
+            </AnimatePresence>
 
             {/* Segments */}
             <AnimatePresence>
@@ -1582,6 +1454,8 @@ function groupSegmentsByVisual(segments: SegmentResponse[]): VisualGroup[] {
     return groups;
 }
 
+
+
 const InlineVisualCard: React.FC<{
     visualId: string;
     projectId: string;
@@ -1595,7 +1469,7 @@ const InlineVisualCard: React.FC<{
     const {
         currentProject, updateVisualAsset, deleteVisualAsset,
         generateVisualAsset, generateVisualAssetPrompt, assignVisual, generating,
-        visualMode, visualSettings, setVisualSettings,
+        visualMode, visualSettings, setVisualSettings, visualProgress, selectCandidate,
     } = useAudiobookStore();
     const [editingPrompt, setEditingPrompt] = useState(false);
     const [promptText, setPromptText] = useState('');
@@ -1624,6 +1498,7 @@ const InlineVisualCard: React.FC<{
     );
     const [enableAudio, setEnableAudio] = useState(() => va?.gen_enable_audio || false);
     const [twoStage, setTwoStage] = useState(() => va?.gen_two_stage || false);
+    const [numCandidates, setNumCandidates] = useState(() => va?.gen_candidates || 1);
 
     if (!va) return null;
 
@@ -1650,45 +1525,154 @@ const InlineVisualCard: React.FC<{
         error: 'bg-red-500/15 text-red-400',
     };
 
-    const canExtend = nextSegmentId != null && !allSegments.find(s => s.id === nextSegmentId)?.visual_id;
+    const canExtend = nextSegmentId != null;
     const canShrink = segmentCount > 1;
     const handleExtend = () => { if (nextSegmentId) assignVisual(nextSegmentId, visualId); };
     const handleShrink = () => { assignVisual(lastSegmentId, null); };
 
-    const handleGenerateWithParams = () => {
-        setVisualSettings({ fps, width: res.w, height: res.h });
-        const params: VisualParams = {
-            mode: localMode,
-            frames, fps,
-            width: res.w, height: res.h,
-            ...(isImageMode ? { animation: animationStyle } : {}),
-            ...(isRefMode && refCharacter ? { ref_character: refCharacter } : {}),
-            ...(enableAudio ? { enable_audio: true } : {}),
-            ...(twoStage ? { two_stage: true } : {}),
-        };
-        generateVisualAsset(va.id, params);
+    const handleSaveAndExecute = async (action: 'params' | 'gen' | 'prompt') => {
+        // Auto-save edited prompt if needed before generating
+        if (editingPrompt) {
+            if (promptText !== va.scene_prompt) {
+                await updateVisualAsset(va.id, { scene_prompt: promptText });
+            }
+            setEditingPrompt(false);
+        }
+
+        if (action === 'prompt') {
+            generateVisualAssetPrompt(va.id);
+        } else if (action === 'gen') {
+            generateVisualAsset(va.id);
+        } else if (action === 'params') {
+            setVisualSettings({ fps, width: res.w, height: res.h });
+            const params: VisualParams = {
+                mode: localMode,
+                frames, fps,
+                width: res.w, height: res.h,
+                ...(isImageMode ? { animation: animationStyle } : {}),
+                ...(isRefMode && refCharacter ? { ref_character: refCharacter } : {}),
+                ...(enableAudio ? { enable_audio: true } : {}),
+                ...(twoStage ? { two_stage: true } : {}),
+                ...(numCandidates > 1 ? { candidates: numCandidates } : {}),
+            };
+            generateVisualAsset(va.id, params);
+        }
     };
 
     return (
         <div className="h-full flex flex-col rounded-xl overflow-hidden border border-white/[0.06] bg-white/[0.015]">
             {/* Thumbnail */}
-            {va.has_visual && (
-                <div key={`thumb-${va.id}-${va.visual_status}`} className="flex-shrink-0 border-b border-white/[0.06] max-h-[220px] overflow-hidden cursor-pointer" onClick={() => setShowPreview(true)}>
-                    {va.visual_type === 'video' ? (
-                        <video
-                            src={`${getVisualAssetFileUrl(projectId, va.id)}?t=${Date.now()}`}
-                            className="w-full h-full object-cover"
-                            autoPlay muted loop playsInline
-                        />
-                    ) : (
-                        <img
-                            src={`${getVisualAssetFileUrl(projectId, va.id)}?t=${Date.now()}`}
-                            alt=""
-                            className="w-full h-full object-cover"
-                        />
-                    )}
-                </div>
-            )}
+            {va.has_visual && (() => {
+                // Cache buster: combine visual_path + visual_status so the image
+                // re-fetches when generation completes (status transitions to 'done')
+                // even if the file path stays the same (same segment regenerated).
+                const cacheBuster = encodeURIComponent(`${va.visual_path || ''}_${va.visual_status}`);
+                return (
+                    <div key={`thumb-${va.id}-${cacheBuster}`} className="flex-shrink-0 border-b border-white/[0.06] max-h-[220px] overflow-hidden cursor-pointer" onClick={() => setShowPreview(true)}>
+                        {isBrowserVideo(va) ? (
+                            <video
+                                src={`${getVisualAssetFileUrl(projectId, va.id)}?t=${cacheBuster}`}
+                                className="w-full h-full object-cover"
+                                autoPlay muted loop playsInline
+                            />
+                        ) : (
+                            <img
+                                src={`${getVisualAssetFileUrl(projectId, va.id)}?t=${cacheBuster}`}
+                                alt=""
+                                className="w-full h-full object-cover"
+                            />
+                        )}
+                    </div>
+                );
+            })()}
+
+            {/* Candidate picker strip */}
+            {va.candidate_count > 1 && (() => {
+                const candidateUrls = Array.from({ length: va.candidate_count }, (_, i) =>
+                    getVisualCandidateUrl(projectId, va.id, i)
+                );
+                return (
+                    <div className="flex-shrink-0 border-b border-white/[0.06] bg-black/20 px-2 py-1.5">
+                        <div className="flex items-center gap-1 mb-1">
+                            <span className="text-[8px] font-medium text-white/30 uppercase tracking-wider">Candidates</span>
+                            <span className="text-[8px] text-white/20">{va.candidate_count} variants</span>
+                        </div>
+                        <div className="flex gap-1 overflow-x-auto scrollbar-thin pb-0.5">
+                            {candidateUrls.map((url, i) => (
+                                <button
+                                    key={i}
+                                    onClick={() => selectCandidate(va.id, i)}
+                                    className={`flex-shrink-0 relative rounded-md overflow-hidden border-2 transition-all ${va.selected_candidate === i
+                                        ? 'border-emerald-400/80 shadow-[0_0_8px_rgba(52,211,153,0.3)]'
+                                        : 'border-white/10 hover:border-white/30'
+                                        }`}
+                                    title={`Candidate ${i + 1}${va.selected_candidate === i ? ' (selected)' : ''}`}
+                                >
+                                    {isBrowserVideo(va) ? (
+                                        <video
+                                            src={`${url}?t=${Date.now()}`}
+                                            className="w-16 h-12 object-cover"
+                                            muted playsInline
+                                            onMouseEnter={(e) => (e.target as HTMLVideoElement).play()}
+                                            onMouseLeave={(e) => { const v = e.target as HTMLVideoElement; v.pause(); v.currentTime = 0; }}
+                                        />
+                                    ) : (
+                                        <img src={`${url}?t=${Date.now()}`} alt="" className="w-16 h-12 object-cover" />
+                                    )}
+                                    {va.selected_candidate === i && (
+                                        <div className="absolute top-0.5 right-0.5 w-3 h-3 rounded-full bg-emerald-500 flex items-center justify-center">
+                                            <Check size={7} className="text-white" />
+                                        </div>
+                                    )}
+                                    <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1 py-0.5 text-center">
+                                        <span className="text-[7px] text-white/70 font-mono">#{i + 1}</span>
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* Real-time visual generation progress overlay */}
+            {(() => {
+                // Match this card's segments to the visual progress
+                const segs = allSegments.filter(s => s.visual_id === visualId);
+                const isLiveGenerating = visualProgress && segs.some(s => s.id === visualProgress.segmentId) && visualProgress.status !== 'idle' && visualProgress.status !== 'done';
+                if (!isLiveGenerating || !visualProgress) return null;
+
+                const statusLabels: Record<string, string> = {
+                    prompt_generating: '🧠 Generating prompt…',
+                    prompt_done: '📝 Prompt ready',
+                    rendering: '🎨 Rendering…',
+                    progress: `🎨 Rendering (${visualProgress.step}/${visualProgress.totalSteps})`,
+                    error: `❌ ${visualProgress.error || 'Error'}`,
+                };
+                const label = statusLabels[visualProgress.status] || 'Processing…';
+                const pct = visualProgress.totalSteps > 0 ? (visualProgress.step / visualProgress.totalSteps) * 100 : 0;
+                const showBar = visualProgress.status === 'progress' && visualProgress.totalSteps > 0;
+
+                return (
+                    <div className="flex-shrink-0 px-3 py-2 border-b border-white/[0.06] bg-gradient-to-r from-violet-500/[0.06] to-indigo-500/[0.06]">
+                        <div className="flex items-center gap-2">
+                            {visualProgress.status !== 'error' && (
+                                <Loader2 size={12} className="text-violet-400 animate-spin flex-shrink-0" />
+                            )}
+                            <span className="text-[11px] text-white/60 font-medium truncate">{label}</span>
+                        </div>
+                        {showBar && (
+                            <div className="mt-1.5 w-full h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+                                <motion.div
+                                    className="h-full rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 shadow-[0_0_8px_rgba(139,92,246,0.4)]"
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${pct}%` }}
+                                    transition={{ duration: 0.3, ease: 'easeOut' }}
+                                />
+                            </div>
+                        )}
+                    </div>
+                );
+            })()}
 
             {/* Content */}
             <div className="flex-1 p-3 space-y-2.5 min-h-0 overflow-y-auto scrollbar-thin">
@@ -1700,7 +1684,14 @@ const InlineVisualCard: React.FC<{
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                         <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${statusColors[va.visual_status] || statusColors.none}`}>
-                            {isGenerating ? '⟳ gen…' : va.visual_status}
+                            {(() => {
+                                // Show live status from WS if this card is generating
+                                const segs = allSegments.filter(s => s.visual_id === visualId);
+                                const isLive = visualProgress && segs.some(s => s.id === visualProgress.segmentId) && visualProgress.status !== 'idle' && visualProgress.status !== 'done';
+                                if (isLive) return '⟳ generating';
+                                if (isGenerating) return '⟳ gen…';
+                                return va.visual_status;
+                            })()}
                         </span>
                         <button
                             onClick={() => setShowSettings(!showSettings)}
@@ -1929,6 +1920,21 @@ const InlineVisualCard: React.FC<{
                                 </div>
                             )}
 
+                            {/* Candidates slider (video modes only) */}
+                            {isVideoMode && (
+                                <div className="space-y-0.5">
+                                    <div className="flex items-center justify-between">
+                                        <label className="text-[8px] font-medium text-white/30 uppercase">Candidates</label>
+                                        <span className="text-[9px] text-white/40 font-mono">{numCandidates}</span>
+                                    </div>
+                                    <input type="range" min={1} max={5} step={1} value={numCandidates}
+                                        onChange={e => setNumCandidates(Number(e.target.value))}
+                                        className="w-full h-1 accent-violet-500 bg-white/10 rounded-full cursor-pointer"
+                                    />
+                                    <p className="text-[7px] text-white/20">Generate multiple variants with random seeds, then pick the best</p>
+                                </div>
+                            )}
+
                             {/* Time estimate + Generate */}
                             <div className="flex items-center justify-between gap-1 pt-1 border-t border-white/[0.04]">
                                 <div className="flex items-center gap-1 text-white/30">
@@ -1936,7 +1942,7 @@ const InlineVisualCard: React.FC<{
                                     <span className="text-[9px]">{estTime}</span>
                                 </div>
                                 <button
-                                    onClick={handleGenerateWithParams}
+                                    onClick={() => handleSaveAndExecute('params')}
                                     disabled={isGenerating || va.assigned_segments === 0}
                                     className="px-2.5 py-1 rounded-lg text-[9px] font-semibold bg-gradient-to-r from-emerald-500/80 to-teal-600/80 text-white shadow-sm hover:from-emerald-500 hover:to-teal-600 transition-all active:scale-[0.98] disabled:opacity-40 flex items-center gap-1"
                                 >
@@ -1952,7 +1958,7 @@ const InlineVisualCard: React.FC<{
                 {!showSettings && (
                     <div className="flex gap-0.5 flex-wrap">
                         <button
-                            onClick={() => generateVisualAssetPrompt(va.id)}
+                            onClick={() => handleSaveAndExecute('prompt')}
                             disabled={isPromptGenerating || va.assigned_segments === 0}
                             className="flex-1 px-1 py-1 rounded text-[8px] font-medium bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/15 text-amber-400 transition-all disabled:opacity-40 flex items-center justify-center gap-0.5"
                             title="Auto-generate scene prompt"
@@ -1961,13 +1967,30 @@ const InlineVisualCard: React.FC<{
                             Prompt
                         </button>
                         <button
-                            onClick={() => generateVisualAsset(va.id)}
+                            onClick={() => handleSaveAndExecute('gen')}
                             disabled={isGenerating || va.assigned_segments === 0}
                             className="flex-1 px-1 py-1 rounded text-[8px] font-medium bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/15 text-emerald-400 transition-all disabled:opacity-40 flex items-center justify-center gap-0.5"
                             title="Generate visual"
                         >
                             {isGenerating ? <Loader2 size={8} className="animate-spin" /> : <Image size={8} />}
                             Gen
+                        </button>
+                        {/* Extend / Shrink segment coverage */}
+                        <button
+                            onClick={handleExtend}
+                            disabled={!canExtend}
+                            className="px-1.5 py-1 rounded text-[8px] font-medium bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/15 text-blue-400 transition-all disabled:opacity-20 flex items-center justify-center gap-0.5"
+                            title={canExtend ? "Extend: assign next segment to this visual" : "Next segment already has a visual"}
+                        >
+                            <ChevronDown size={8} /> +
+                        </button>
+                        <button
+                            onClick={handleShrink}
+                            disabled={!canShrink}
+                            className="px-1.5 py-1 rounded text-[8px] font-medium bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/15 text-orange-400 transition-all disabled:opacity-20 flex items-center justify-center gap-0.5"
+                            title={canShrink ? "Shrink: unassign last segment from this visual" : "Only one segment assigned"}
+                        >
+                            <ChevronUp size={8} /> −
                         </button>
                         <button
                             onClick={() => { if (window.confirm('Delete visual?')) deleteVisualAsset(va.id); }}
@@ -2003,6 +2026,168 @@ const InlineVisualCard: React.FC<{
                     </div>
                 )}
             </div>
+
+            {/* Preview Modal — portalled to body to escape overflow-hidden + framer-motion stacking context */}
+            {showPreview && va.has_visual && ReactDOM.createPortal(
+                <AnimatePresence>
+                    <motion.div
+                        key={`preview-${va.id}`}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        onClick={() => setShowPreview(false)}
+                        className="fixed inset-0 z-[9999] flex bg-black/95 backdrop-blur-md"
+                    >
+                        {/* Main content area */}
+                        <div className="flex-1 flex items-center justify-center p-6 min-w-0" onClick={(e) => e.stopPropagation()}>
+                            {isBrowserVideo(va) ? (
+                                <video
+                                    src={`${getVisualAssetFileUrl(projectId, va.id)}?t=${Date.now()}`}
+                                    className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+                                    autoPlay controls loop
+                                />
+                            ) : (
+                                <img
+                                    src={`${getVisualAssetFileUrl(projectId, va.id)}?t=${Date.now()}`}
+                                    alt=""
+                                    className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+                                />
+                            )}
+                        </div>
+
+                        {/* Metadata sidebar */}
+                        <motion.div
+                            initial={{ x: 40, opacity: 0 }}
+                            animate={{ x: 0, opacity: 1 }}
+                            exit={{ x: 40, opacity: 0 }}
+                            transition={{ delay: 0.1 }}
+                            className="w-80 flex-shrink-0 bg-white/[0.03] border-l border-white/[0.06] p-5 overflow-y-auto flex flex-col gap-4"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            {/* Close button */}
+                            <div className="flex items-center justify-between">
+                                <span className="text-sm font-semibold text-white/80">{va.label || 'Visual Preview'}</span>
+                                <button
+                                    onClick={() => setShowPreview(false)}
+                                    className="text-white/40 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-all"
+                                >
+                                    <X size={16} />
+                                </button>
+                            </div>
+
+                            {/* Status */}
+                            <div className="flex items-center gap-2">
+                                <span className={`text-[10px] font-semibold px-2.5 py-1 rounded-full ${statusColors[va.visual_status] || statusColors.none}`}>
+                                    {va.visual_status}
+                                </span>
+                                <span className="text-[10px] text-white/25">
+                                    {va.visual_type || 'unknown'} • {va.visual_mode || 'default'}
+                                </span>
+                            </div>
+
+                            {/* Scene Prompt */}
+                            <div className="space-y-1.5">
+                                <div className="flex items-center gap-1.5 text-white/40">
+                                    <FileText size={11} />
+                                    <span className="text-[10px] font-semibold uppercase tracking-wider">Scene Prompt</span>
+                                </div>
+                                <div className="text-[11px] text-white/60 leading-relaxed bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2.5 max-h-40 overflow-y-auto scrollbar-thin">
+                                    {va.scene_prompt || 'No prompt'}
+                                </div>
+                            </div>
+
+                            {/* Generation Parameters */}
+                            <div className="space-y-1.5">
+                                <div className="flex items-center gap-1.5 text-white/40">
+                                    <Sliders size={11} />
+                                    <span className="text-[10px] font-semibold uppercase tracking-wider">Parameters</span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-1.5">
+                                    {va.gen_width && va.gen_height && (
+                                        <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5">
+                                            <div className="text-[8px] text-white/30 uppercase">Resolution</div>
+                                            <div className="text-[11px] text-white/60 font-mono">{va.gen_width}×{va.gen_height}</div>
+                                        </div>
+                                    )}
+                                    {va.gen_frames && (
+                                        <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5">
+                                            <div className="text-[8px] text-white/30 uppercase">Frames</div>
+                                            <div className="text-[11px] text-white/60 font-mono">{va.gen_frames}</div>
+                                        </div>
+                                    )}
+                                    {va.gen_fps && (
+                                        <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5">
+                                            <div className="text-[8px] text-white/30 uppercase">FPS</div>
+                                            <div className="text-[11px] text-white/60 font-mono">{va.gen_fps}</div>
+                                        </div>
+                                    )}
+                                    {va.animation_style && (
+                                        <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5">
+                                            <div className="text-[8px] text-white/30 uppercase">Animation</div>
+                                            <div className="text-[11px] text-white/60">{va.animation_style}</div>
+                                        </div>
+                                    )}
+                                    {va.video_fill_mode && (
+                                        <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5">
+                                            <div className="text-[8px] text-white/30 uppercase">Fill Mode</div>
+                                            <div className="text-[11px] text-white/60">{va.video_fill_mode}</div>
+                                        </div>
+                                    )}
+                                    <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5">
+                                        <div className="text-[8px] text-white/30 uppercase">Segments</div>
+                                        <div className="text-[11px] text-white/60 font-mono">{va.assigned_segments}</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Reference Character */}
+                            {va.ref_character && (
+                                <div className="space-y-1.5">
+                                    <div className="flex items-center gap-1.5 text-white/40">
+                                        <Users size={11} />
+                                        <span className="text-[10px] font-semibold uppercase tracking-wider">Reference Character</span>
+                                    </div>
+                                    <div className="flex items-center gap-2.5 bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2">
+                                        {currentProject?.characters?.find((c: any) => c.name === va.ref_character)?.portrait_path && (
+                                            <img
+                                                src={`${getPortraitUrl(projectId, va.ref_character)}?t=1`}
+                                                alt={va.ref_character}
+                                                className="w-10 h-10 rounded-lg object-cover border border-white/10"
+                                            />
+                                        )}
+                                        <span className="text-[11px] text-white/60 font-medium">{va.ref_character}</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Timestamp */}
+                            {va.created_at && (
+                                <div className="flex items-center gap-1.5 text-white/25 text-[10px]">
+                                    <Clock size={10} />
+                                    <span>{new Date(va.created_at).toLocaleString()}</span>
+                                </div>
+                            )}
+
+                            {/* Actions */}
+                            <div className="mt-auto pt-3 border-t border-white/[0.06] space-y-1.5">
+                                <button
+                                    onClick={() => { setShowPreview(false); setShowSettings(true); }}
+                                    className="w-full px-3 py-2 rounded-lg text-[11px] font-medium bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/15 text-violet-300 transition-all flex items-center justify-center gap-1.5"
+                                >
+                                    <Zap size={12} /> Regenerate
+                                </button>
+                                <button
+                                    onClick={() => { setShowPreview(false); setEditingPrompt(true); setPromptText(va.scene_prompt || ''); }}
+                                    className="w-full px-3 py-2 rounded-lg text-[11px] font-medium bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/15 text-amber-300 transition-all flex items-center justify-center gap-1.5"
+                                >
+                                    <Edit3 size={12} /> Edit Prompt
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                </AnimatePresence>,
+                document.body
+            )}
         </div>
     );
 };
@@ -2029,9 +2214,9 @@ const SegmentVisualGrid: React.FC<{
                 const nextGroupFirstSeg = gIdx < groups.length - 1 ? groups[gIdx + 1].segments[0] : null;
 
                 return (
-                    <div key={`g-${group.startIndex}`} className="flex gap-2 mb-1.5">
+                    <div key={`g-${group.startIndex}`} className="flex gap-4 mb-1.5 w-full">
                         {/* Left track: segments */}
-                        <div className="flex-1 min-w-0 space-y-1.5">
+                        <div className="flex-1 min-w-[300px] space-y-1.5">
                             {group.segments.map((seg, i) => (
                                 <div key={seg.id} className={generatingSegmentId === seg.id ? 'ring-1 ring-amber-500/30 rounded-xl' : ''}>
                                     <SegmentRow segment={seg} projectId={projectId} voices={voices} index={group.startIndex + i} />
@@ -2207,7 +2392,7 @@ const VisualsColumn: React.FC<{ projectId: string; visuals: VisualAsset[]; chara
                                             {/* Large thumbnail */}
                                             {va.has_visual && (
                                                 <div className="rounded-lg overflow-hidden border border-white/[0.06]">
-                                                    {va.visual_type === 'video' ? (
+                                                    {isBrowserVideo(va) ? (
                                                         <video
                                                             src={`${getVisualAssetFileUrl(projectId, va.id)}?t=${Date.now()}`}
                                                             className="w-full h-auto"

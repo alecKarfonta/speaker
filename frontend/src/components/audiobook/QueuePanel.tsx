@@ -161,7 +161,7 @@ const QueuePanel: React.FC = () => {
     // Poll every 2s
     useEffect(() => {
         fetchQueueStatus(); // immediate fetch
-        intervalRef.current = setInterval(fetchQueueStatus, 2000);
+        intervalRef.current = setInterval(fetchQueueStatus, 5000);
         return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
     }, [fetchQueueStatus]);
 

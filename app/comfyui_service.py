@@ -10,8 +10,9 @@ import uuid
 import random
 import logging
 import asyncio
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Callable, Awaitable
 import httpx
+import websockets
 
 logger = logging.getLogger(__name__)
 
@@ -165,8 +166,8 @@ async def free_vram() -> None:
         pass  # Non-critical — generation may still succeed
 
 
-async def queue_prompt(workflow: Dict[str, Any]) -> str:
-    """Queue a workflow on ComfyUI and return the prompt_id."""
+async def queue_prompt(workflow: Dict[str, Any]) -> Tuple[str, str]:
+    """Queue a workflow on ComfyUI and return (prompt_id, client_id)."""
     # Free VRAM from previous runs so models can load cleanly
     await free_vram()
 
@@ -183,11 +184,11 @@ async def queue_prompt(workflow: Dict[str, Any]) -> str:
         if not prompt_id:
             raise RuntimeError(f"ComfyUI did not return a prompt_id: {data}")
         logger.info(f"Queued ComfyUI prompt {prompt_id}")
-        return prompt_id
+        return prompt_id, client_id
 
 
 async def poll_completion(prompt_id: str, timeout: int = 300, interval: float = 2.0) -> Dict[str, Any]:
-    """Poll ComfyUI /history/{prompt_id} until the job completes."""
+    """Poll ComfyUI /history/{prompt_id} until the job completes (REST fallback)."""
     deadline = time.time() + timeout
     async with httpx.AsyncClient(timeout=15) as client:
         while time.time() < deadline:
@@ -198,6 +199,83 @@ async def poll_completion(prompt_id: str, timeout: int = 300, interval: float = 
                     return data[prompt_id]
             await asyncio.sleep(interval)
     raise TimeoutError(f"ComfyUI job {prompt_id} did not complete within {timeout}s")
+
+
+# Progress callback type: async fn(step: int, total_steps: int, node_id: str)
+ProgressCallback = Callable[[int, int, str], Awaitable[None]]
+
+
+async def poll_completion_with_progress(
+    prompt_id: str,
+    client_id: str,
+    progress_callback: Optional[ProgressCallback] = None,
+    timeout: int = 900,
+) -> Dict[str, Any]:
+    """Track ComfyUI job via its native WebSocket for real-time sampler progress.
+
+    ComfyUI streams events on ws://<host>/ws?clientId=<id>:
+      - {type: 'progress', data: {value: 3, max: 20, prompt_id, node}}
+      - {type: 'executing', data: {node: '23', prompt_id}}
+      - {type: 'executed', data: {node: '39', prompt_id, output: {...}}}
+      - {type: 'execution_cached', data: {nodes: [...], prompt_id}}
+
+    Falls back to REST polling if the WS connection fails.
+    """
+    # Derive WS URL from the API URL
+    ws_url = COMFYUI_API_URL.replace("http://", "ws://").replace("https://", "wss://")
+    ws_url = f"{ws_url}/ws?clientId={client_id}"
+
+    try:
+        async with websockets.connect(ws_url, close_timeout=5) as ws:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=min(30, deadline - time.time()))
+                except asyncio.TimeoutError:
+                    continue
+
+                try:
+                    msg = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue  # Binary or malformed
+
+                msg_type = msg.get("type", "")
+                data = msg.get("data", {})
+                msg_prompt_id = data.get("prompt_id", "")
+
+                # Only process messages for our prompt
+                if msg_prompt_id and msg_prompt_id != prompt_id:
+                    continue
+
+                if msg_type == "progress" and progress_callback:
+                    step = data.get("value", 0)
+                    total = data.get("max", 0)
+                    node = data.get("node", "")
+                    try:
+                        await progress_callback(step, total, node)
+                    except Exception:
+                        pass
+
+                elif msg_type == "executing":
+                    node = data.get("node")
+                    if node is None:
+                        # node=None means execution finished
+                        logger.info(f"ComfyUI WS: execution finished for {prompt_id}")
+                        # Fetch result from history
+                        async with httpx.AsyncClient(timeout=15) as client:
+                            resp = await client.get(f"{COMFYUI_API_URL}/history/{prompt_id}")
+                            if resp.status_code == 200:
+                                history = resp.json()
+                                if prompt_id in history:
+                                    return history[prompt_id]
+                        # If history not ready yet, poll briefly
+                        return await poll_completion(prompt_id, timeout=30, interval=1.0)
+
+            raise TimeoutError(f"ComfyUI job {prompt_id} did not complete within {timeout}s")
+
+    except (OSError, websockets.exceptions.WebSocketException) as e:
+        logger.warning(f"ComfyUI WS connection failed ({e}), falling back to REST polling")
+        return await poll_completion(prompt_id, timeout=timeout)
 
 
 async def download_output(prompt_result: Dict[str, Any], output_dir: str, prefix: str = "visual") -> Optional[str]:
@@ -250,8 +328,8 @@ async def generate_image(prompt: str, output_dir: str, prefix: str = "visual",
     workflow = _inject_params(workflow, prompt, base_w, base_h, seed,
                               output_width=out_w, output_height=out_h)
 
-    prompt_id = await queue_prompt(workflow)
-    result = await poll_completion(prompt_id)
+    prompt_id, client_id = await queue_prompt(workflow)
+    result = await poll_completion_with_progress(prompt_id, client_id)
     path = await download_output(result, output_dir, prefix)
     if not path:
         raise RuntimeError(f"ComfyUI image generation produced no output for prompt_id={prompt_id}")
@@ -264,9 +342,9 @@ def _build_ltx23_workflow(
     enable_audio: bool = False,
     two_stage: bool = False,
     negative: str = "blurry, low quality, watermark, overlay, titles, has blurbox",
-    cfg: float = 4.0,
-    steps: int = 20,
-    lora_strength: float = 0.6,
+    cfg: float = 2.0,
+    steps: int = 15,
+    lora_strength: float = 0.5,
     upscale_cfg: float = 3.0,
 ) -> Dict[str, Any]:
     """Build a ComfyUI workflow dict for LTX-2.3 (text-to-video or image-to-video).
@@ -311,8 +389,8 @@ def _build_ltx23_workflow(
                   "inputs": {"images": ["6", 0],
                              "longer_edge": max(width, height)}},
             "8": {"class_type": "LTXVPreprocess",
-                  "inputs": {"image": ["7", 0], "img_compression": 33}},
-            "14": {"class_type": "LTXVImgToVideoInplace",
+                  "inputs": {"image": ["7", 0], "img_compression": 18}},
+            "14": {"class_type": "LTXVImgToVideoConditionOnly",
                    "inputs": {"vae": ["1", 2], "image": ["8", 0],
                               "latent": ["13", 0],
                               "strength": 1.0, "bypass": False}},
@@ -392,7 +470,7 @@ def _build_ltx23_workflow(
         upscaled_video_ref = ["27", 0]
         if image_path:
             prompt["28"] = {
-                "class_type": "LTXVImgToVideoInplace",
+                "class_type": "LTXVImgToVideoConditionOnly",
                 "inputs": {"vae": ["1", 2], "image": ["8", 0],
                            "latent": ["27", 0],
                            "strength": 1.0, "bypass": False}
@@ -501,8 +579,8 @@ async def generate_video(prompt: str, output_dir: str, prefix: str = "visual",
         enable_audio=enable_audio, two_stage=two_stage,
     )
 
-    prompt_id = await queue_prompt(workflow)
-    result = await poll_completion(prompt_id, timeout=900)
+    prompt_id, client_id = await queue_prompt(workflow)
+    result = await poll_completion_with_progress(prompt_id, client_id, timeout=900)
     path = await download_output(result, output_dir, prefix)
     if not path:
         raise RuntimeError(f"ComfyUI video generation produced no output for prompt_id={prompt_id}")
@@ -527,6 +605,16 @@ async def generate_visual(prompt: str, output_dir: str, prefix: str = "visual",
     Returns (path, visual_type) where visual_type is 'image' or 'video'.
     """
     visual_mode = mode or COMFYUI_VISUAL_MODE
+
+    # Auto-upgrade: if a reference image is provided but the mode doesn't use it,
+    # switch to the ref-aware variant so the portrait actually conditions the output.
+    if ref_image and visual_mode == "video":
+        logger.info(f"Auto-upgrading mode 'video' → 'ref_video' (ref_image provided)")
+        visual_mode = "ref_video"
+    elif ref_image and visual_mode == "image":
+        logger.info(f"Auto-upgrading mode 'image' → 'scene_image' (ref_image provided)")
+        visual_mode = "scene_image"
+
 
     if visual_mode == "scene_video":
         # Two-stage: FaceID scene image → animate with LTX-2.3
@@ -612,7 +700,7 @@ async def generate_video_with_ref(
     two_stage: bool = False,
 ) -> str:
     """
-    Generate a video guided by a reference image using LTX-2.3 LTXVImgToVideoInplace.
+    Generate a video guided by a reference image using LTX-2.3 LTXVImgToVideoConditionOnly.
     ref_image_comfyui is the filename already uploaded to ComfyUI.
     """
     w = width or min(COMFYUI_IMAGE_WIDTH, 768)
@@ -640,8 +728,8 @@ async def generate_video_with_ref(
         enable_audio=enable_audio, two_stage=two_stage,
     )
 
-    prompt_id = await queue_prompt(workflow)
-    result = await poll_completion(prompt_id, timeout=900)
+    prompt_id, client_id = await queue_prompt(workflow)
+    result = await poll_completion_with_progress(prompt_id, client_id, timeout=900)
     path = await download_output(result, output_dir, prefix)
     if not path:
         raise RuntimeError(f"ComfyUI ref video generation produced no output for prompt_id={prompt_id}")
@@ -680,8 +768,8 @@ async def generate_scene_image(
         ref_image=ref_image_comfyui,
     )
 
-    prompt_id = await queue_prompt(workflow)
-    result = await poll_completion(prompt_id, timeout=300)
+    prompt_id, client_id = await queue_prompt(workflow)
+    result = await poll_completion_with_progress(prompt_id, client_id, timeout=300)
     path = await download_output(result, output_dir, prefix)
     if not path:
         raise RuntimeError(f"ComfyUI scene image generation produced no output for prompt_id={prompt_id}")
