@@ -19,6 +19,9 @@ from typing import Iterator, Optional
 
 import numpy as np
 import torch
+import torch._dynamo
+torch._dynamo.config.cache_size_limit = 64  # Match official Gradio app (prevent recompilation)
+torch.set_float32_matmul_precision('high')  # Enable TF32 tensor cores for matmul
 import torchaudio
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -293,10 +296,15 @@ def load_realtime_model():
     rt_tokenizer = AutoTokenizer.from_pretrained(RT_MODEL_ID)
     rt_processor = MossTTSRealtimeProcessor(tokenizer=rt_tokenizer)
 
-    logger.info(f"Loading MOSS-TTS-Realtime model from {RT_MODEL_ID} (attn={ATTN_IMPL}) ...")
+    # Use SDPA for the realtime model — this enables:
+    #   1. StaticCache for the local transformer (fixed 16-slot, compilable)
+    #   2. torch.compile(fullgraph=True) on the local transformer (16x codebook passes)
+    # The upstream code specifically disables compile with FA2 (DynamicCache).
+    rt_attn = "sdpa"
+    logger.info(f"Loading MOSS-TTS-Realtime model from {RT_MODEL_ID} (attn={rt_attn}) ...")
     rt_model = MossTTSRealtime.from_pretrained(
         RT_MODEL_ID,
-        attn_implementation=ATTN_IMPL,
+        attn_implementation=rt_attn,
         torch_dtype=DTYPE,
     ).to(DEVICE)
     rt_model.eval()
@@ -852,25 +860,20 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
             # Batch small numpy chunks to reduce queue overhead
             MIN_SAMPLES = int(rt_sample_rate * 0.3)  # ~0.3s of audio
 
-            # Force-reset any leftover codec streaming state from prior requests
-            # (the codec's StreamingModule sets _streaming_state on sub-modules
-            # which doesn't get cleared if the thread exits abnormally)
-            if hasattr(rt_codec, 'is_streaming') and rt_codec.is_streaming():
-                logger.warning("[Stream-RT] Force-resetting stuck codec streaming state")
-                try:
-                    rt_codec._stop_streaming()
-                except Exception:
-                    # Fallback: manually clear all _streaming_state
-                    for name, module in rt_codec.named_modules():
-                        if hasattr(module, '_streaming_state') and module._streaming_state is not None:
-                            module._streaming_state = None
-
             def _run_stream():
                 """Synchronous generator: push text → audio chunks.
                 Matches the official Gradio app approach: pre-tokenize text,
                 push 12 tokens at a time via push_text_tokens().
                 """
                 TEXT_CHUNK_TOKENS = 12  # Official Gradio default
+
+                # Hard-reset ALL codec streaming state right before entering
+                # the streaming context. This runs in the producer thread,
+                # which is inside the inference_semaphore, so there's no
+                # concurrent streaming context to worry about.
+                for _name, module in rt_codec.named_modules():
+                    if hasattr(module, '_streaming_state'):
+                        module._streaming_state = None
 
                 with torch.inference_mode():
                     with rt_codec.streaming(batch_size=1):
@@ -956,6 +959,9 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                     for wav_np in _run_stream():
                         q.put(wav_np)
                 except Exception as e:
+                    import traceback
+                    logger.error(f"[Stream-RT] Producer error: {type(e).__name__}: {e}")
+                    logger.error(f"[Stream-RT] Traceback: {traceback.format_exc()}")
                     error_holder[0] = e
                 finally:
                     q.put(None)  # sentinel
@@ -965,7 +971,8 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                 thread.start()
 
                 while True:
-                    wav_np = await asyncio.to_thread(q.get, True, 30.0)
+                    # 120s timeout to accommodate torch.compile first-run (~30-60s)
+                    wav_np = await asyncio.to_thread(q.get, True, 120.0)
                     if wav_np is None:
                         break
 
@@ -990,9 +997,10 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
 
                     chunk_idx += 1
 
-                thread.join(timeout=10.0)
-                if thread.is_alive():
-                    logger.warning("[Stream-RT] Producer thread still alive after join! Codec may be stuck.")
+                # Wait indefinitely for producer thread to fully exit
+                # (including the `with rt_codec.streaming()` __exit__ cleanup).
+                # The inference_semaphore guarantees only one request at a time.
+                thread.join()
 
             if error_holder[0]:
                 logger.error(f"[Stream-RT] Error: {error_holder[0]}")
