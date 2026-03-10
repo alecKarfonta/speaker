@@ -72,6 +72,12 @@ tts_service: TTSBackendBase = TTSBackendFactory.create_backend(
     config=backend_config
 )
 
+# Load available voices into the TTS service
+try:
+    tts_service.load_voices()
+except Exception as e:
+    logger.error(f"Failed to load voices: {e}")
+
 # Inject TTS service into audiobook router
 set_audiobook_tts(tts_service)
 set_audiobook_ws_tts(tts_service)
