@@ -64,7 +64,8 @@ def _resolve_attn_implementation() -> str:
         and DTYPE in {torch.float16, torch.bfloat16}
     ):
         major, _ = torch.cuda.get_device_capability()
-        if major >= 8:
+        # FA2 doesn't support SM 120 (Blackwell consumer: RTX 5070/5080/5090)
+        if major >= 8 and major < 12:
             return "flash_attention_2"
     if DEVICE == "cuda":
         return "sdpa"
@@ -337,12 +338,117 @@ def load_realtime_model():
     _log_gpu_memory()
 
 
+def _warmup_realtime():
+    """Run a short dummy generation to trigger all torch.compile + PTX JIT paths."""
+    import sys
+    rt_pkg_dir = "/app/MOSS-TTS/moss_tts_realtime"
+    if rt_pkg_dir not in sys.path:
+        sys.path.insert(0, rt_pkg_dir)
+    from mossttsrealtime.streaming_mossttsrealtime import (
+        MossTTSRealtimeStreamingSession,
+        AudioStreamDecoder,
+    )
+
+    device = torch.device(DEVICE)
+
+    # Generate a dummy voice prompt (1s sine wave) so the model has valid
+    # audio prompt tokens — without these, embedding lookups go OOB
+    with torch.inference_mode():
+        t = torch.linspace(0, 1.0, rt_sample_rate, device=device)
+        dummy_wav = (0.3 * torch.sin(2 * 3.14159 * 440 * t)).unsqueeze(0).unsqueeze(0)
+        encode_result = rt_codec.encode(dummy_wav, chunk_duration=0.24)
+        prompt_tokens = encode_result["audio_codes"].cpu().numpy().squeeze(1)
+
+    session = MossTTSRealtimeStreamingSession(
+        rt_inferencer, rt_processor,
+        codec=rt_codec, codec_sample_rate=rt_sample_rate,
+        codec_encode_kwargs={"chunk_duration": 0.24},
+        prefill_text_len=rt_processor.delay_tokens_len,
+        temperature=0.8, top_p=0.6, top_k=30,
+        do_sample=True, repetition_penalty=1.1, repetition_window=50,
+    )
+    session.set_voice_prompt_tokens(prompt_tokens)
+
+    system_prompt = rt_processor.make_ensemble(prompt_tokens)
+    assistant_prefix_ids = rt_tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n")
+    assistant_prefix = np.full(
+        (len(assistant_prefix_ids), system_prompt.shape[1]),
+        fill_value=rt_processor.audio_channel_pad, dtype=np.int64,
+    )
+    assistant_prefix[:, 0] = assistant_prefix_ids
+    input_ids = np.concatenate([system_prompt, assistant_prefix], axis=0)
+
+    rt_inferencer.reset_generation_state(keep_cache=False)
+    session.reset_turn(input_ids=input_ids, include_system_prompt=False, reset_cache=True)
+
+    decoder = AudioStreamDecoder(
+        rt_codec, chunk_frames=12, overlap_frames=0,
+        decode_kwargs={"chunk_duration": -1}, device=device,
+    )
+
+    # Reset codec streaming state
+    for _name, module in rt_codec.named_modules():
+        if hasattr(module, '_streaming_state'):
+            module._streaming_state = None
+
+    with torch.inference_mode():
+        with rt_codec.streaming(batch_size=1):
+            # Push warmup text through full pipeline
+            warmup_tokens = rt_tokenizer.encode("Hello.", add_special_tokens=False)
+            for tok in warmup_tokens:
+                frames = session.push_text_tokens([tok])
+                for frame in frames:
+                    tokens = frame
+                    if tokens.dim() == 3:
+                        tokens = tokens[0]
+                    if tokens.numel() > 0:
+                        decoder.push_tokens(tokens.detach())
+                        for _ in decoder.audio_chunks():
+                            pass  # discard warmup audio
+
+            # End text and drain remaining tokens
+            frames = session.end_text()
+            for frame in frames:
+                tokens = frame
+                if tokens.dim() == 3:
+                    tokens = tokens[0]
+                if tokens.numel() > 0:
+                    decoder.push_tokens(tokens.detach())
+                    for _ in decoder.audio_chunks():
+                        pass
+
+            while True:
+                frames = session.drain(max_steps=1)
+                if not frames:
+                    break
+                for frame in frames:
+                    tokens = frame
+                    if tokens.dim() == 3:
+                        tokens = tokens[0]
+                    if tokens.numel() > 0:
+                        decoder.push_tokens(tokens.detach())
+                        for _ in decoder.audio_chunks():
+                            pass
+                if session.inferencer.is_finished:
+                    break
+
+            decoder.flush()
+
+    # Ensure all CUDA ops complete
+    torch.cuda.synchronize()
+
+
 @app.on_event("startup")
 async def startup_event():
     if ENABLE_REALTIME:
         # Load ONLY the realtime model (base model won't fit alongside)
         try:
             load_realtime_model()
+            # Note: we rely on TORCHINDUCTOR_FX_GRAPH_CACHE=1 for persistent
+            # compile caching. The first request after a cold start will compile
+            # (~40s), but subsequent restarts use the cache (~3s warmup).
+            # Startup warmup was removed because CUDA device-side asserts in
+            # the warmup path permanently corrupt the CUDA context.
         except Exception as e:
             logger.error(f"Failed to load MOSS-TTS-Realtime: {e}", exc_info=True)
             logger.warning("Falling back to base MOSS-TTS model")
