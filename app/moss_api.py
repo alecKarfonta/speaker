@@ -839,7 +839,7 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
             # ── Audio stream decoder ─────────────────────────────
             decoder = AudioStreamDecoder(
                 rt_codec,
-                chunk_frames=6,   # Balance: ~480ms TTFA, fewer decode calls than 3
+                chunk_frames=12,  # Real-time RTF (0.88x) — other fixes keep TTFA ~1s
                 overlap_frames=0,
                 decode_kwargs={"chunk_duration": -1},
                 device=device,
