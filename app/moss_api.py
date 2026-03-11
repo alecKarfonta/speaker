@@ -93,12 +93,37 @@ voice_gen_sample_rate = None
 RT_MODEL_ID = os.environ.get("MOSS_RT_MODEL_ID", "OpenMOSS-Team/MOSS-TTS-Realtime")
 RT_CODEC_ID = os.environ.get("MOSS_RT_CODEC_ID", "OpenMOSS-Team/MOSS-Audio-Tokenizer")
 ENABLE_REALTIME = os.environ.get("MOSS_ENABLE_REALTIME", "true").lower() == "true"
+# Comma-separated GPU indices for realtime workers, e.g. "0,1"
+RT_DEVICES = os.environ.get("MOSS_RT_DEVICES", "0").split(",")
+RT_SAMPLE_RATE = 24000
+
+# Worker pool for multi-GPU concurrent streaming
+from dataclasses import dataclass, field
+from typing import Any
+
+@dataclass
+class RTWorker:
+    """Holds per-GPU model state for concurrent streaming."""
+    device: str              # e.g. "cuda:0"
+    model: Any = None
+    tokenizer: Any = None
+    processor: Any = None
+    inferencer: Any = None
+    codec: Any = None
+    sample_rate: int = 24000
+    semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
+    prompt_cache: dict = field(default_factory=dict)
+
+rt_workers: list[RTWorker] = []
+
+# Backward compat: these point to the first worker (for non-streaming endpoints)
+# They get set after loading.
 rt_model = None
 rt_tokenizer = None
 rt_processor = None
 rt_inferencer = None
 rt_codec = None
-rt_sample_rate = 24000
+rt_sample_rate = RT_SAMPLE_RATE
 
 
 def load_model():
@@ -290,11 +315,9 @@ app.add_middleware(
 # This container only handles TTS inference — no audiobook router needed.
 
 
-def load_realtime_model():
-    """Load MOSS-TTS-Realtime model + codec for true token-level streaming."""
-    global rt_model, rt_tokenizer, rt_processor, rt_inferencer, rt_codec
+def _load_rt_worker(device: str) -> RTWorker:
+    """Load MOSS-TTS-Realtime model + codec on a specific GPU device."""
     import sys
-    # Ensure the mossttsrealtime package is importable
     rt_pkg_dir = "/app/MOSS-TTS/moss_tts_realtime"
     if rt_pkg_dir not in sys.path:
         sys.path.insert(0, rt_pkg_dir)
@@ -306,133 +329,136 @@ def load_realtime_model():
     )
     from transformers import AutoTokenizer, AutoModel
 
-    logger.info(f"Loading MOSS-TTS-Realtime tokenizer from {RT_MODEL_ID} ...")
-    rt_tokenizer = AutoTokenizer.from_pretrained(RT_MODEL_ID)
-    rt_processor = MossTTSRealtimeProcessor(tokenizer=rt_tokenizer)
+    worker = RTWorker(device=device, sample_rate=RT_SAMPLE_RATE)
 
-    # Use SDPA for the realtime model — this enables:
-    #   1. StaticCache for the local transformer (fixed 16-slot, compilable)
-    #   2. torch.compile(fullgraph=True) on the local transformer (16x codebook passes)
-    # The upstream code specifically disables compile with FA2 (DynamicCache).
+    logger.info(f"[{device}] Loading MOSS-TTS-Realtime tokenizer from {RT_MODEL_ID} ...")
+    worker.tokenizer = AutoTokenizer.from_pretrained(RT_MODEL_ID)
+    worker.processor = MossTTSRealtimeProcessor(tokenizer=worker.tokenizer)
+
     rt_attn = "sdpa"
-    logger.info(f"Loading MOSS-TTS-Realtime model from {RT_MODEL_ID} (attn={rt_attn}) ...")
-    rt_model = MossTTSRealtime.from_pretrained(
+    logger.info(f"[{device}] Loading MOSS-TTS-Realtime model from {RT_MODEL_ID} (attn={rt_attn}) ...")
+    worker.model = MossTTSRealtime.from_pretrained(
         RT_MODEL_ID,
         attn_implementation=rt_attn,
         torch_dtype=DTYPE,
-    ).to(DEVICE)
-    rt_model.eval()
+    ).to(device)
+    worker.model.eval()
 
-    logger.info(f"Loading audio codec from {RT_CODEC_ID} ...")
-    rt_codec = AutoModel.from_pretrained(RT_CODEC_ID, trust_remote_code=True).eval()
-    rt_codec = rt_codec.to(DEVICE)
+    logger.info(f"[{device}] Loading audio codec from {RT_CODEC_ID} ...")
+    worker.codec = AutoModel.from_pretrained(RT_CODEC_ID, trust_remote_code=True).eval()
+    worker.codec = worker.codec.to(device)
 
-    # Streaming version of inferencer — no codec args (codec is passed to session)
-    rt_inferencer = StreamingInferencer(
-        rt_model, rt_tokenizer, max_length=5000,
+    worker.inferencer = StreamingInferencer(
+        worker.model, worker.tokenizer, max_length=5000,
     )
-    # Note: upstream auto-compiles the local transformer with SDPA + StaticCache
-    # (mode="default", fullgraph=True). max-autotune modes are incompatible.
 
-    logger.info("MOSS-TTS-Realtime loaded successfully")
+    logger.info(f"[{device}] MOSS-TTS-Realtime loaded successfully")
     _log_gpu_memory()
+    return worker
 
 
-def _warmup_realtime():
-    """Run a short dummy generation to trigger all torch.compile + PTX JIT paths."""
+def load_realtime_models():
+    """Load MOSS-TTS-Realtime on all configured GPUs."""
+    global rt_workers, rt_model, rt_tokenizer, rt_processor, rt_inferencer, rt_codec, rt_sample_rate
+
+    devices = [f"cuda:{idx.strip()}" for idx in RT_DEVICES if idx.strip()]
+    if not devices:
+        devices = ["cuda:0"]
+
+    logger.info(f"Loading MOSS-TTS-Realtime on {len(devices)} GPU(s): {devices}")
+
+    for dev in devices:
+        try:
+            worker = _load_rt_worker(dev)
+            rt_workers.append(worker)
+            logger.info(f"[{dev}] Worker ready")
+        except Exception as e:
+            logger.error(f"[{dev}] Failed to load worker: {e}", exc_info=True)
+
+    if not rt_workers:
+        raise RuntimeError("No RT workers loaded successfully")
+
+    # Backward compat: point globals to first worker
+    w0 = rt_workers[0]
+    rt_model = w0.model
+    rt_tokenizer = w0.tokenizer
+    rt_processor = w0.processor
+    rt_inferencer = w0.inferencer
+    rt_codec = w0.codec
+    rt_sample_rate = w0.sample_rate
+
+    logger.info(f"{len(rt_workers)} RT worker(s) ready for concurrent streaming")
+
+
+def _warmup_worker(worker: RTWorker):
+    """Run model inference to trigger torch.compile + PTX JIT on local_head.
+    
+    We intentionally skip codec decoding — the CUDA device-side assert
+    (indexSelectSmallIndex OOB) happens in codec.decode(), not in the model.
+    torch.compile only wraps model.local_head, so we just need to run
+    push_text_tokens/end_text/drain to trigger compilation.
+    """
     import sys
     rt_pkg_dir = "/app/MOSS-TTS/moss_tts_realtime"
     if rt_pkg_dir not in sys.path:
         sys.path.insert(0, rt_pkg_dir)
+
     from mossttsrealtime.streaming_mossttsrealtime import (
         MossTTSRealtimeStreamingSession,
-        AudioStreamDecoder,
     )
 
-    device = torch.device(DEVICE)
+    device = torch.device(worker.device)
 
-    # Generate a dummy voice prompt (1s sine wave) so the model has valid
-    # audio prompt tokens — without these, embedding lookups go OOB
+    # Generate a dummy voice prompt (1s sine wave)
     with torch.inference_mode():
-        t = torch.linspace(0, 1.0, rt_sample_rate, device=device)
+        t = torch.linspace(0, 1.0, worker.sample_rate, device=device)
         dummy_wav = (0.3 * torch.sin(2 * 3.14159 * 440 * t)).unsqueeze(0).unsqueeze(0)
-        encode_result = rt_codec.encode(dummy_wav, chunk_duration=0.24)
+        encode_result = worker.codec.encode(dummy_wav, chunk_duration=0.24)
         prompt_tokens = encode_result["audio_codes"].cpu().numpy().squeeze(1)
 
     session = MossTTSRealtimeStreamingSession(
-        rt_inferencer, rt_processor,
-        codec=rt_codec, codec_sample_rate=rt_sample_rate,
+        worker.inferencer, worker.processor,
+        codec=worker.codec, codec_sample_rate=worker.sample_rate,
         codec_encode_kwargs={"chunk_duration": 0.24},
-        prefill_text_len=rt_processor.delay_tokens_len,
+        prefill_text_len=worker.processor.delay_tokens_len,
         temperature=0.8, top_p=0.6, top_k=30,
         do_sample=True, repetition_penalty=1.1, repetition_window=50,
     )
     session.set_voice_prompt_tokens(prompt_tokens)
 
-    system_prompt = rt_processor.make_ensemble(prompt_tokens)
-    assistant_prefix_ids = rt_tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n")
+    system_prompt = worker.processor.make_ensemble(prompt_tokens)
+    assistant_prefix_ids = worker.tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n")
     assistant_prefix = np.full(
         (len(assistant_prefix_ids), system_prompt.shape[1]),
-        fill_value=rt_processor.audio_channel_pad, dtype=np.int64,
+        fill_value=worker.processor.audio_channel_pad, dtype=np.int64,
     )
     assistant_prefix[:, 0] = assistant_prefix_ids
     input_ids = np.concatenate([system_prompt, assistant_prefix], axis=0)
 
-    rt_inferencer.reset_generation_state(keep_cache=False)
+    worker.inferencer.reset_generation_state(keep_cache=False)
     session.reset_turn(input_ids=input_ids, include_system_prompt=False, reset_cache=True)
 
-    decoder = AudioStreamDecoder(
-        rt_codec, chunk_frames=12, overlap_frames=0,
-        decode_kwargs={"chunk_duration": -1}, device=device,
-    )
-
-    # Reset codec streaming state
-    for _name, module in rt_codec.named_modules():
-        if hasattr(module, '_streaming_state'):
-            module._streaming_state = None
-
     with torch.inference_mode():
-        with rt_codec.streaming(batch_size=1):
-            # Push warmup text through full pipeline
-            warmup_tokens = rt_tokenizer.encode("Hello.", add_special_tokens=False)
-            for tok in warmup_tokens:
-                frames = session.push_text_tokens([tok])
-                for frame in frames:
-                    tokens = frame
-                    if tokens.dim() == 3:
-                        tokens = tokens[0]
-                    if tokens.numel() > 0:
-                        decoder.push_tokens(tokens.detach())
-                        for _ in decoder.audio_chunks():
-                            pass  # discard warmup audio
+        # Push warmup text — this triggers torch.compile on local_head
+        warmup_tokens = worker.tokenizer.encode("Hello.", add_special_tokens=False)
+        for tok in warmup_tokens:
+            frames = session.push_text_tokens([tok])
+            # Just discard frames — don't decode (codec decode causes CUDA assert)
+            del frames
 
-            # End text and drain remaining tokens
-            frames = session.end_text()
-            for frame in frames:
-                tokens = frame
-                if tokens.dim() == 3:
-                    tokens = tokens[0]
-                if tokens.numel() > 0:
-                    decoder.push_tokens(tokens.detach())
-                    for _ in decoder.audio_chunks():
-                        pass
+        # End text
+        frames = session.end_text()
+        del frames
 
-            while True:
-                frames = session.drain(max_steps=1)
-                if not frames:
-                    break
-                for frame in frames:
-                    tokens = frame
-                    if tokens.dim() == 3:
-                        tokens = tokens[0]
-                    if tokens.numel() > 0:
-                        decoder.push_tokens(tokens.detach())
-                        for _ in decoder.audio_chunks():
-                            pass
-                if session.inferencer.is_finished:
-                    break
+        # Drain remaining
+        for _ in range(100):
+            frames = session.drain(max_steps=1)
+            if not frames or session.inferencer.is_finished:
+                break
+            del frames
 
-            decoder.flush()
+    # Reset inferencer state after warmup so first real request starts clean
+    worker.inferencer.reset_generation_state(keep_cache=False)
 
     # Ensure all CUDA ops complete
     torch.cuda.synchronize()
@@ -441,18 +467,25 @@ def _warmup_realtime():
 @app.on_event("startup")
 async def startup_event():
     if ENABLE_REALTIME:
-        # Load ONLY the realtime model (base model won't fit alongside)
         try:
-            load_realtime_model()
-            # Note: we rely on TORCHINDUCTOR_FX_GRAPH_CACHE=1 for persistent
-            # compile caching. The first request after a cold start will compile
-            # (~40s), but subsequent restarts use the cache (~3s warmup).
-            # Startup warmup was removed because CUDA device-side asserts in
-            # the warmup path permanently corrupt the CUDA context.
+            load_realtime_models()
         except Exception as e:
             logger.error(f"Failed to load MOSS-TTS-Realtime: {e}", exc_info=True)
             logger.warning("Falling back to base MOSS-TTS model")
             load_model()
+            # Skip warmup if we fell back
+            rt_workers.clear()
+
+        # Warmup each worker to trigger torch.compile + PTX JIT
+        for w in rt_workers:
+            logger.info(f"[Warmup][{w.device}] Running dummy inference to trigger compilation...")
+            t_warmup = time.perf_counter()
+            try:
+                _warmup_worker(w)
+                logger.info(f"[Warmup][{w.device}] Done in {time.perf_counter() - t_warmup:.1f}s")
+            except Exception as e:
+                logger.error(f"[Warmup][{w.device}] Failed: {e}", exc_info=True)
+                logger.warning(f"[Warmup][{w.device}] First real request will trigger compilation instead")
     else:
         load_model()
 
@@ -667,11 +700,11 @@ async def health_check():
     if DEVICE == "cuda":
         gpu_mem = round(torch.cuda.max_memory_allocated() / 1e9, 2)
 
-    is_ready = model is not None or rt_inferencer is not None
-    active_model = RT_MODEL_ID if rt_inferencer is not None else MODEL_ID
-    active_sr = rt_sample_rate if rt_inferencer is not None and sample_rate is None else sample_rate
+    is_ready = model is not None or len(rt_workers) > 0
+    active_model = RT_MODEL_ID if rt_workers else MODEL_ID
+    active_sr = RT_SAMPLE_RATE if rt_workers else sample_rate
 
-    return HealthResponse(
+    response = HealthResponse(
         status="ready" if is_ready else "loading",
         model_id=active_model,
         device=DEVICE,
@@ -679,6 +712,15 @@ async def health_check():
         sample_rate=active_sr,
         gpu_memory_gb=gpu_mem,
     )
+    # Add multi-GPU worker info
+    if rt_workers:
+        response_dict = response.model_dump()
+        response_dict["rt_workers"] = [
+            {"device": w.device, "busy": w.semaphore.locked()}
+            for w in rt_workers
+        ]
+        return response_dict
+    return response
 
 
 @app.get("/voices")
@@ -701,7 +743,7 @@ async def list_voices(format: Optional[str] = Query(None, description="'flat' fo
 @app.post("/tts")
 async def generate_speech(request: TTSRequest):
     """Generate speech from text. If voice_name is provided, auto-routes to cloning."""
-    if model is None and rt_inferencer is None:
+    if model is None and not rt_workers:
         raise HTTPException(status_code=503, detail="No TTS model loaded yet")
 
     # Map GLM compat params
@@ -826,7 +868,7 @@ async def stream_speech(request: TTSRequest):
     Binary framing (same as GLM-TTS streaming):
         4-byte audio_len (LE) + 4-byte metadata_len (LE) + audio_bytes + metadata_json
     """
-    if model is None and rt_inferencer is None:
+    if model is None and not rt_workers:
         raise HTTPException(status_code=503, detail="No TTS model loaded yet")
 
     # ── Voice validation ─────────────────────────────────────────────
@@ -845,10 +887,22 @@ async def stream_speech(request: TTSRequest):
             ref_path = str(audio_files[0])
 
     # ── Route: true realtime streaming or sentence-level fallback ─────
-    if rt_inferencer is not None:
+    if rt_workers:
+        return await _stream_realtime(request, ref_path)
+    elif rt_inferencer is not None:
         return await _stream_realtime(request, ref_path)
     else:
         return await _stream_sentence_fallback(request, ref_path)
+
+
+async def _acquire_rt_worker() -> RTWorker:
+    """Find the first available GPU worker (doesn't acquire semaphore)."""
+    while True:
+        for w in rt_workers:
+            if not w.semaphore.locked():
+                return w
+        # All workers busy — wait briefly and retry
+        await asyncio.sleep(0.01)
 
 
 async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
@@ -863,12 +917,14 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
         AudioStreamDecoder,
     )
 
-    device = torch.device(DEVICE)
+    # Acquire a GPU worker (blocks until one is free)
+    worker = await _acquire_rt_worker()
+    device = torch.device(worker.device)
 
     t_start = time.perf_counter()
 
     logger.info(
-        f"[Stream-RT] True realtime streaming: "
+        f"[Stream-RT][{worker.device}] True realtime streaming: "
         f"voice={request.voice_name or 'default'}, "
         f"text_len={len(request.text)}"
     )
@@ -876,27 +932,24 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
     # ── Encode reference audio for voice cloning (cached) ────────────
     prompt_tokens = None
     if ref_path:
-        # Cache key: path + modification time
         cache_key = (str(ref_path), os.path.getmtime(ref_path))
-        if not hasattr(rt_codec, '_prompt_cache'):
-            rt_codec._prompt_cache = {}
-        if cache_key in rt_codec._prompt_cache:
-            prompt_tokens = rt_codec._prompt_cache[cache_key]
-            logger.info(f"[Stream-RT] Voice prompt cache hit ({time.perf_counter()-t_start:.3f}s)")
+        if cache_key in worker.prompt_cache:
+            prompt_tokens = worker.prompt_cache[cache_key]
+            logger.info(f"[Stream-RT][{worker.device}] Voice prompt cache hit ({time.perf_counter()-t_start:.3f}s)")
         else:
             with torch.inference_mode():
                 wav, sr_wav = torchaudio.load(ref_path)
-                if sr_wav != rt_sample_rate:
-                    wav = torchaudio.functional.resample(wav, sr_wav, rt_sample_rate)
+                if sr_wav != worker.sample_rate:
+                    wav = torchaudio.functional.resample(wav, sr_wav, worker.sample_rate)
                 if wav.shape[0] > 1:
                     wav = wav.mean(dim=0, keepdim=True)
-                encode_result = rt_codec.encode(
+                encode_result = worker.codec.encode(
                     wav.unsqueeze(0).to(device),
                     chunk_duration=0.24,
                 )
                 prompt_tokens = encode_result["audio_codes"].cpu().numpy().squeeze(1)
-            rt_codec._prompt_cache[cache_key] = prompt_tokens
-            logger.info(f"[Stream-RT] Voice prompt encoded ({time.perf_counter()-t_start:.3f}s)")
+            worker.prompt_cache[cache_key] = prompt_tokens
+            logger.info(f"[Stream-RT][{worker.device}] Voice prompt encoded ({time.perf_counter()-t_start:.3f}s)")
 
     async def realtime_streamer():
         t0 = time.perf_counter()
@@ -906,12 +959,12 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
         try:
             # ── Create streaming session ─────────────────────────
             session = MossTTSRealtimeStreamingSession(
-                rt_inferencer,
-                rt_processor,
-                codec=rt_codec,
-                codec_sample_rate=rt_sample_rate,
+                worker.inferencer,
+                worker.processor,
+                codec=worker.codec,
+                codec_sample_rate=worker.sample_rate,
                 codec_encode_kwargs={"chunk_duration": 0.24},
-                prefill_text_len=rt_processor.delay_tokens_len,
+                prefill_text_len=worker.processor.delay_tokens_len,
                 temperature=request.temperature or 0.8,
                 top_p=request.top_p or 0.6,
                 top_k=30,
@@ -924,35 +977,35 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                 session.set_voice_prompt_tokens(prompt_tokens)
 
             # ── Build input_ids ──────────────────────────────────
-            system_prompt = rt_processor.make_ensemble(prompt_tokens)
-            assistant_prefix_ids = rt_tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n")
+            system_prompt = worker.processor.make_ensemble(prompt_tokens)
+            assistant_prefix_ids = worker.tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n")
             assistant_prefix = np.full(
                 (len(assistant_prefix_ids), system_prompt.shape[1]),
-                fill_value=rt_processor.audio_channel_pad,
+                fill_value=worker.processor.audio_channel_pad,
                 dtype=np.int64,
             )
             assistant_prefix[:, 0] = assistant_prefix_ids
             input_ids = np.concatenate([system_prompt, assistant_prefix], axis=0)
 
-            rt_inferencer.reset_generation_state(keep_cache=False)
+            worker.inferencer.reset_generation_state(keep_cache=False)
             session.reset_turn(
                 input_ids=input_ids,
                 include_system_prompt=False,
                 reset_cache=True,
             )
-            logger.info(f"[Stream-RT] Session setup + prefill: {time.perf_counter()-t0:.3f}s")
+            logger.info(f"[Stream-RT][{worker.device}] Session setup + prefill: {time.perf_counter()-t0:.3f}s")
 
             # ── Audio stream decoder ─────────────────────────────
             decoder = AudioStreamDecoder(
-                rt_codec,
-                chunk_frames=12,  # Real-time RTF (0.88x) — other fixes keep TTFA ~1s
+                worker.codec,
+                chunk_frames=12,
                 overlap_frames=0,
                 decode_kwargs={"chunk_duration": -1},
                 device=device,
             )
 
-            codebook_size = int(getattr(rt_codec, "codebook_size", 1024))
-            audio_eos_token = int(getattr(rt_inferencer, "audio_eos_token", 1026))
+            codebook_size = int(getattr(worker.codec, "codebook_size", 1024))
+            audio_eos_token = int(getattr(worker.inferencer, "audio_eos_token", 1026))
 
             def _sanitize_tokens(tokens):
                 if tokens.dim() == 1:
@@ -992,7 +1045,7 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
 
             # ── Run streaming generation in thread ───────────────
             # Minimal batching for low TTFA — send chunks as soon as available
-            MIN_SAMPLES = int(rt_sample_rate * 0.05)  # ~50ms minimum chunk
+            MIN_SAMPLES = int(worker.sample_rate * 0.05)  # ~50ms minimum chunk
 
             def _run_stream():
                 """Synchronous generator: push text → audio chunks.
@@ -1004,12 +1057,12 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
 
                 # Hard-reset ALL codec streaming state right before entering
                 # the streaming context.
-                for _name, module in rt_codec.named_modules():
+                for _name, module in worker.codec.named_modules():
                     if hasattr(module, '_streaming_state'):
                         module._streaming_state = None
 
                 with torch.inference_mode():
-                    with rt_codec.streaming(batch_size=1):
+                    with worker.codec.streaming(batch_size=1):
                         buf = []
                         buf_samples = 0
                         first_audio_sent = False
@@ -1025,7 +1078,7 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                             return None
 
                         # Pre-tokenize the full text
-                        text_tokens = rt_tokenizer.encode(
+                        text_tokens = worker.tokenizer.encode(
                             request.text, add_special_tokens=False,
                         )
                         if not text_tokens:
@@ -1104,30 +1157,31 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                 finally:
                     q.put(None)  # sentinel
 
-            async with inference_semaphore:
+            async with worker.semaphore:
                 thread = threading.Thread(target=_producer, daemon=True)
                 thread.start()
 
                 while True:
-                    # 120s timeout to accommodate torch.compile first-run (~30-60s)
-                    wav_np = await asyncio.to_thread(q.get, True, 120.0)
+                    # 300s timeout to accommodate torch.compile first-run (~80-120s)
+                    wav_np = await asyncio.to_thread(q.get, True, 300.0)
                     if wav_np is None:
                         break
 
                     # In-memory WAV — no disk I/O
-                    wav_bytes = _wav_bytes_from_pcm(wav_np, rt_sample_rate)
+                    wav_bytes = _wav_bytes_from_pcm(wav_np, worker.sample_rate)
 
-                    chunk_duration = len(wav_np) / rt_sample_rate
+                    chunk_duration = len(wav_np) / worker.sample_rate
                     total_audio_duration += chunk_duration
 
                     meta = {
                         "chunk_index": chunk_idx,
                         "is_final": False,
-                        "sample_rate": rt_sample_rate,
+                        "sample_rate": worker.sample_rate,
                         "audio_duration": round(chunk_duration, 3),
                         "total_audio_duration": round(total_audio_duration, 2),
                         "generation_time": round(time.perf_counter() - t0, 2),
                         "streaming": "realtime",
+                        "gpu": worker.device,
                     }
                     meta_bytes = _json.dumps(meta).encode()
                     header = struct.pack("<II", len(wav_bytes), len(meta_bytes))
@@ -1135,9 +1189,7 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
 
                     chunk_idx += 1
 
-                # Wait indefinitely for producer thread to fully exit
-                # (including the `with rt_codec.streaming()` __exit__ cleanup).
-                # The inference_semaphore guarantees only one request at a time.
+                # Wait for producer thread to fully exit
                 thread.join()
 
             if error_holder[0]:
