@@ -744,26 +744,38 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
 
     device = torch.device(DEVICE)
 
+    t_start = time.perf_counter()
+
     logger.info(
         f"[Stream-RT] True realtime streaming: "
         f"voice={request.voice_name or 'default'}, "
         f"text_len={len(request.text)}"
     )
 
-    # ── Encode reference audio for voice cloning ─────────────────────
+    # ── Encode reference audio for voice cloning (cached) ────────────
     prompt_tokens = None
     if ref_path:
-        with torch.inference_mode():
-            wav, sr_wav = torchaudio.load(ref_path)
-            if sr_wav != rt_sample_rate:
-                wav = torchaudio.functional.resample(wav, sr_wav, rt_sample_rate)
-            if wav.shape[0] > 1:
-                wav = wav.mean(dim=0, keepdim=True)
-            encode_result = rt_codec.encode(
-                wav.unsqueeze(0).to(device),
-                chunk_duration=0.24,
-            )
-            prompt_tokens = encode_result["audio_codes"].cpu().numpy().squeeze(1)
+        # Cache key: path + modification time
+        cache_key = (str(ref_path), os.path.getmtime(ref_path))
+        if not hasattr(rt_codec, '_prompt_cache'):
+            rt_codec._prompt_cache = {}
+        if cache_key in rt_codec._prompt_cache:
+            prompt_tokens = rt_codec._prompt_cache[cache_key]
+            logger.info(f"[Stream-RT] Voice prompt cache hit ({time.perf_counter()-t_start:.3f}s)")
+        else:
+            with torch.inference_mode():
+                wav, sr_wav = torchaudio.load(ref_path)
+                if sr_wav != rt_sample_rate:
+                    wav = torchaudio.functional.resample(wav, sr_wav, rt_sample_rate)
+                if wav.shape[0] > 1:
+                    wav = wav.mean(dim=0, keepdim=True)
+                encode_result = rt_codec.encode(
+                    wav.unsqueeze(0).to(device),
+                    chunk_duration=0.24,
+                )
+                prompt_tokens = encode_result["audio_codes"].cpu().numpy().squeeze(1)
+            rt_codec._prompt_cache[cache_key] = prompt_tokens
+            logger.info(f"[Stream-RT] Voice prompt encoded ({time.perf_counter()-t_start:.3f}s)")
 
     async def realtime_streamer():
         t0 = time.perf_counter()
@@ -807,11 +819,12 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                 include_system_prompt=False,
                 reset_cache=True,
             )
+            logger.info(f"[Stream-RT] Session setup + prefill: {time.perf_counter()-t0:.3f}s")
 
             # ── Audio stream decoder ─────────────────────────────
             decoder = AudioStreamDecoder(
                 rt_codec,
-                chunk_frames=12,
+                chunk_frames=3,   # Low for fast TTFA (3 frames ≈ 240ms audio)
                 overlap_frames=0,
                 decode_kwargs={"chunk_duration": -1},
                 device=device,
@@ -857,20 +870,19 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                     yield final.detach().cpu().numpy().reshape(-1)
 
             # ── Run streaming generation in thread ───────────────
-            # Batch small numpy chunks to reduce queue overhead
-            MIN_SAMPLES = int(rt_sample_rate * 0.3)  # ~0.3s of audio
+            # Minimal batching for low TTFA — send chunks as soon as available
+            MIN_SAMPLES = int(rt_sample_rate * 0.05)  # ~50ms minimum chunk
 
             def _run_stream():
                 """Synchronous generator: push text → audio chunks.
-                Matches the official Gradio app approach: pre-tokenize text,
-                push 12 tokens at a time via push_text_tokens().
+                Uses small initial token chunks for fast TTFA, then larger
+                chunks for throughput once audio is flowing.
                 """
-                TEXT_CHUNK_TOKENS = 12  # Official Gradio default
+                INITIAL_CHUNK = 1   # Push 1 token at a time initially for fast TTFA
+                STEADY_CHUNK = 12   # Switch to 12-token chunks once audio flows
 
                 # Hard-reset ALL codec streaming state right before entering
-                # the streaming context. This runs in the producer thread,
-                # which is inside the inference_semaphore, so there's no
-                # concurrent streaming context to worry about.
+                # the streaming context.
                 for _name, module in rt_codec.named_modules():
                     if hasattr(module, '_streaming_state'):
                         module._streaming_state = None
@@ -879,26 +891,31 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                     with rt_codec.streaming(batch_size=1):
                         buf = []
                         buf_samples = 0
+                        first_audio_sent = False
 
                         def _flush_buf():
-                            nonlocal buf, buf_samples
+                            nonlocal buf, buf_samples, first_audio_sent
                             if buf:
                                 merged = np.concatenate(buf)
                                 buf = []
                                 buf_samples = 0
+                                first_audio_sent = True
                                 return merged
                             return None
 
-                        # Pre-tokenize the full text (like the Gradio app does)
+                        # Pre-tokenize the full text
                         text_tokens = rt_tokenizer.encode(
                             request.text, add_special_tokens=False,
                         )
                         if not text_tokens:
                             return
 
-                        # Push tokens in chunks of TEXT_CHUNK_TOKENS
-                        for i in range(0, len(text_tokens), TEXT_CHUNK_TOKENS):
-                            token_chunk = text_tokens[i:i + TEXT_CHUNK_TOKENS]
+                        # Push tokens — small chunks first for TTFA, then big for throughput
+                        i = 0
+                        while i < len(text_tokens):
+                            chunk_size = STEADY_CHUNK if first_audio_sent else INITIAL_CHUNK
+                            token_chunk = text_tokens[i:i + chunk_size]
+                            i += len(token_chunk)
                             audio_frames = session.push_text_tokens(token_chunk)
                             for chunk in decode_frames(audio_frames):
                                 buf.append(chunk)
