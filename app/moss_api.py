@@ -22,6 +22,19 @@ import torch
 import torch._dynamo
 torch._dynamo.config.cache_size_limit = 64  # Match official Gradio app (prevent recompilation)
 torch.set_float32_matmul_precision('high')  # Enable TF32 tensor cores for matmul
+
+# SDPA backend configuration (optimization.md Priority 2)
+torch.backends.cuda.enable_cudnn_sdp(False)    # Disable broken cuDNN backend
+torch.backends.cuda.enable_flash_sdp(True)     # PyTorch's built-in flash kernel
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+torch.backends.cuda.enable_math_sdp(True)
+
+# Persistent compile caching (optimization.md Priority 1)
+import os as _os
+_os.environ.setdefault('TORCHINDUCTOR_FX_GRAPH_CACHE', '1')
+_os.environ.setdefault('TORCHINDUCTOR_AUTOGRAD_CACHE', '1')
+_os.environ.setdefault('CUDA_CACHE_MAXSIZE', '4294967296')  # 4 GiB PTX JIT cache
+
 import torchaudio
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -317,6 +330,8 @@ def load_realtime_model():
     rt_inferencer = StreamingInferencer(
         rt_model, rt_tokenizer, max_length=5000,
     )
+    # Note: upstream auto-compiles the local transformer with SDPA + StaticCache
+    # (mode="default", fullgraph=True). max-autotune modes are incompatible.
 
     logger.info("MOSS-TTS-Realtime loaded successfully")
     _log_gpu_memory()
@@ -824,7 +839,7 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
             # ── Audio stream decoder ─────────────────────────────
             decoder = AudioStreamDecoder(
                 rt_codec,
-                chunk_frames=3,   # Low for fast TTFA (3 frames ≈ 240ms audio)
+                chunk_frames=6,   # Balance: ~480ms TTFA, fewer decode calls than 3
                 overlap_frames=0,
                 decode_kwargs={"chunk_duration": -1},
                 device=device,
