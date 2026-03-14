@@ -375,6 +375,17 @@ def load_project(project_id: str) -> Optional[AudiobookProject]:
     if _sync_visual_assets(project):
         dirty = True
 
+    # Auto-create VisualAssets for segments missing visual_id (migration for old projects)
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if not seg.visual_id:
+                asset = VisualAsset(
+                    label=f"Visual for seg {seg.id}",
+                )
+                project.visuals.append(asset)
+                seg.visual_id = asset.id
+                dirty = True
+
     if dirty:
         save_project(project)
 

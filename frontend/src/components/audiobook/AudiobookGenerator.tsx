@@ -2202,10 +2202,14 @@ const SegmentVisualGrid: React.FC<{
     const groups = groupSegmentsByVisual(segments);
 
     const handleCreateAndAssign = async (segmentId: string) => {
-        await createVisualAsset();
-        // After creation, the newest visual is the last in the list
-        // We need to re-read from store — but since createVisualAsset updates currentProject,
-        // the component will re-render. For now, user can assign from the dropdown.
+        const updated = await createVisualAsset();
+        if (updated) {
+            // The newest visual is the last in the list
+            const newVa = updated.visuals[updated.visuals.length - 1];
+            if (newVa) {
+                await assignVisual(segmentId, newVa.id);
+            }
+        }
     };
 
     return (

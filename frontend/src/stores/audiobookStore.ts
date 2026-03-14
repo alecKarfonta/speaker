@@ -48,7 +48,7 @@ interface AudiobookState {
     generateAllVisuals: (mode?: string) => Promise<void>;
     exportVideo: () => Promise<void>;
     // Visual asset management
-    createVisualAsset: (label?: string, scenePrompt?: string) => Promise<void>;
+    createVisualAsset: (label?: string, scenePrompt?: string) => Promise<ProjectDetail | null>;
     updateVisualAsset: (visualId: string, update: { label?: string; scene_prompt?: string; animation_style?: string; video_fill_mode?: string; ref_character?: string }) => Promise<void>;
     deleteVisualAsset: (visualId: string) => Promise<void>;
     generateVisualAsset: (visualId: string, params?: VisualParams) => Promise<void>;
@@ -414,12 +414,14 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     // --- Visual Asset Management ---
     createVisualAsset: async (label, scenePrompt) => {
         const { currentProject } = get();
-        if (!currentProject) return;
+        if (!currentProject) return null;
         try {
             const updated = await api.createVisualAsset(currentProject.id, label, scenePrompt);
             set({ currentProject: updated });
+            return updated;
         } catch (e: any) {
             set({ error: e.message });
+            return null;
         }
     },
 

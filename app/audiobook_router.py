@@ -107,9 +107,18 @@ async def create_audiobook_project(request: CreateProjectRequest):
         narrator_voice=narrator,
         detected_characters=characters,
     )
+
+    # Auto-create one VisualAsset per segment so every segment has a visual slot
+    for ch in project.chapters:
+        for seg in ch.segments:
+            asset = VisualAsset(
+                label=f"Visual for seg {seg.id}",
+            )
+            project.visuals.append(asset)
+            seg.visual_id = asset.id
     
     save_project(project)
-    logger.info(f"Created audiobook project '{project.name}' with {len(chapters)} chapters, {project.total_segments} segments")
+    logger.info(f"Created audiobook project '{project.name}' with {len(chapters)} chapters, {project.total_segments} segments, {len(project.visuals)} visuals")
     return project_to_detail_response(project)
 
 
@@ -219,6 +228,16 @@ async def reparse_project(project_id: str, request: ReparseRequest):
     project.chapters = chapters
     project.chapter_pattern = request.chapter_pattern
     project.detected_characters = detect_characters(project.raw_text)
+
+    # Auto-create VisualAssets for any segments without a visual
+    for ch in project.chapters:
+        for seg in ch.segments:
+            if not seg.visual_id:
+                asset = VisualAsset(
+                    label=f"Visual for seg {seg.id}",
+                )
+                project.visuals.append(asset)
+                seg.visual_id = asset.id
     
     save_project(project)
     logger.info(f"Re-parsed project '{project_id}' with pattern '{request.chapter_pattern}'")
