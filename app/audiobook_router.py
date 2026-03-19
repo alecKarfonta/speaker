@@ -967,53 +967,6 @@ async def set_video_fill_mode(project_id: str, segment_id: str, mode: str):
 
 
 
-    from .audiobook_llm import generate_scene_prompt, generate_visual_style
-
-    project = _get_project_or_404(project_id)
-
-    # Auto-generate visual style if missing
-    if not project.visual_style and project.raw_text:
-        style = generate_visual_style(project.raw_text)
-        if style:
-            project.visual_style = style
-            save_project(project)
-
-    # Find segment + context
-    all_segments = [(ch, seg) for ch in project.chapters for seg in ch.segments]
-    segment, chapter, seg_idx = None, None, None
-    for i, (ch, seg) in enumerate(all_segments):
-        if seg.id == segment_id:
-            segment, chapter, seg_idx = seg, ch, i
-            break
-
-    if not segment:
-        raise HTTPException(status_code=404, detail="Segment not found")
-
-    prev_scene = all_segments[seg_idx - 1][1].scene_prompt if seg_idx > 0 else ""
-    next_text = all_segments[seg_idx + 1][1].text if seg_idx < len(all_segments) - 1 else ""
-
-    scene = generate_scene_prompt(
-        text=segment.text,
-        chapter_title=chapter.title if chapter else "",
-        character=segment.character or "Narrator",
-        emotion=segment.emotion or "neutral",
-        visual_style=project.visual_style,
-        prev_scene=prev_scene or "",
-        next_text=next_text or "",
-    )
-    if not scene:
-        raise HTTPException(status_code=500, detail="LLM failed to generate scene prompt")
-
-    segment.scene_prompt = scene
-    # Reset visual status so user knows a new visual is needed
-    if segment.visual_status == "done":
-        segment.visual_status = "pending"
-    save_project(project)
-    logger.info(f"Regenerated scene prompt for segment {segment_id}")
-    return project_to_detail_response(project)
-
-
-
 @router.post("/projects/{project_id}/generate-visuals", response_model=ProjectDetailResponse)
 async def generate_all_visuals(project_id: str, mode: str = None):
     """Enqueue visual generation for all segments that don't already have one."""
@@ -1270,6 +1223,7 @@ async def generate_visual_scene_prompt(project_id: str, visual_id: str):
     next_text = all_segments[seg_idx + 1][1].text if seg_idx < len(all_segments) - 1 else ""
     ch = all_segments[seg_idx][0]
 
+    logger.info(f"Generating scene prompt for VA '{visual_id}' in project '{project_id}': seg={context_seg.id}, text='{context_seg.text[:80]}...', char={context_seg.character}")
     scene = generate_scene_prompt(
         text=context_seg.text,
         chapter_title=ch.title if ch else "",

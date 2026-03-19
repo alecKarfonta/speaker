@@ -427,13 +427,21 @@ def _warmup_worker(worker: RTWorker):
     session.set_voice_prompt_tokens(prompt_tokens)
 
     system_prompt = worker.processor.make_ensemble(prompt_tokens)
-    assistant_prefix_ids = worker.tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n")
-    assistant_prefix = np.full(
-        (len(assistant_prefix_ids), system_prompt.shape[1]),
+    # Build input_ids with user text in proper chat template format
+    # (matches official app._build_text_only_turn_input pattern)
+    warmup_text = "Hello."
+    user_prompt_text = (
+        "<|im_end|>\n<|im_start|>user\n"
+        + warmup_text
+        + "<|im_end|>\n<|im_start|>assistant\n"
+    )
+    user_prompt_ids = worker.tokenizer.encode(user_prompt_text, add_special_tokens=False)
+    user_prompt = np.full(
+        (len(user_prompt_ids), system_prompt.shape[1]),
         fill_value=worker.processor.audio_channel_pad, dtype=np.int64,
     )
-    assistant_prefix[:, 0] = assistant_prefix_ids
-    input_ids = np.concatenate([system_prompt, assistant_prefix], axis=0)
+    user_prompt[:, 0] = np.array(user_prompt_ids, dtype=np.int64)
+    input_ids = np.concatenate([system_prompt, user_prompt], axis=0)
 
     worker.inferencer.reset_generation_state(keep_cache=False)
     session.reset_turn(input_ids=input_ids, include_system_prompt=False, reset_cache=True)
@@ -976,16 +984,25 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
             if prompt_tokens is not None:
                 session.set_voice_prompt_tokens(prompt_tokens)
 
-            # ── Build input_ids ──────────────────────────────────
+            # ── Build input_ids with user text (official chat template) ─
+            # The model needs the text-to-speak as the user message in chat
+            # template format: system → user(text) → assistant.
+            # push_text_tokens() then feeds the same text as the assistant
+            # response tokens that the model aligns audio to.
             system_prompt = worker.processor.make_ensemble(prompt_tokens)
-            assistant_prefix_ids = worker.tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n")
-            assistant_prefix = np.full(
-                (len(assistant_prefix_ids), system_prompt.shape[1]),
+            user_prompt_text = (
+                "<|im_end|>\n<|im_start|>user\n"
+                + request.text
+                + "<|im_end|>\n<|im_start|>assistant\n"
+            )
+            user_prompt_ids = worker.tokenizer.encode(user_prompt_text, add_special_tokens=False)
+            user_prompt = np.full(
+                (len(user_prompt_ids), system_prompt.shape[1]),
                 fill_value=worker.processor.audio_channel_pad,
                 dtype=np.int64,
             )
-            assistant_prefix[:, 0] = assistant_prefix_ids
-            input_ids = np.concatenate([system_prompt, assistant_prefix], axis=0)
+            user_prompt[:, 0] = np.array(user_prompt_ids, dtype=np.int64)
+            input_ids = np.concatenate([system_prompt, user_prompt], axis=0)
 
             worker.inferencer.reset_generation_state(keep_cache=False)
             session.reset_turn(
@@ -1048,21 +1065,29 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
             MIN_SAMPLES = int(worker.sample_rate * 0.05)  # ~50ms minimum chunk
 
             def _run_stream():
-                """Synchronous generator: push text → audio chunks.
-                Uses small initial token chunks for fast TTFA, then larger
-                chunks for throughput once audio is flowing.
+                """Synchronous generator: push text tokens → audio chunks.
+                Uses push_text_tokens() with adaptive chunk sizes for
+                optimal throughput while maintaining fast TTFA.
                 """
-                INITIAL_CHUNK = 1   # Push 1 token at a time initially for fast TTFA
+                INITIAL_CHUNK = 1   # 1 token at a time initially for fast TTFA
                 STEADY_CHUNK = 12   # Switch to 12-token chunks once audio flows
 
-                # Hard-reset ALL codec streaming state right before entering
-                # the streaming context.
+                # Hard-reset ALL codec streaming state
                 for _name, module in worker.codec.named_modules():
                     if hasattr(module, '_streaming_state'):
                         module._streaming_state = None
 
-                with torch.inference_mode():
-                    with worker.codec.streaming(batch_size=1):
+                # Timing instrumentation
+                t_infer = 0.0
+                t_decode = 0.0
+                n_infer = 0
+                n_decode = 0
+
+                # Use manual _start/_stop instead of codec.streaming() context
+                # to avoid FX tracing conflicts and codec recompilation overhead
+                worker.codec._start_streaming(batch_size=1)
+                try:
+                    with torch.inference_mode():
                         buf = []
                         buf_samples = 0
                         first_audio_sent = False
@@ -1090,29 +1115,52 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                             chunk_size = STEADY_CHUNK if first_audio_sent else INITIAL_CHUNK
                             token_chunk = text_tokens[i:i + chunk_size]
                             i += len(token_chunk)
+                            _t0 = time.perf_counter()
                             audio_frames = session.push_text_tokens(token_chunk)
+                            t_infer += time.perf_counter() - _t0
+                            n_infer += 1
+                            _t0 = time.perf_counter()
                             for chunk in decode_frames(audio_frames):
+                                t_decode += time.perf_counter() - _t0
+                                n_decode += 1
                                 buf.append(chunk)
                                 buf_samples += len(chunk)
                                 if buf_samples >= MIN_SAMPLES:
                                     yield _flush_buf()
+                                _t0 = time.perf_counter()
+                            t_decode += time.perf_counter() - _t0
 
+                        _t0 = time.perf_counter()
                         audio_frames = session.end_text()
+                        t_infer += time.perf_counter() - _t0
+                        _t0 = time.perf_counter()
                         for chunk in decode_frames(audio_frames):
+                            t_decode += time.perf_counter() - _t0
+                            n_decode += 1
                             buf.append(chunk)
                             buf_samples += len(chunk)
                             if buf_samples >= MIN_SAMPLES:
                                 yield _flush_buf()
+                            _t0 = time.perf_counter()
+                        t_decode += time.perf_counter() - _t0
 
                         while True:
+                            _t0 = time.perf_counter()
                             audio_frames = session.drain(max_steps=1)
+                            t_infer += time.perf_counter() - _t0
+                            n_infer += 1
                             if not audio_frames:
                                 break
+                            _t0 = time.perf_counter()
                             for chunk in decode_frames(audio_frames):
+                                t_decode += time.perf_counter() - _t0
+                                n_decode += 1
                                 buf.append(chunk)
                                 buf_samples += len(chunk)
                                 if buf_samples >= MIN_SAMPLES:
                                     yield _flush_buf()
+                                _t0 = time.perf_counter()
+                            t_decode += time.perf_counter() - _t0
                             if session.inferencer.is_finished:
                                 break
 
@@ -1123,6 +1171,13 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
                         merged = _flush_buf()
                         if merged is not None:
                             yield merged
+
+                        logger.info(
+                            f"[Stream-RT][Timing] infer={t_infer:.2f}s ({n_infer} calls), "
+                            f"decode={t_decode:.2f}s ({n_decode} chunks)"
+                        )
+                finally:
+                    worker.codec._stop_streaming()
 
             # In-memory WAV header builder (avoids temp-file disk I/O)
             def _wav_bytes_from_pcm(pcm_float: np.ndarray, sr: int) -> bytes:
