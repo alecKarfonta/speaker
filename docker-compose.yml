@@ -21,7 +21,7 @@ services:
       # TTS Backend for this container: "glm-tts" or "xtts"
       # Note: MOSS runs via the separate moss-tts container (port 8013)
       # The frontend proxies to moss-tts by default via TTS_BACKEND_HOST
-      - TTS_BACKEND=stub
+      - TTS_BACKEND=glm-tts
       # === OPTIMAL CONFIG FROM PARAMETER SWEEP ===
       # Best balanced: 5.95x speed, 91.6% accuracy
       - GLM_TTS_QUANTIZATION=4bit
@@ -159,11 +159,11 @@ services:
       #   moss-tts:8000   → MOSS-TTS (default)
       #   tts-api:8000    → GLM-TTS
       #   qwen-tts:8000   → Qwen3-TTS (qwen profile)
-      - TTS_BACKEND_HOST=moss-tts:8000
+      - TTS_BACKEND_HOST=tts-api:8000
       # Audiobook API lives on tts-api (separated from TTS engine)
       - AUDIOBOOK_BACKEND_HOST=tts-api:8000
     depends_on:
-      - moss-tts
+      - tts-api
     networks:
       - tts-network
     healthcheck:
