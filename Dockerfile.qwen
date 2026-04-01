@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     git \
     ffmpeg \
     libsndfile1 \
+    sox \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -49,10 +50,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Verify vLLM is available
 RUN python3 -c "import vllm; print('vLLM OK:', vllm.__version__)"
 
-# Install qwen-tts from PyPI
+# Install streaming fork of qwen-tts (adds stream_generate_voice_clone + torch.compile)
+RUN git clone --depth 1 https://github.com/rekuenkdr/Qwen3-TTS-streaming.git /app/Qwen3-TTS-streaming
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -U qwen-tts && \
-    python3 -c "from qwen_tts import Qwen3TTSModel; print('qwen-tts OK')"
+    pip install -e /app/Qwen3-TTS-streaming && \
+    python3 -c "from qwen_tts import Qwen3TTSModel; print('qwen-tts-streaming OK')"
 
 # Pre-download Qwen 0.6B model (smaller/faster)
 ARG PRELOAD_QWEN_MODELS=true

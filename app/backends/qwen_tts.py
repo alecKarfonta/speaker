@@ -140,6 +140,21 @@ class QwenTTSBackend(TTSBackendBase):
         "Spanish", "Italian", "Auto"
     ]
     
+    # Map ISO 639-1 codes to the full language names expected by Qwen models
+    LANGUAGE_CODE_MAP = {
+        "en": "english",
+        "zh": "chinese",
+        "ja": "japanese",
+        "ko": "korean",
+        "fr": "french",
+        "de": "german",
+        "it": "italian",
+        "ru": "russian",
+        "pt": "portuguese",
+        "es": "spanish",
+        "auto": "auto"
+    }
+    
     _SAMPLE_RATE = 24000  # Qwen3-TTS outputs 24kHz audio
 
     def __init__(
@@ -160,22 +175,47 @@ class QwenTTSBackend(TTSBackendBase):
         # Set up class logger for detailed output
         self.log = get_class_logger(self, self.logger)
         
-        # Use typed config if provided, else create from dict
+        # Use typed config if provided, else create from env vars
         if qwen_config is not None:
             self.qwen_config = qwen_config
         elif config:
             self.qwen_config = QwenTTSConfig.from_dict(config)
         else:
-            self.qwen_config = QwenTTSConfig()
+            # Read QWEN_TTS_* environment variables
+            self.qwen_config = QwenTTSConfig.from_env()
         
         self._models: Dict[str, Any] = {}
         self._tokenizer = None
         self._executor = ThreadPoolExecutor(max_workers=self.qwen_config.max_workers)
         self._voice_clone_prompts: Dict[str, dict] = {}  # Cache for voice clone prompts
         self._initialized = False
+        self._streaming_enabled = False
         
         self.log.info(f"Backend created with model_size={self.qwen_config.model_size}, modes: custom={self.qwen_config.enable_custom_voice}, design={self.qwen_config.enable_voice_design}, clone={self.qwen_config.enable_voice_clone}")
+        
+        # Auto-initialize model on construction (like GLM backend)
+        self.initialize_model()
+        self.load_voices()
     
+    def _normalize_language(self, language: str) -> str:
+        """Normalize language name/code for the Qwen model.
+        
+        Translates 'en' -> 'english', 'ZH' -> 'chinese', etc.
+        """
+        if not language:
+            return "auto"
+        
+        # Check explicit mapping first (lowercase)
+        lang_lower = language.lower()
+        if lang_lower in self.LANGUAGE_CODE_MAP:
+            return self.LANGUAGE_CODE_MAP[lang_lower]
+        
+        # If it's already one of the full names, return it
+        if lang_lower in [l.lower() for l in self.SUPPORTED_LANGUAGES]:
+            return lang_lower
+            
+        return lang_lower
+
     @property
     def backend_name(self) -> str:
         return "qwen-tts"
@@ -263,6 +303,28 @@ class QwenTTSBackend(TTSBackendBase):
         
         self._initialized = True
         self.log.info(f"Backend initialized with {len(self._models)} models and {len(self.voices)} voices")
+        
+        # Enable streaming optimizations (torch.compile + CUDA graphs)
+        if self.qwen_config.enable_streaming:
+            clone_model = self._models.get("voice_clone")
+            if clone_model and hasattr(clone_model, 'enable_streaming_optimizations'):
+                self.log.info("Enabling streaming optimizations (torch.compile + CUDA graphs)...")
+                try:
+                    clone_model.enable_streaming_optimizations(
+                        decode_window_frames=self.qwen_config.streaming_decode_window,
+                        use_compile=self.qwen_config.streaming_compile,
+                        compile_mode=self.qwen_config.streaming_compile_mode,
+                    )
+                    self._streaming_enabled = True
+                    self.log.info("Streaming optimizations enabled")
+                except Exception as e:
+                    self._streaming_enabled = False
+                    self.log.warning(f"Streaming optimizations failed (will use batch fallback): {e}")
+            else:
+                self._streaming_enabled = False
+                self.log.warning("Voice clone model missing stream_generate_voice_clone — streaming disabled")
+        else:
+            self._streaming_enabled = False
     
     def load_voice(self, voice_name: str, voice_path: str) -> None:
         """Load a voice from audio file for voice cloning.
@@ -504,7 +566,8 @@ class QwenTTSBackend(TTSBackendBase):
         else:
             text = self.validate_text(text)
             
-        text_preview = text[:50] + "..." if len(text) > 50 else text
+        # Normalize language
+        language = self._normalize_language(language)
         
         self.log.info(f"Request: text='{text_preview}' ({len(text)} chars), voice='{voice_name}', lang={language}, mode={mode}")
         
@@ -856,6 +919,93 @@ class QwenTTSBackend(TTSBackendBase):
         
         self.log.debug(f"VoiceClone (cached) generated {len(wavs)} segments")
         return audio, sr
+    
+    def generate_speech_streaming(
+        self,
+        text: str,
+        voice_name: str,
+        language: str = "Auto",
+        instruct: Optional[str] = None,
+        **kwargs
+    ):
+        """True streaming generation using Qwen3-TTS-streaming fork.
+        
+        Yields (audio_chunk_np, sample_rate) tuples as audio is generated
+        incrementally. Uses two-phase streaming: aggressive first chunk
+        for low TTFA, then stable settings for quality.
+        
+        Args:
+            text: Text to synthesize
+            voice_name: Name of cached voice or predefined speaker
+            language: Target language or "Auto"
+            instruct: Optional style instruction
+            **kwargs: Additional generation parameters
+            
+        Yields:
+            Tuple of (np.ndarray audio chunk, int sample_rate)
+        """
+        if not self._initialized:
+            raise RuntimeError("Backend not initialized. Call initialize_model() first.")
+            
+        # Normalize language
+        language = self._normalize_language(language)
+        
+        if not getattr(self, '_streaming_enabled', False):
+            raise RuntimeError(
+                "Streaming not enabled. Ensure qwen-tts-streaming fork is installed "
+                "and enable_streaming=True in config."
+            )
+        
+        model = self._models.get("voice_clone")
+        if not model:
+            raise RuntimeError("VoiceClone model not loaded. Enable it in config.")
+        
+        # Get voice clone prompt (required for streaming)
+        voice_clone_prompt = self._voice_clone_prompts.get(voice_name)
+        if not voice_clone_prompt:
+            # Try predefined speakers — they need custom_voice model, not streaming
+            if voice_name in QWEN_SPEAKERS:
+                raise ValueError(
+                    f"Streaming requires voice cloning. Speaker '{voice_name}' is a "
+                    f"predefined speaker — use /tts (non-streaming) for predefined speakers, "
+                    f"or clone the voice first via load_voice()."
+                )
+            raise ValueError(
+                f"Voice '{voice_name}' not found. Load it first with load_voice()."
+            )
+        
+        text_preview = text[:50] + "..." if len(text) > 50 else text
+        self.log.info(
+            f"Streaming: text='{text_preview}' ({len(text)} chars), "
+            f"voice='{voice_name}', lang={language}"
+        )
+        
+        cfg = self.qwen_config
+        stream_kwargs = {
+            "text": text,
+            "language": language,
+            "voice_clone_prompt": voice_clone_prompt,
+            "emit_every_frames": cfg.streaming_emit_every,
+            "decode_window_frames": cfg.streaming_decode_window,
+            "first_chunk_emit_every": cfg.streaming_first_chunk_emit,
+            "first_chunk_decode_window": cfg.streaming_first_chunk_window,
+            "first_chunk_frames": cfg.streaming_first_chunk_frames,
+        }
+        
+        import time
+        t0 = time.perf_counter()
+        first_chunk = True
+        chunk_count = 0
+        
+        for chunk, sr in model.stream_generate_voice_clone(**stream_kwargs):
+            if first_chunk:
+                ttfa = (time.perf_counter() - t0) * 1000
+                self.log.info(f"TTFA: {ttfa:.0f}ms")
+                first_chunk = False
+            chunk_count += 1
+            yield chunk, sr, {"sample_rate": sr, "streaming": True}
+        total = (time.perf_counter() - t0) * 1000
+        self.log.info(f"Streaming complete: {chunk_count} chunks in {total:.0f}ms")
     
     def _filter_gen_kwargs(self, kwargs: dict) -> dict:
         """Extract and validate generation parameters."""

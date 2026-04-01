@@ -20,7 +20,7 @@ class Settings(BaseModel):
     
     # Server Configuration
     host: str = Field(default="0.0.0.0")
-    port: int = Field(default=8010)
+    port: int = Field(default=8000)
     debug: bool = Field(default=False)
     
     # CORS Configuration
@@ -155,7 +155,7 @@ class Settings(BaseModel):
     
     @validator('tts_backend')
     def validate_tts_backend(cls, v):
-        valid_backends = ['xtts', 'glm-tts']
+        valid_backends = ['xtts', 'glm-tts', 'qwen-tts']
         if v.lower() not in valid_backends:
             raise ValueError(f'tts_backend must be one of {valid_backends}')
         return v.lower()
@@ -302,6 +302,10 @@ def get_backend_config() -> Dict[str, Any]:
             "stt_api_url": settings.stt_api_url,
             "stt_api_key": settings.stt_api_key,
         }
+    elif backend == "qwen-tts":
+        # Qwen config is driven by QWEN_TTS_* env vars via QwenTTSConfig.from_env()
+        # Return empty dict — the backend __init__ handles it
+        return {}
     else:
         return {}
 

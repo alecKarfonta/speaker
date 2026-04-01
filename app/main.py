@@ -868,44 +868,67 @@ async def generate_speech_stream(
     async def audio_generator():
         """Async generator that yields framed audio chunks.
         
-        Runs the blocking TTS inference in a thread pool to keep
-        the event loop free for health checks and other requests.
+        Runs the blocking TTS inference in a thread pool with a queue
+        so chunks are yielded as they're generated (true streaming).
         """
+        import queue
+        import threading
+        
         try:
-            # Collect all chunks from the sync generator in a thread
-            def _generate_all_chunks():
-                return list(tts_service.generate_speech_streaming(
-                    text=text,
-                    voice_name=request.voice_name,
-                    language=request.language.value if hasattr(request.language, 'value') else request.language,
-                    **glm_kwargs
-                ))
+            chunk_queue = queue.Queue()
+            error_holder = [None]
+            
+            def _producer():
+                try:
+                    for chunk_audio, sample_rate, metadata in tts_service.generate_speech_streaming(
+                        text=text,
+                        voice_name=request.voice_name,
+                        language=request.language.value if hasattr(request.language, 'value') else request.language,
+                        **glm_kwargs
+                    ):
+                        chunk_queue.put((chunk_audio, sample_rate, metadata))
+                except Exception as e:
+                    error_holder[0] = e
+                finally:
+                    chunk_queue.put(None)  # sentinel
             
             async with tts_inference_semaphore:
-                chunks = await asyncio.to_thread(_generate_all_chunks)
+                thread = threading.Thread(target=_producer, daemon=True)
+                thread.start()
+                
+                while True:
+                    item = await asyncio.to_thread(chunk_queue.get, True, 300.0)
+                    if item is None:
+                        break
+                    
+                    chunk_audio, sample_rate, metadata = item
+                    
+                    # Encode audio as WAV or raw float32
+                    if request.output_format and request.output_format.value == "wav":
+                        wav_buffer = io.BytesIO()
+                        sf.write(wav_buffer, chunk_audio, sample_rate, format='WAV', subtype='PCM_16')
+                        wav_buffer.seek(0)
+                        audio_bytes = wav_buffer.read()
+                    else:
+                        audio_bytes = chunk_audio.astype(np.float32).tobytes()
+                    
+                    # Encode metadata as JSON
+                    metadata_bytes = json.dumps(metadata).encode('utf-8')
+                    
+                    # Frame: 4-byte audio_len (little-endian) + 4-byte metadata_len + audio + metadata
+                    header = struct.pack('<II', len(audio_bytes), len(metadata_bytes))
+                    
+                    yield header + audio_bytes + metadata_bytes
+                    
+                    logger.debug(
+                        f"[STREAMING] Yielded chunk {metadata.get('chunk_index', 0)+1}: "
+                        f"{len(audio_bytes)} bytes"
+                    )
+                
+                thread.join()
             
-            for chunk_audio, sample_rate, metadata in chunks:
-                # Encode audio as float32 bytes (or convert to WAV if requested)
-                if request.output_format and request.output_format.value == "wav":
-                    wav_buffer = io.BytesIO()
-                    sf.write(wav_buffer, chunk_audio, sample_rate, format='WAV', subtype='PCM_16')
-                    wav_buffer.seek(0)
-                    audio_bytes = wav_buffer.read()
-                else:
-                    audio_bytes = chunk_audio.astype(np.float32).tobytes()
-                
-                # Encode metadata as JSON
-                metadata_bytes = json.dumps(metadata).encode('utf-8')
-                
-                # Frame: 4-byte audio_len (little-endian) + 4-byte metadata_len + audio + metadata
-                header = struct.pack('<II', len(audio_bytes), len(metadata_bytes))
-                
-                yield header + audio_bytes + metadata_bytes
-                
-                logger.debug(
-                    f"[STREAMING] Yielded chunk {metadata.get('chunk_index', 0)+1}/"
-                    f"{metadata.get('total_chunks', 1)}: {len(audio_bytes)} bytes"
-                )
+            if error_holder[0]:
+                raise error_holder[0]
                 
         except Exception as e:
             logger.error(f"[STREAMING] Error during generation: {str(e)}", exc_info=True)
@@ -1303,4 +1326,4 @@ async def prometheus_metrics():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8010)
+    uvicorn.run(app, host=settings.host, port=settings.port)

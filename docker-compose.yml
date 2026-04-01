@@ -159,7 +159,7 @@ services:
       #   moss-tts:8000   → MOSS-TTS (default)
       #   tts-api:8000    → GLM-TTS
       #   qwen-tts:8000   → Qwen3-TTS (qwen profile)
-      - TTS_BACKEND_HOST=tts-api:8000
+      - TTS_BACKEND_HOST=qwen-tts:8000
       # Audiobook API lives on tts-api (separated from TTS engine)
       - AUDIOBOOK_BACKEND_HOST=tts-api:8000
     depends_on:

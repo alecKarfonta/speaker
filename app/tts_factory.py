@@ -82,6 +82,15 @@ def register_default_backends():
             f"GLM-TTS backend not available (missing dependencies): {e}"
         )
 
+    # Try to register Qwen3-TTS if dependencies are available
+    try:
+        from app.backends.qwen_tts import QwenTTSBackend
+        TTSBackendFactory.register_backend("qwen-tts", QwenTTSBackend)
+    except ImportError as e:
+        logging.getLogger("TTSBackendFactory").warning(
+            f"Qwen3-TTS backend not available (missing dependencies): {e}"
+        )
+
     # Always register a stub backend for testing without GPU
     try:
         from app.backends.stub_backend import StubTTSBackend

@@ -34,6 +34,13 @@ class QwenTTSConfig:
     enable_voice_design: bool = True
     enable_voice_clone: bool = True
     enable_streaming: bool = True
+    streaming_compile: bool = True
+    streaming_compile_mode: str = "reduce-overhead"
+    streaming_decode_window: int = 80
+    streaming_emit_every: int = 12
+    streaming_first_chunk_emit: int = 5
+    streaming_first_chunk_window: int = 48
+    streaming_first_chunk_frames: int = 48
     
     # Hardware configuration
     device: Optional[str] = None  # None = auto-detect
@@ -76,6 +83,7 @@ class QwenTTSConfig:
         enable_voice_design = str_to_bool(os.getenv("QWEN_TTS_ENABLE_VOICE_DESIGN", "true"))
         if model_size == "0.6B":
             enable_voice_design = False
+
         
         return cls(
             model_size=model_size,
@@ -85,6 +93,14 @@ class QwenTTSConfig:
             enable_custom_voice=str_to_bool(os.getenv("QWEN_TTS_ENABLE_CUSTOM_VOICE", "true")),
             enable_voice_design=enable_voice_design,
             enable_voice_clone=str_to_bool(os.getenv("QWEN_TTS_ENABLE_VOICE_CLONE", "true")),
+            enable_streaming=str_to_bool(os.getenv("QWEN_TTS_ENABLE_STREAMING", "true")),
+            streaming_compile=str_to_bool(os.getenv("QWEN_TTS_STREAMING_COMPILE", "true")),
+            streaming_compile_mode=os.getenv("QWEN_TTS_STREAMING_COMPILE_MODE", "reduce-overhead"),
+            streaming_decode_window=int(os.getenv("QWEN_TTS_STREAMING_DECODE_WINDOW", "80")),
+            streaming_emit_every=int(os.getenv("QWEN_TTS_STREAMING_EMIT_EVERY", "12")),
+            streaming_first_chunk_emit=int(os.getenv("QWEN_TTS_STREAMING_FIRST_CHUNK_EMIT", "5")),
+            streaming_first_chunk_window=int(os.getenv("QWEN_TTS_STREAMING_FIRST_CHUNK_WINDOW", "48")),
+            streaming_first_chunk_frames=int(os.getenv("QWEN_TTS_STREAMING_FIRST_CHUNK_FRAMES", "48")),
         )
     
     @classmethod

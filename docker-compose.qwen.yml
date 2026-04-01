@@ -1,0 +1,61 @@
+# docker-compose.qwen.yml
+# Standalone compose for Qwen3-TTS with streaming
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.qwen.yml up --build tts-api
+#
+# Or standalone (just qwen + frontend):
+#   docker compose -f docker-compose.qwen.yml up --build
+
+services:
+  qwen-tts:
+    build:
+      context: .
+      dockerfile: Dockerfile.qwen
+    ports:
+      - "8012:8000"
+    environment:
+      - ENVIRONMENT=development
+      - PYTHONPATH=/app
+      - HF_HOME=/root/.cache/huggingface
+      - NVIDIA_VISIBLE_DEVICES=all
+      - STT_API_URL=http://192.168.1.196:8603/v1/audio/transcriptions
+      - STT_API_KEY=your-api-key
+      # ── Qwen3-TTS Backend ──
+      - TTS_BACKEND=qwen-tts
+      - QWEN_TTS_MODEL_SIZE=1.7B
+      - QWEN_TTS_ENABLE_VOICE_CLONE=true
+      - QWEN_TTS_ENABLE_CUSTOM_VOICE=true
+      - QWEN_TTS_ENABLE_VOICE_DESIGN=false
+      - QWEN_TTS_DTYPE=bfloat16
+      - QWEN_TTS_FLASH_ATTENTION=true
+      - QWEN_TTS_ENABLE_STREAMING=true
+      - VOICES_DIR=/app/data/voices
+      # AI Character Analysis (for audiobooks)
+      - INSTRUCT_LLM_API_URL=http://192.168.1.196:8600/v1/chat/completions
+      - INSTRUCT_LLM_MODEL=Qwen3-Coder-Next
+      - INSTRUCT_LLM_API_KEY=placeholder-api-key
+      # ComfyUI Visual Generation
+      - COMFYUI_API_URL=http://192.168.1.77:8188
+      - COMFYUI_VISUAL_MODE=video
+      - COMFYUI_IMAGE_WIDTH=1920
+      - COMFYUI_IMAGE_HEIGHT=1080
+      - COMFYUI_VIDEO_FPS=10
+    volumes:
+      - ./app:/app/app
+      - ./data/voices:/app/data/voices
+      - ./data/audiobooks:/app/data/audiobooks
+      - ./output:/app/output
+      - qwen_hf_cache:/root/.cache/huggingface
+    command: >
+      bash -c "python3 -m app.main"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  qwen_hf_cache:

@@ -134,3 +134,12 @@ class ColoredFormatter(logging.Formatter):
     def format_time(self, record, datefmt=None):
         return super().formatTime(record, datefmt)
 
+
+def get_class_logger(instance, logger=None):
+    """Wrapper that ensures a logger for a specific class instance."""
+    import logging
+    name = instance.__class__.__name__
+    if logger is None:
+        logger = logging.getLogger(name)
+    return logger
+
