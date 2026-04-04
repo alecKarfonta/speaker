@@ -69,8 +69,14 @@ def assemble_chunks(raw_stream: bytes) -> tuple[bytes, dict]:
         try:
             meta = json.loads(meta_bytes)
             meta_list.append(meta)
+            # Support both old ("sample_rate") and compact ("sr") metadata keys
             if "sample_rate" in meta:
                 sample_rate = meta["sample_rate"]
+            elif "sr" in meta:
+                sample_rate = meta["sr"]
+            # Normalize streaming key for summary
+            if "s" in meta and "streaming" not in meta:
+                meta["streaming"] = meta["s"]
         except Exception:
             meta = {}
 

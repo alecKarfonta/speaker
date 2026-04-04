@@ -996,16 +996,44 @@ class QwenTTSBackend(TTSBackendBase):
         t0 = time.perf_counter()
         first_chunk = True
         chunk_count = 0
+        total_audio_samples = 0
         
-        for chunk, sr in model.stream_generate_voice_clone(**stream_kwargs):
-            if first_chunk:
-                ttfa = (time.perf_counter() - t0) * 1000
-                self.log.info(f"TTFA: {ttfa:.0f}ms")
-                first_chunk = False
-            chunk_count += 1
-            yield chunk, sr, {"sample_rate": sr, "streaming": True}
-        total = (time.perf_counter() - t0) * 1000
-        self.log.info(f"Streaming complete: {chunk_count} chunks in {total:.0f}ms")
+        try:
+            for chunk, sr in model.stream_generate_voice_clone(**stream_kwargs):
+                if first_chunk:
+                    ttfa = (time.perf_counter() - t0) * 1000
+                    self.log.info(f"TTFA: {ttfa:.0f}ms")
+                    first_chunk = False
+                chunk_count += 1
+                total_audio_samples += len(chunk)
+                yield chunk, sr, {"sample_rate": sr, "streaming": True}
+        except AssertionError as e:
+            # CUDA graph TLS assertion — fall back to non-optimized decode
+            self.log.warning(
+                f"CUDA graph AssertionError after {chunk_count} chunks — "
+                f"retrying without optimized decode: {e}"
+            )
+            stream_kwargs["use_optimized_decode"] = False
+            t0 = time.perf_counter()
+            first_chunk = True
+            chunk_count = 0
+            total_audio_samples = 0
+            for chunk, sr in model.stream_generate_voice_clone(**stream_kwargs):
+                if first_chunk:
+                    ttfa = (time.perf_counter() - t0) * 1000
+                    self.log.info(f"TTFA (fallback): {ttfa:.0f}ms")
+                    first_chunk = False
+                chunk_count += 1
+                total_audio_samples += len(chunk)
+                yield chunk, sr, {"sample_rate": sr, "streaming": True}
+        
+        total_ms = (time.perf_counter() - t0) * 1000
+        audio_dur_s = total_audio_samples / sr if sr > 0 else 0
+        rtf = audio_dur_s / (total_ms / 1000) if total_ms > 0 else 0
+        self.log.info(
+            f"Streaming complete: {chunk_count} chunks in {total_ms:.0f}ms | "
+            f"audio={audio_dur_s:.2f}s | RTF={rtf:.2f}x"
+        )
     
     def _filter_gen_kwargs(self, kwargs: dict) -> dict:
         """Extract and validate generation parameters."""

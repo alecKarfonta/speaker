@@ -873,13 +873,39 @@ async def generate_speech_stream(
         """
         import queue
         import threading
+        from collections import defaultdict
         
         try:
             chunk_queue = queue.Queue()
             error_holder = [None]
             
+            def _init_cuda_graph_tls():
+                """Initialize PyTorch CUDA graph Thread Local Storage for this thread.
+                
+                torch.compile with mode='reduce-overhead' uses CUDA graphs internally,
+                which require TLS keys ('tree_manager_containers', 'tree_manager_locks')
+                to be registered in each thread. Without this, the compiled path crashes
+                with AssertionError in cudagraph_trees.get_obj().
+                """
+                try:
+                    import torch
+                    import torch._inductor.cudagraph_trees as cgt
+                    if not torch._C._is_key_in_tls("tree_manager_containers"):
+                        cgt.local.tree_manager_containers = {}
+                        cgt.local.tree_manager_locks = defaultdict(threading.Lock)
+                        torch._C._stash_obj_in_tls(
+                            "tree_manager_containers", cgt.local.tree_manager_containers
+                        )
+                        torch._C._stash_obj_in_tls(
+                            "tree_manager_locks", cgt.local.tree_manager_locks
+                        )
+                        logger.debug("[STREAMING] CUDA graph TLS initialized for producer thread")
+                except Exception as e:
+                    logger.debug(f"[STREAMING] CUDA graph TLS init skipped: {e}")
+            
             def _producer():
                 try:
+                    _init_cuda_graph_tls()
                     for chunk_audio, sample_rate, metadata in tts_service.generate_speech_streaming(
                         text=text,
                         voice_name=request.voice_name,
@@ -896,6 +922,7 @@ async def generate_speech_stream(
                 thread = threading.Thread(target=_producer, daemon=True)
                 thread.start()
                 
+                chunk_idx = 0
                 while True:
                     item = await asyncio.to_thread(chunk_queue.get, True, 300.0)
                     if item is None:
@@ -903,27 +930,32 @@ async def generate_speech_stream(
                     
                     chunk_audio, sample_rate, metadata = item
                     
-                    # Encode audio as WAV or raw float32
+                    # Encode audio as raw int16 PCM (minimal overhead)
+                    # WAV headers are wasteful for streaming — the client knows
+                    # the sample rate from response headers and metadata.
                     if request.output_format and request.output_format.value == "wav":
+                        # WAV mode: wrap in WAV container for compatibility
                         wav_buffer = io.BytesIO()
                         sf.write(wav_buffer, chunk_audio, sample_rate, format='WAV', subtype='PCM_16')
                         wav_buffer.seek(0)
                         audio_bytes = wav_buffer.read()
                     else:
-                        audio_bytes = chunk_audio.astype(np.float32).tobytes()
+                        # Raw int16 PCM — fast path
+                        audio_bytes = (chunk_audio * 32767).astype(np.int16).tobytes()
                     
-                    # Encode metadata as JSON
-                    metadata_bytes = json.dumps(metadata).encode('utf-8')
+                    # Compact metadata — only essentials per chunk
+                    compact_meta = {
+                        "sr": sample_rate,
+                        "s": metadata.get("streaming", False),
+                        "i": chunk_idx,
+                    }
+                    metadata_bytes = json.dumps(compact_meta).encode('utf-8')
                     
                     # Frame: 4-byte audio_len (little-endian) + 4-byte metadata_len + audio + metadata
                     header = struct.pack('<II', len(audio_bytes), len(metadata_bytes))
                     
                     yield header + audio_bytes + metadata_bytes
-                    
-                    logger.debug(
-                        f"[STREAMING] Yielded chunk {metadata.get('chunk_index', 0)+1}: "
-                        f"{len(audio_bytes)} bytes"
-                    )
+                    chunk_idx += 1
                 
                 thread.join()
             

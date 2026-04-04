@@ -37,8 +37,8 @@ class QwenTTSConfig:
     streaming_compile: bool = True
     streaming_compile_mode: str = "reduce-overhead"
     streaming_decode_window: int = 80
-    streaming_emit_every: int = 12
-    streaming_first_chunk_emit: int = 5
+    streaming_emit_every: int = 16
+    streaming_first_chunk_emit: int = 8
     streaming_first_chunk_window: int = 48
     streaming_first_chunk_frames: int = 48
     
@@ -97,8 +97,8 @@ class QwenTTSConfig:
             streaming_compile=str_to_bool(os.getenv("QWEN_TTS_STREAMING_COMPILE", "true")),
             streaming_compile_mode=os.getenv("QWEN_TTS_STREAMING_COMPILE_MODE", "reduce-overhead"),
             streaming_decode_window=int(os.getenv("QWEN_TTS_STREAMING_DECODE_WINDOW", "80")),
-            streaming_emit_every=int(os.getenv("QWEN_TTS_STREAMING_EMIT_EVERY", "12")),
-            streaming_first_chunk_emit=int(os.getenv("QWEN_TTS_STREAMING_FIRST_CHUNK_EMIT", "5")),
+            streaming_emit_every=int(os.getenv("QWEN_TTS_STREAMING_EMIT_EVERY", "16")),
+            streaming_first_chunk_emit=int(os.getenv("QWEN_TTS_STREAMING_FIRST_CHUNK_EMIT", "8")),
             streaming_first_chunk_window=int(os.getenv("QWEN_TTS_STREAMING_FIRST_CHUNK_WINDOW", "48")),
             streaming_first_chunk_frames=int(os.getenv("QWEN_TTS_STREAMING_FIRST_CHUNK_FRAMES", "48")),
         )
@@ -125,4 +125,3 @@ class QwenTTSConfig:
         
         if self.model_size == "0.6B" and self.enable_voice_design:
             raise ValueError("VoiceDesign not available for 0.6B model. Set enable_voice_design=False")
-
