@@ -36,6 +36,20 @@ _os.environ.setdefault('TORCHINDUCTOR_AUTOGRAD_CACHE', '1')
 _os.environ.setdefault('CUDA_CACHE_MAXSIZE', '4294967296')  # 4 GiB PTX JIT cache
 
 import torchaudio
+import soundfile as sf
+
+
+def _sf_load(path: str):
+    """Load audio via soundfile (avoids torchcodec dependency in torchaudio 2.11+).
+    Returns (waveform_tensor, sample_rate) matching torchaudio.load() signature.
+    """
+    data, sr = sf.read(path, dtype='float32')
+    wav = torch.from_numpy(data).float()
+    if wav.dim() == 1:
+        wav = wav.unsqueeze(0)  # (1, samples)
+    elif wav.dim() == 2:
+        wav = wav.T  # soundfile: (samples, ch) → (ch, samples)
+    return wav, sr
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -654,50 +668,200 @@ def _generate_audio(text: str, reference_path: Optional[str] = None,
 
 
 def _audio_to_wav_bytes(audio: torch.Tensor, sr: int) -> bytes:
-    """Convert audio tensor to WAV bytes."""
-    import tempfile
-    # torchaudio's torchcodec backend doesn't support BytesIO,
-    # so we write to a temp file instead
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_path = tmp.name
-    try:
-        torchaudio.save(tmp_path, audio.unsqueeze(0).cpu(), sr, format="wav")
-        with open(tmp_path, "rb") as f:
-            return f.read()
-    finally:
-        os.unlink(tmp_path)
+    """Convert audio tensor to WAV bytes via soundfile (no torchcodec dep)."""
+    import io
+    buf = io.BytesIO()
+    # audio shape: (samples,) — soundfile expects (samples,) or (samples, channels)
+    pcm = audio.cpu().numpy()
+    if pcm.ndim == 0:
+        return b''
+    sf.write(buf, pcm, sr, format='WAV', subtype='PCM_16')
+    return buf.getvalue()
 
 
 def _generate_audio_realtime(text: str, reference_path: Optional[str] = None) -> tuple[torch.Tensor, int]:
     """Non-streaming generation using the MOSS-TTS-Realtime model.
 
     Used by /tts endpoint when the base model is not loaded.
+    Uses the streaming session API to push text tokens, then collects
+    all audio into a single tensor.
     """
-    device = torch.device(DEVICE)
-    ref_audio_path = reference_path if reference_path else None
+    import sys
+    rt_pkg_dir = "/app/MOSS-TTS/moss_tts_realtime"
+    if rt_pkg_dir not in sys.path:
+        sys.path.insert(0, rt_pkg_dir)
 
-    with torch.inference_mode():
-        result = rt_inferencer.generate(
-            text=text,
-            reference_audio_path=ref_audio_path,
-            temperature=0.8,
-            top_p=0.6,
-            top_k=30,
-            repetition_penalty=1.1,
-            repetition_window=50,
-            device=device,
+    from mossttsrealtime.streaming_mossttsrealtime import (
+        MossTTSRealtimeStreamingSession,
+        AudioStreamDecoder,
+    )
+
+    # Pick the first worker (globals are backward-compat aliases to worker[0])
+    worker = rt_workers[0] if rt_workers else None
+    if worker is None:
+        raise RuntimeError("No realtime worker available")
+
+    device = torch.device(worker.device)
+
+    # Encode reference audio for voice cloning (cached)
+    prompt_tokens = None
+    if reference_path:
+        cache_key = (str(reference_path), os.path.getmtime(reference_path))
+        if cache_key in worker.prompt_cache:
+            prompt_tokens = worker.prompt_cache[cache_key]
+        else:
+            with torch.inference_mode():
+                wav_ref, sr_ref = _sf_load(reference_path)
+                if sr_ref != worker.sample_rate:
+                    wav_ref = torchaudio.functional.resample(wav_ref, sr_ref, worker.sample_rate)
+                if wav_ref.shape[0] > 1:
+                    wav_ref = wav_ref.mean(dim=0, keepdim=True)
+                encode_result = worker.codec.encode(
+                    wav_ref.unsqueeze(0).to(device),
+                    chunk_duration=0.24,
+                )
+                prompt_tokens = encode_result["audio_codes"].cpu().numpy().squeeze(1)
+            worker.prompt_cache[cache_key] = prompt_tokens
+
+    # Create streaming session
+    session = MossTTSRealtimeStreamingSession(
+        worker.inferencer,
+        worker.processor,
+        codec=worker.codec,
+        codec_sample_rate=worker.sample_rate,
+        codec_encode_kwargs={"chunk_duration": 0.24},
+        prefill_text_len=worker.processor.delay_tokens_len,
+        temperature=0.8,
+        top_p=0.6,
+        top_k=30,
+        do_sample=True,
+        repetition_penalty=1.1,
+        repetition_window=50,
+    )
+
+    if prompt_tokens is not None:
+        session.set_voice_prompt_tokens(prompt_tokens)
+
+    # Build input_ids with chat template (same as streaming path)
+    system_prompt = worker.processor.make_ensemble(prompt_tokens)
+    user_prompt_text = (
+        "<|im_end|>\n<|im_start|>user\n"
+        + text
+        + "<|im_end|>\n<|im_start|>assistant\n"
+    )
+    user_prompt_ids = worker.tokenizer.encode(user_prompt_text, add_special_tokens=False)
+    user_prompt = np.full(
+        (len(user_prompt_ids), system_prompt.shape[1]),
+        fill_value=worker.processor.audio_channel_pad,
+        dtype=np.int64,
+    )
+    user_prompt[:, 0] = np.array(user_prompt_ids, dtype=np.int64)
+    input_ids = np.concatenate([system_prompt, user_prompt], axis=0)
+
+    worker.inferencer.reset_generation_state(keep_cache=False)
+    session.reset_turn(
+        input_ids=input_ids,
+        include_system_prompt=False,
+        reset_cache=True,
+    )
+
+    # Tokenize text
+    text_tokens = worker.tokenizer.encode(text, add_special_tokens=False)
+    if not text_tokens:
+        raise RuntimeError("Text tokenized to empty — nothing to generate")
+
+    # Audio EOS / codebook size for sanitization
+    audio_eos_token = getattr(worker.processor, "audio_eos_token_id", None)
+    codebook_size = getattr(worker.processor, "codebook_size", 2048)
+
+    def _sanitize_tokens(tokens):
+        if tokens.dim() == 1:
+            tokens = tokens.unsqueeze(0)
+        if tokens.numel() == 0:
+            return tokens, False
+        eos_rows = (tokens[:, 0] == audio_eos_token).nonzero(as_tuple=False) if audio_eos_token is not None else torch.tensor([])
+        invalid_rows = ((tokens < 0) | (tokens >= codebook_size)).any(dim=1)
+        stop_idx = None
+        if eos_rows.numel() > 0:
+            stop_idx = int(eos_rows[0].item())
+        if invalid_rows.any():
+            inv_idx = int(invalid_rows.nonzero(as_tuple=False)[0].item())
+            stop_idx = inv_idx if stop_idx is None else min(stop_idx, inv_idx)
+        if stop_idx is not None:
+            return tokens[:stop_idx], True
+        return tokens, False
+
+    # Hard-reset codec streaming state
+    for _name, module in worker.codec.named_modules():
+        if hasattr(module, '_streaming_state'):
+            module._streaming_state = None
+
+    worker.codec._start_streaming(batch_size=1)
+    try:
+        decoder = AudioStreamDecoder(
+            worker.codec,
+            chunk_frames=12,
+            overlap_frames=0,
+            decode_kwargs={"chunk_duration": -1},
         )
 
-        # result is a list of token arrays, one per text input
-        generated_tokens = result[0]  # numpy array [T, 16]
-        output = torch.tensor(generated_tokens).to(device)
-        decode_result = rt_codec.decode(output.permute(1, 0), chunk_duration=8)
-        wav = decode_result["audio"][0].cpu().detach()  # [1, samples]
+        with torch.inference_mode():
+            # Push text tokens in chunks
+            CHUNK_SIZE = 12
+            for i in range(0, len(text_tokens), CHUNK_SIZE):
+                token_chunk = text_tokens[i:i + CHUNK_SIZE]
+                audio_frames = session.push_text_tokens(token_chunk)
+                for frame in audio_frames:
+                    tokens = frame
+                    if tokens.dim() == 3:
+                        tokens = tokens[0]
+                    tokens, _ = _sanitize_tokens(tokens)
+                    if tokens.numel() > 0:
+                        decoder.push_tokens(tokens.detach())
 
-        if wav.dim() == 2:
-            wav = wav.squeeze(0)  # [samples]
+            # Signal end of text
+            audio_frames = session.end_text()
+            for frame in audio_frames:
+                tokens = frame
+                if tokens.dim() == 3:
+                    tokens = tokens[0]
+                tokens, _ = _sanitize_tokens(tokens)
+                if tokens.numel() > 0:
+                    decoder.push_tokens(tokens.detach())
 
-    return wav, rt_sample_rate
+            # Drain remaining audio
+            for _ in range(200):
+                audio_frames = session.drain(max_steps=1)
+                if not audio_frames:
+                    break
+                for frame in audio_frames:
+                    tokens = frame
+                    if tokens.dim() == 3:
+                        tokens = tokens[0]
+                    tokens, _ = _sanitize_tokens(tokens)
+                    if tokens.numel() > 0:
+                        decoder.push_tokens(tokens.detach())
+                if session.inferencer.is_finished:
+                    break
+
+            # Collect all audio chunks
+            audio_chunks = list(decoder.audio_chunks())
+            final = decoder.flush()
+            if final is not None and final.numel() > 0:
+                audio_chunks.append(final)
+
+        if not audio_chunks:
+            raise RuntimeError("Realtime model produced no audio")
+
+        # Concatenate all chunks into a single tensor
+        all_audio = torch.cat([c.cpu().reshape(-1) for c in audio_chunks], dim=0)
+
+    finally:
+        worker.codec._stop_streaming()
+        # Reset inferencer state for next request
+        worker.inferencer.reset_generation_state(keep_cache=False)
+
+    return all_audio, worker.sample_rate
 
 
 # ── Endpoints ──
@@ -946,7 +1110,7 @@ async def _stream_realtime(request: TTSRequest, ref_path: Optional[str]):
             logger.info(f"[Stream-RT][{worker.device}] Voice prompt cache hit ({time.perf_counter()-t_start:.3f}s)")
         else:
             with torch.inference_mode():
-                wav, sr_wav = torchaudio.load(ref_path)
+                wav, sr_wav = _sf_load(ref_path)
                 if sr_wav != worker.sample_rate:
                     wav = torchaudio.functional.resample(wav, sr_wav, worker.sample_rate)
                 if wav.shape[0] > 1:

@@ -61,6 +61,12 @@ interface AudiobookState {
     setVisualSettings: (settings: Partial<{ frames: number; fps: number; width: number; height: number }>) => void;
     clearError: () => void;
     fetchQueueStatus: () => Promise<void>;
+    // Called by WebSocket handler when a queued TTS job finishes
+    handleSegmentComplete: (segmentId: string) => Promise<void>;
+    handleSegmentError: (segmentId: string) => Promise<void>;
+    // Called by WebSocket handler when a visual generation job finishes
+    handleVisualComplete: (segmentId: string) => Promise<void>;
+    handleVisualError: (segmentId: string) => Promise<void>;
 }
 
 export const useAudiobookStore = create<AudiobookState>((set, get) => ({
@@ -155,25 +161,101 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     },
 
     generateSegment: async (segmentId) => {
-        const { currentProject, generating } = get();
+        const { currentProject } = get();
         if (!currentProject) return;
 
-        const newGenerating = new Set(generating);
-        newGenerating.add(segmentId);
-        set({ generating: newGenerating });
+        // Optimistically mark as generating in the UI
+        set((s) => ({ generating: new Set([...s.generating, segmentId]) }));
 
         try {
+            // This call simply enqueues the job and returns immediately.
+            // The actual completion is signalled via WebSocket tts_segment_done/tts_segment_error,
+            // which calls handleSegmentComplete / handleSegmentError to clear the generating flag.
             await api.generateSegment(currentProject.id, segmentId);
-            // Reload project to get updated status
-            const updated = await api.getProject(currentProject.id);
-            const doneGenerating = new Set(get().generating);
-            doneGenerating.delete(segmentId);
-            set({ currentProject: updated, generating: doneGenerating });
         } catch (e: any) {
-            const doneGenerating = new Set(get().generating);
-            doneGenerating.delete(segmentId);
-            set({ generating: doneGenerating, error: e.message });
-            // Still reload to get error status
+            // Enqueue itself failed (e.g. 404, network error) — clean up immediately
+            set((s) => {
+                const next = new Set(s.generating);
+                next.delete(segmentId);
+                return { generating: next, error: e.message };
+            });
+        }
+    },
+
+    handleSegmentComplete: async (segmentId) => {
+        const { currentProject } = get();
+        // Remove from generating set
+        set((s) => {
+            const next = new Set(s.generating);
+            next.delete(segmentId);
+            return { generating: next };
+        });
+        // Reload project to get updated has_audio, status, duration
+        if (currentProject) {
+            try {
+                const updated = await api.getProject(currentProject.id);
+                set({ currentProject: updated });
+            } catch { }
+        }
+    },
+
+    handleSegmentError: async (segmentId) => {
+        const { currentProject } = get();
+        // Remove from generating set
+        set((s) => {
+            const next = new Set(s.generating);
+            next.delete(segmentId);
+            return { generating: next };
+        });
+        // Reload project to get error state
+        if (currentProject) {
+            try {
+                const updated = await api.getProject(currentProject.id);
+                set({ currentProject: updated });
+            } catch { }
+        }
+    },
+
+    handleVisualComplete: async (segmentId) => {
+        const { currentProject } = get();
+        // Resolve the visual_id linked to this segment to clear va:${id} too
+        let visualId: string | null = null;
+        if (currentProject) {
+            for (const ch of currentProject.chapters) {
+                const seg = ch.segments.find((s: any) => s.id === segmentId);
+                if (seg) { visualId = (seg as any).visual_id || null; break; }
+            }
+        }
+        set((s) => {
+            const next = new Set(s.generating);
+            next.delete(segmentId);
+            if (visualId) next.delete(`va:${visualId}`);
+            return { generating: next };
+        });
+        if (currentProject) {
+            try {
+                const updated = await api.getProject(currentProject.id);
+                set({ currentProject: updated });
+            } catch { }
+        }
+    },
+
+    handleVisualError: async (segmentId) => {
+        const { currentProject } = get();
+        let visualId: string | null = null;
+        if (currentProject) {
+            for (const ch of currentProject.chapters) {
+                const seg = ch.segments.find((s: any) => s.id === segmentId);
+                if (seg) { visualId = (seg as any).visual_id || null; break; }
+            }
+        }
+        set((s) => {
+            const next = new Set(s.generating);
+            next.delete(segmentId);
+            if (visualId) next.delete(`va:${visualId}`);
+            return { generating: next };
+        });
+        if (currentProject) {
             try {
                 const updated = await api.getProject(currentProject.id);
                 set({ currentProject: updated });
@@ -315,7 +397,7 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     generateVisual: async (segmentId, params) => {
         const { currentProject, visualMode, visualSettings } = get();
         if (!currentProject) return;
-        // Keep in generating set — we'll clear it only when the worker finishes
+        // Mark as generating — cleared by WebSocket visual_done/visual_error via handleVisualComplete/Error
         set((s) => ({ loading: false, error: null, generating: new Set([...s.generating, segmentId]) }));
         try {
             const merged: VisualParams = {
@@ -328,28 +410,18 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
             };
             await api.generateVisual(currentProject.id, segmentId, merged);
 
-            // Poll until the queue worker marks visual_status as done or error
-            const poll = async () => {
+            // Safety net: if the WS event never arrives (e.g. connection dropped),
+            // fall back to a single poll after 45s to avoid stuck spinners.
+            setTimeout(async () => {
+                const { generating } = get();
+                if (!generating.has(segmentId)) return; // already resolved via WS
                 try {
                     const updated = await api.getProject(currentProject.id);
-                    // Find the segment in the updated project
-                    let done = false;
-                    for (const ch of updated.chapters) {
-                        for (const seg of ch.segments) {
-                            if (seg.id === segmentId) {
-                                if (seg.visual_status === 'done' || seg.visual_status === 'error') {
-                                    done = true;
-                                }
-                                break;
-                            }
-                        }
-                    }
                     set((s) => {
                         const next = new Set(s.generating);
-                        if (done) next.delete(segmentId);
+                        next.delete(segmentId);
                         return { currentProject: updated, generating: next };
                     });
-                    if (!done) setTimeout(poll, 3000);
                 } catch {
                     set((s) => {
                         const next = new Set(s.generating);
@@ -357,8 +429,7 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
                         return { generating: next };
                     });
                 }
-            };
-            setTimeout(poll, 3000);
+            }, 45_000);
         } catch (e: any) {
             set((s) => {
                 const next = new Set(s.generating);
@@ -450,6 +521,7 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     generateVisualAsset: async (visualId, params) => {
         const { currentProject, visualMode, visualSettings } = get();
         if (!currentProject) return;
+        // Mark as generating — cleared by WebSocket visual_done/visual_error via handleVisualComplete/Error
         set((s) => ({ generating: new Set([...s.generating, `va:${visualId}`]) }));
         try {
             const merged: VisualParams = {
@@ -461,18 +533,18 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
                 ...params,
             };
             await api.generateVisualAsset(currentProject.id, visualId, merged);
-            // Poll until the visual asset is done
-            const poll = async () => {
+
+            // Safety net: if the WS event never arrives, fall back after 45s
+            setTimeout(async () => {
+                const { generating } = get();
+                if (!generating.has(`va:${visualId}`)) return; // already resolved via WS
                 try {
                     const updated = await api.getProject(currentProject.id);
-                    const va = updated.visuals?.find((v: any) => v.id === visualId);
-                    const done = va && (va.visual_status === 'done' || va.visual_status === 'error');
                     set((s) => {
                         const next = new Set(s.generating);
-                        if (done) next.delete(`va:${visualId}`);
+                        next.delete(`va:${visualId}`);
                         return { currentProject: updated, generating: next };
                     });
-                    if (!done) setTimeout(poll, 3000);
                 } catch {
                     set((s) => {
                         const next = new Set(s.generating);
@@ -480,8 +552,7 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
                         return { generating: next };
                     });
                 }
-            };
-            setTimeout(poll, 3000);
+            }, 45_000);
         } catch (e: any) {
             set((s) => {
                 const next = new Set(s.generating);

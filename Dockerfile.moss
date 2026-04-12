@@ -54,8 +54,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     || echo "⚠️  FlashAttention build failed — falling back to SDPA"
 
 # ===== Web framework + quantization dependencies =====
+# Pin transformers to MOSS torch-runtime (5.0.0); 5.5+ breaks remote-code configs (dataclass ordering).
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install fastapi uvicorn websockets python-multipart aiofiles bitsandbytes accelerate PyMuPDF beautifulsoup4 EbookLib
+    pip install fastapi uvicorn websockets python-multipart aiofiles bitsandbytes accelerate "transformers==5.0.0" PyMuPDF beautifulsoup4 EbookLib \
+    && pip install --extra-index-url https://download.pytorch.org/whl/cu130 torchaudio
 
 # ===== Verify core imports =====
 RUN python3 -c "import torch; print('PyTorch:', torch.__version__)" && \

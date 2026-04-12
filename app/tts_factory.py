@@ -91,6 +91,15 @@ def register_default_backends():
             f"Qwen3-TTS backend not available (missing dependencies): {e}"
         )
 
+    # Register MOSS HTTP proxy backend (forwards to remote MOSS-TTS container)
+    try:
+        from app.backends.moss_proxy_backend import MossProxyBackend
+        TTSBackendFactory.register_backend("moss-proxy", MossProxyBackend)
+    except ImportError as e:
+        logging.getLogger("TTSBackendFactory").warning(
+            f"MOSS proxy backend not available (missing dependencies): {e}"
+        )
+
     # Always register a stub backend for testing without GPU
     try:
         from app.backends.stub_backend import StubTTSBackend

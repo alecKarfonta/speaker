@@ -75,6 +75,37 @@ _workers_started = False
 
 
 # ---------------------------------------------------------------------------
+# TTS event bus — async listeners receive per-segment audio lifecycle events
+# ---------------------------------------------------------------------------
+
+_tts_listeners: List[Callable] = []
+
+
+def add_tts_listener(callback: Callable) -> None:
+    """Register a callback to receive TTS generation events.
+    callback(event: dict) will be called with structured progress data.
+    """
+    _tts_listeners.append(callback)
+
+
+def remove_tts_listener(callback: Callable) -> None:
+    """Unregister a previously registered TTS event listener."""
+    try:
+        _tts_listeners.remove(callback)
+    except ValueError:
+        pass
+
+
+async def _emit_tts_event(event: dict) -> None:
+    """Broadcast a TTS event to all registered listeners."""
+    for listener in _tts_listeners:
+        try:
+            await listener(event)
+        except Exception as e:
+            logger.debug(f"TTS event listener error: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Visual event bus — async listeners receive lifecycle events
 # ---------------------------------------------------------------------------
 
@@ -156,6 +187,13 @@ async def _tts_worker():
             segment.status = SegmentStatus.GENERATING
             save_project(project)
 
+            # Notify listeners that this segment is now generating
+            await _emit_tts_event({
+                "type": "tts_segment_start",
+                "project_id": job.project_id,
+                "segment_id": job.segment_id,
+            })
+
             import os
             from .audiobook_models import get_project_dir
             audio_dir = os.path.join(get_project_dir(job.project_id), "audio")
@@ -175,13 +213,29 @@ async def _tts_worker():
                 segment.status = SegmentStatus.DONE
                 logger.info(f"TTS worker: generated audio for segment {job.segment_id} ({duration:.1f}s)")
                 _history.append({"type": "tts", "project_id": job.project_id, "segment_id": job.segment_id, "status": "done"})
+                save_project(project)
+
+                # Notify listeners that generation succeeded
+                await _emit_tts_event({
+                    "type": "tts_segment_done",
+                    "project_id": job.project_id,
+                    "segment_id": job.segment_id,
+                    "duration": round(duration, 2),
+                })
             except Exception as e:
                 segment.status = SegmentStatus.ERROR
                 segment.error_message = str(e)
                 logger.error(f"TTS worker: failed {job.segment_id}: {e}")
                 _history.append({"type": "tts", "project_id": job.project_id, "segment_id": job.segment_id, "status": "error", "error": str(e)})
+                save_project(project)
 
-            save_project(project)
+                # Notify listeners of failure
+                await _emit_tts_event({
+                    "type": "tts_segment_error",
+                    "project_id": job.project_id,
+                    "segment_id": job.segment_id,
+                    "error": str(e),
+                })
         except Exception as e:
             logger.error(f"TTS worker outer error: {e}")
         finally:

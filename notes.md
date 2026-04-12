@@ -1,5 +1,12 @@
 # Speaker TTS Service - Development Plan
 
+## Current (2026-04-04) — MOSS via Docker
+
+- **Goal:** Run `moss-tts` from `Dockerfile.moss` with MOSS-TTS-Realtime + MOSS-VoiceGenerator both loading at startup (`MOSS_ENABLE_VOICE_GEN=true`).
+- **Dockerfile.moss fixes:** `bitsandbytes` was pulling `transformers` 5.5.x and torch cu130 without `torchaudio`; added explicit `transformers==5.0.0` (MOSS `torch-runtime` pin), `torchaudio` from cu130 index, and `transformers` in the extras line so verify imports pass.
+- **GPU / compose:** Host GPU 0 was full; `moss-tts` now uses `NVIDIA_VISIBLE_DEVICES=1,3` with `deploy.device_ids: ["1","3"]`. **Critical:** Do not set `CUDA_VISIBLE_DEVICES` to host indices (`1,3`) when using `NVIDIA_VISIBLE_DEVICES` — inside the container remapped devices are `0` and `1`; wrong `CUDA_VISIBLE_DEVICES` collapsed visibility to a single GPU and forced VoiceGenerator onto the same device as Realtime → OOM.
+- **Verify:** `curl -s http://localhost:8013/health` (MOSS), frontend `http://localhost:3012`, audiobook API `http://localhost:8012`. Logs should show `MOSS-TTS-Realtime loaded` and `VoiceGenerator loaded on cuda:1`.
+
 ## Recent Updates (2025-12-11)
 
 ### Voice Library Page - COMPLETED ✅

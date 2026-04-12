@@ -87,6 +87,10 @@ export function useGenerationSocket(projectId: string | null) {
     const [lastMessage, setLastMessage] = useState<WsMessage | null>(null);
     const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
     const loadProject = useAudiobookStore((s) => s.loadProject);
+    const handleSegmentComplete = useAudiobookStore((s) => s.handleSegmentComplete);
+    const handleSegmentError = useAudiobookStore((s) => s.handleSegmentError);
+    const handleVisualComplete = useAudiobookStore((s) => s.handleVisualComplete);
+    const handleVisualError = useAudiobookStore((s) => s.handleVisualError);
 
     // Build WebSocket URL from current location
     const getWsUrl = useCallback(() => {
@@ -200,6 +204,23 @@ export function useGenerationSocket(projectId: string | null) {
                         // Don't reset generation state for non-fatal errors
                         break;
 
+                    // --- TTS queue events (relayed from generation_queue event bus) ---
+                    // These fire for individual segment re-generates, not batch WS generation.
+
+                    case 'tts_segment_start':
+                        // Backend has picked up the queued job — already shown as generating
+                        break;
+
+                    case 'tts_segment_done':
+                        // Queue worker finished audio for this segment
+                        if (msg.segment_id) handleSegmentComplete(msg.segment_id);
+                        break;
+
+                    case 'tts_segment_error':
+                        // Queue worker failed for this segment
+                        if (msg.segment_id) handleSegmentError(msg.segment_id);
+                        break;
+
                     // --- Visual generation events (relayed from backend event bus) ---
 
                     case 'visual_start':
@@ -270,8 +291,9 @@ export function useGenerationSocket(projectId: string | null) {
                             error: null,
                             prompt: null,
                         });
-                        // Reload project to pick up the new visual
-                        if (projectId) loadProject(projectId);
+                        // Clear generating spinner and reload project
+                        if (msg.segment_id) handleVisualComplete(msg.segment_id);
+                        else if (projectId) loadProject(projectId);
                         break;
 
                     case 'visual_error': {
@@ -282,8 +304,9 @@ export function useGenerationSocket(projectId: string | null) {
                             status: 'error',
                             error: msg.error || 'Unknown error',
                         });
-                        // Reload to get error state
-                        if (projectId) loadProject(projectId);
+                        // Clear generating spinner and reload project
+                        if (msg.segment_id) handleVisualError(msg.segment_id);
+                        else if (projectId) loadProject(projectId);
                         break;
                     }
                 }
@@ -305,7 +328,7 @@ export function useGenerationSocket(projectId: string | null) {
         ws.onerror = () => {
             // onclose will handle reconnect
         };
-    }, [getWsUrl, projectId, loadProject, setVisualProgress, getVisualProgress]);
+    }, [getWsUrl, projectId, loadProject, handleSegmentComplete, handleSegmentError, handleVisualComplete, handleVisualError, setVisualProgress, getVisualProgress]);
 
     // Send a message to the WebSocket
     const send = useCallback((msg: Record<string, unknown>) => {

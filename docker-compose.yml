@@ -21,7 +21,8 @@ services:
       # TTS Backend for this container: "glm-tts" or "xtts"
       # Note: MOSS runs via the separate moss-tts container (port 8013)
       # The frontend proxies to moss-tts by default via TTS_BACKEND_HOST
-      - TTS_BACKEND=glm-tts
+      # moss-proxy: tts-api forwards TTS calls to the MOSS container over HTTP
+      - TTS_BACKEND=moss-proxy
       # === OPTIMAL CONFIG FROM PARAMETER SWEEP ===
       # Best balanced: 5.95x speed, 91.6% accuracy
       - GLM_TTS_QUANTIZATION=4bit
@@ -114,9 +115,10 @@ services:
       - MOSS_QUANTIZE=4bit
       - VOICES_DIR=/app/data/voices
       - HF_HOME=/root/.cache/huggingface
-      - NVIDIA_VISIBLE_DEVICES=0,1
-      - CUDA_VISIBLE_DEVICES=0,1
-      - MOSS_RT_DEVICES=0  # cuda:0 for single RT streaming (removed dual deployment)
+      # Physical GPUs 1,3 on host (avoid busy GPU 0). Do not set CUDA_VISIBLE_DEVICES to
+      # host indices — inside the container remapped devices are always 0,1.
+      - NVIDIA_VISIBLE_DEVICES=1,3
+      - MOSS_RT_DEVICES=0  # container cuda:0 (host GPU 1 above)
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       # AI Character Analysis + Visual Generation (same as tts-api)
       - INSTRUCT_LLM_API_URL=http://192.168.1.196:8600/v1/chat/completions
@@ -138,7 +140,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0", "1"]
+              device_ids: ["1", "3"]
               capabilities: [ gpu ]
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
@@ -159,7 +161,7 @@ services:
       #   moss-tts:8000   → MOSS-TTS (default)
       #   tts-api:8000    → GLM-TTS
       #   qwen-tts:8000   → Qwen3-TTS (qwen profile)
-      - TTS_BACKEND_HOST=qwen-tts:8000
+      - TTS_BACKEND_HOST=moss-tts:8000
       # Audiobook API lives on tts-api (separated from TTS engine)
       - AUDIOBOOK_BACKEND_HOST=tts-api:8000
     depends_on:

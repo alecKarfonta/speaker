@@ -18,7 +18,7 @@ from .audiobook_models import (
     AudiobookProject, SegmentStatus,
     load_project, save_project, get_project_dir,
 )
-from .generation_queue import add_visual_listener, remove_visual_listener
+from .generation_queue import add_visual_listener, remove_visual_listener, add_tts_listener, remove_tts_listener
 
 logger = logging.getLogger("speaker.audiobook.ws")
 
@@ -212,6 +212,18 @@ async def audiobook_generation_ws(ws: WebSocket, project_id: str):
     cancel_event = asyncio.Event()
     _cancel_flags[project_id] = cancel_event
 
+    # --- TTS queue event relay ---
+    # Register a listener that forwards per-segment TTS completion events for this project
+    async def _on_tts_event(event: dict):
+        if event.get("project_id") == project_id:
+            msg = {k: v for k, v in event.items() if k != "project_id"}
+            try:
+                await ws.send_json(msg)
+            except Exception:
+                pass
+
+    add_tts_listener(_on_tts_event)
+
     # --- Visual event relay ---
     # Register a listener that forwards visual events for this project
     async def _on_visual_event(event: dict):
@@ -314,7 +326,8 @@ async def audiobook_generation_ws(ws: WebSocket, project_id: str):
     except Exception as e:
         logger.error(f"WebSocket error for project '{project_id}': {e}")
     finally:
-        # Cleanup: unregister visual listener
+        # Cleanup: unregister listeners
+        remove_tts_listener(_on_tts_event)
         remove_visual_listener(_on_visual_event)
         cancel_event.set()
         if project_id in _active_generations:

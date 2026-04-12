@@ -79,8 +79,20 @@ def parse_epub(file_bytes: bytes) -> ParsedBook:
                     chapter_title = heading_text
                     break
 
-        # Extract text
-        text = soup.get_text(separator="\n", strip=True)
+        # Insert paragraph markers after block-level elements so that
+        # consecutive <p>, <div>, <blockquote> etc. produce double-newline
+        # paragraph breaks in the extracted text.
+        for tag in soup.find_all(
+            [
+                "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+                "li", "blockquote", "section", "article", "tr",
+            ]
+        ):
+            tag.insert_after(soup.new_string("\n\n"))
+
+        # Extract text — use single space as inline separator; paragraph
+        # breaks come from the \n\n markers inserted above.
+        text = soup.get_text(separator=" ", strip=True)
         text = _clean_text(text)
 
         # Skip near-empty items (covers, copyright pages, etc.)

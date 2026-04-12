@@ -149,9 +149,10 @@ def split_chapter_into_segments(
     Strategy:
     1. Normalize text — rejoin PDF line breaks, keep true paragraph breaks
     2. Split into paragraphs (double newline separated)
-    3. Build segments by accumulating whole paragraphs
-    4. If a single paragraph exceeds max_chars, split at sentence boundaries
-    5. Never split mid-sentence
+    3. For each paragraph:
+       - If it fits in max_chars, make it a segment
+       - If too long, split at sentence boundaries into sub-segments
+    4. Never split mid-sentence
     
     Target: ~100-200 words per segment (~15-30s of TTS audio)
     """
@@ -168,19 +169,16 @@ def split_chapter_into_segments(
     if len(paragraphs) <= 1 and len(text) > max_chars:
         paragraphs = _recover_paragraphs(text, target_size=max_chars // 2)
     
-    # Build segments by accumulating paragraphs
     segments = []
-    current_text = ""
     
     for para in paragraphs:
-        if len(para) > max_chars:
-            # Flush current buffer
-            if current_text.strip():
-                segments.append(Segment(text=current_text.strip()))
-                current_text = ""
-            
+        if len(para) <= max_chars:
+            # Paragraph fits, add as segment
+            segments.append(Segment(text=para))
+        else:
             # Split the oversized paragraph at sentence boundaries
             sentences = _split_into_sentences(para)
+            current_text = ""
             for sent in sentences:
                 if len(current_text) + len(sent) + 1 > max_chars and current_text.strip():
                     segments.append(Segment(text=current_text.strip()))
@@ -189,46 +187,10 @@ def split_chapter_into_segments(
             
             if current_text.strip():
                 segments.append(Segment(text=current_text.strip()))
-                current_text = ""
-        
-        elif len(current_text) + len(para) + 2 > max_chars:
-            # Adding this paragraph would exceed limit — flush and start new
-            if current_text.strip():
-                segments.append(Segment(text=current_text.strip()))
-            current_text = para + "\n\n"
-        
-        else:
-            current_text += para + "\n\n"
-    
-    # Flush remaining
-    if current_text.strip():
-        segments.append(Segment(text=current_text.strip()))
 
-    # Two-pass merge: fold segments that are too short into their neighbors.
-    # Pass 1 (forward): if a segment is short, append the NEXT segment to it.
-    # Pass 2 (backward): if the LAST segment is short, append it to the previous.
-    if len(segments) > 1:
-        # Forward pass — absorb short segments into the next one
-        merged: list = []
-        i = 0
-        while i < len(segments):
-            seg = segments[i]
-            if len(seg.text) < min_chars and i + 1 < len(segments):
-                # Merge forward: combine with next segment
-                next_seg = segments[i + 1]
-                next_seg.text = seg.text.rstrip() + " " + next_seg.text.lstrip()
-                # Don't append seg; skip it (next_seg will be handled next loop)
-                i += 1
-                continue
-            merged.append(seg)
-            i += 1
-
-        # Backward pass — absorb a short trailing segment into the previous
-        if len(merged) > 1 and len(merged[-1].text) < min_chars:
-            merged[-2].text = merged[-2].text.rstrip() + " " + merged[-1].text.lstrip()
-            merged.pop()
-
-        segments = merged
+    # Optional: merge very short segments if they are consecutive and from the same paragraph split
+    # But to respect paragraphs, avoid merging across paragraph boundaries
+    # For now, keep as is to preserve pacing
 
     return segments
 
@@ -260,7 +222,9 @@ def _normalize_text_for_segmentation(text: str) -> str:
     #    by a line starting with a lowercase letter is a wrapped line.
     #    Insert a space to prevent word mashing.
     #    e.g. "the\nbottom" → "the bottom"  (NOT "thebottom")
-    text = re.sub(r"([a-z0-9])\n\n?([a-z])", r"\1 \2", text)
+    #    NOTE: Use \n (NOT \n\n?) so we only rejoin single-newline word-wrap,
+    #    never double-newline paragraph breaks.
+    text = re.sub(r"([a-z0-9])\n([a-z])", r"\1 \2", text)
 
     # ---------------------------------------------------------------
     # Now it is safe to mark true paragraph breaks and join the rest.
