@@ -556,6 +556,8 @@ class QwenTTSBackend(TTSBackendBase):
         
         # Create profiler
         profiler = ProfileTimer(self.logger) if enable_profiling else None
+        _start = time.perf_counter()
+
         if profiler:
             profiler.start()
         
@@ -569,6 +571,7 @@ class QwenTTSBackend(TTSBackendBase):
         # Normalize language
         language = self._normalize_language(language)
         
+        text_preview = text[:50] + "..." if len(text) > 50 else text
         self.log.info(f"Request: text='{text_preview}' ({len(text)} chars), voice='{voice_name}', lang={language}, mode={mode}")
         
         # Mode detection stage
@@ -597,7 +600,7 @@ class QwenTTSBackend(TTSBackendBase):
             self.log.info(f"\n{profile.summary()}")
         else:
             duration = len(audio) / sr
-            gen_time = time.time() - start_time
+            gen_time = time.perf_counter() - _start
             rtf = gen_time / duration if duration > 0 else 0
             self.log.info(f"Generated: duration={duration:.2f}s, time={gen_time:.2f}s, rtf={rtf:.2f}x, samples={len(audio)}")
         

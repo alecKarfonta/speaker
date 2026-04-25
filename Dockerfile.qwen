@@ -52,6 +52,8 @@ RUN python3 -c "import vllm; print('vLLM OK:', vllm.__version__)"
 
 # Install streaming fork of qwen-tts (adds stream_generate_voice_clone + torch.compile)
 RUN git clone --depth 1 https://github.com/rekuenkdr/Qwen3-TTS-streaming.git /app/Qwen3-TTS-streaming
+RUN sed -i 's/@check_model_inputs()/@check_model_inputs/g' /app/Qwen3-TTS-streaming/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py
+RUN sed -i 's/config.pad_token_id/getattr(config, "pad_token_id", 151936)/g' /app/Qwen3-TTS-streaming/qwen_tts/core/models/modeling_qwen3_tts.py
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -e /app/Qwen3-TTS-streaming && \
     python3 -c "from qwen_tts import Qwen3TTSModel; print('qwen-tts-streaming OK')"

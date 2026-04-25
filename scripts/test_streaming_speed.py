@@ -80,6 +80,8 @@ class StreamResult:
     sustained_rtf: float = 0.0  # RTF excluding TTFB
     # Per-chunk
     chunk_timings: List[ChunkTiming] = field(default_factory=list)
+    stall_count: int = 0
+    max_stall_ms: float = 0.0
 
 
 def run_stream_test(text: str, category: str, voice: str, base_url: str) -> StreamResult:
@@ -191,6 +193,31 @@ def run_stream_test(text: str, category: str, voice: str, base_url: str) -> Stre
     if sustained_time > 0 and result.total_audio_s > 0:
         result.sustained_rtf = result.total_audio_s / sustained_time
 
+    # Playback Stall Simulation
+    if result.chunk_timings:
+        # Assume playback starts exactly when the first chunk arrives (0ms buffer)
+        t_play_start = result.chunk_timings[0].arrival_time
+        audio_buffer_duration = 0.0
+        
+        for i in range(1, len(result.chunk_timings)):
+            prev_chunk = result.chunk_timings[i-1]
+            current_chunk = result.chunk_timings[i]
+            
+            # The client adds the previous chunk's audio to its buffer
+            audio_buffer_duration += (prev_chunk.pcm_samples / prev_chunk.sample_rate)
+            
+            # t_buffer_exhausted is the absolute time the client will run out of audio
+            t_buffer_exhausted = t_play_start + audio_buffer_duration
+            
+            # If the next chunk arrives AFTER the client ran out of audio, a stall occurred!
+            if current_chunk.arrival_time > t_buffer_exhausted:
+                stall_duration = current_chunk.arrival_time - t_buffer_exhausted
+                result.stall_count += 1
+                result.max_stall_ms = max(result.max_stall_ms, stall_duration * 1000)
+                
+                # The client paused playback to wait. Shift the timeline forward.
+                t_play_start += stall_duration
+
     return result
 
 
@@ -200,8 +227,10 @@ def print_result(r: StreamResult):
         print(f"  ❌ FAIL: {r.error}")
         return
 
-    rtf_icon = "✅" if r.overall_rtf >= TARGET_RTF else "❌"
+    rtf_icon = "✅" if r.overall_rtf >= TARGET_RTF and r.stall_count == 0 else "❌"
     sustained_icon = "✅" if r.sustained_rtf >= TARGET_RTF else "⚠️"
+    
+    stall_text = f"stalls={r.stall_count}" + (f" ({r.max_stall_ms:.0f}ms)" if r.stall_count > 0 else "")
 
     text_preview = r.text[:50] + "..." if len(r.text) > 50 else r.text
     print(
@@ -211,6 +240,7 @@ def print_result(r: StreamResult):
         f"gen={r.total_time_s:.2f}s  "
         f"audio={r.total_audio_s:.2f}s  "
         f"chunks={r.chunk_count}  "
+        f"{stall_text}  "
         f"| {text_preview}"
     )
 
@@ -269,7 +299,7 @@ def main():
     avg_ttfb = sum(r.ttfb_ms for r in ok_results) / len(ok_results)
     total_audio = sum(r.total_audio_s for r in ok_results)
     total_compute = sum(r.total_time_s for r in ok_results)
-    passed = sum(1 for r in ok_results if r.overall_rtf >= target_rtf)
+    passed = sum(1 for r in ok_results if r.overall_rtf >= target_rtf and r.stall_count == 0)
     errors = sum(1 for r in results if not r.ok)
 
     # Per-category breakdown
@@ -291,7 +321,7 @@ def main():
     print(f"\n  By category:")
     for cat, cat_results in sorted(categories.items()):
         cat_rtf = sum(r.overall_rtf for r in cat_results) / len(cat_results)
-        cat_icon = "✅" if cat_rtf >= target_rtf else "❌"
+        cat_icon = "✅" if cat_rtf >= target_rtf and all(x.stall_count == 0 for x in cat_results) else "❌"
         print(f"    {cat_icon} {cat:>8}: RTF={cat_rtf:.2f}x  (n={len(cat_results)})")
 
     # Playback buffer simulation

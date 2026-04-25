@@ -1,6 +1,20 @@
 # Speaker TTS Service - Development Plan
 
-## Current (2026-04-04) — MOSS via Docker
+## Current (2026-04-24) — Qwen3-TTS Streaming
+
+- **Goal:** Get Qwen TTS model running with streaming.
+- **Status:** WORKING. Streaming is fully operational.
+- **Bugs fixed:**
+  - `qwen_tts.py` line 572: `text_preview` was used but never defined (NameError) -- added the variable definition.
+  - `qwen_tts.py` line 601: `start_time` was referenced but never defined -- switched to `_start` tracked at function entry with `time.perf_counter()`.
+- **Container:** `speaker-qwen-tts-1` running healthy on port 8012 (docker-compose.qwen.yml overlay).
+- **Config:** 1.7B model, CustomVoice + VoiceClone modes, streaming enabled with torch.compile + CUDA graphs.
+- **Performance:** TTFA ~585ms, RTF ~1.13x (faster than real-time). Warmup takes ~33s for torch.compile.
+- **Limitation:** Streaming only works with cloned voices (e.g., `biden`, `trump`), not predefined speakers (`Vivian`, `Serena`, etc). Predefined speakers use batch `/tts` endpoint.
+- **Frontend:** Proxying to `qwen-tts:8000` via `TTS_BACKEND_HOST=qwen-tts:8000`.
+- **Test:** `curl -s -N -X POST http://localhost:8012/tts/stream -H "Content-Type: application/json" -d '{"text":"Hello world","voice_name":"biden","language":"en"}' --output test.bin`
+
+## Previous (2026-04-04) — MOSS via Docker
 
 - **Goal:** Run `moss-tts` from `Dockerfile.moss` with MOSS-TTS-Realtime + MOSS-VoiceGenerator both loading at startup (`MOSS_ENABLE_VOICE_GEN=true`).
 - **Dockerfile.moss fixes:** `bitsandbytes` was pulling `transformers` 5.5.x and torch cu130 without `torchaudio`; added explicit `transformers==5.0.0` (MOSS `torch-runtime` pin), `torchaudio` from cu130 index, and `transformers` in the extras line so verify imports pass.

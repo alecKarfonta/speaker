@@ -18,7 +18,7 @@ services:
       - ENVIRONMENT=development
       - PYTHONPATH=/app
       - HF_HOME=/root/.cache/huggingface
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=1,3
       - STT_API_URL=http://192.168.1.196:8603/v1/audio/transcriptions
       - STT_API_KEY=your-api-key
       # ── Qwen3-TTS Backend ──
@@ -54,8 +54,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ['1', '3']
               capabilities: [gpu]
+    networks:
+      - tts-network
 
 volumes:
   qwen_hf_cache:

@@ -20,6 +20,7 @@ import soundfile as sf
 import time
 from typing import Dict, List, Optional
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 from pydantic import BaseModel
 from pydantic import BaseModel, Field, constr
@@ -112,6 +113,39 @@ def check_rate_limit(request: Request):
     
     rate_limit_storage[client_ip].append(current_time)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Server starting up. Pre-warming models...")
+    
+    # Pre-warm streaming compiler on main thread if supported
+    # We pre-warm with a Short, Medium, and Long sentence to force PyTorch
+    # Inductor to pre-cache CUDA Graphs for different dynamic tensor sizes.
+    if hasattr(tts_service, 'generate_speech_streaming'):
+        logger.info("[WARMUP] Starting streaming compiler warmup. This will take ~60s...")
+        warmup_texts = [
+            "Warm up.", 
+            "This is a medium length sentence to pre-warm the tensor dimensions.",
+            "This is a significantly longer paragraph designed to push the autoregressive sliding window buffers to maximum capacity, ensuring that the CUDA graph compilation process allocates memory appropriately across all permutations."
+        ]
+        
+        try:
+            for text in warmup_texts:
+                logger.info(f"[WARMUP] Tracing length: {len(text)} chars...")
+                gen = tts_service.generate_speech_streaming(
+                    text=text, 
+                    voice_name="biden", 
+                    language="en"
+                )
+                for _ in gen:
+                    pass
+            logger.info("[WARMUP] Streaming compiler warmup complete!")
+        except Exception as e:
+            logger.error(f"[WARMUP] Failed: {e}", exc_info=True)
+            
+    yield
+    logger.info("Server shutting down.")
+
+
 app = FastAPI(
     title="Speaker TTS API", 
     description="""
@@ -138,7 +172,8 @@ app = FastAPI(
         "name": "MIT",
         "url": "https://opensource.org/licenses/MIT",
     },
-    debug=True
+    debug=True,
+    lifespan=lifespan
 )
 
 # Add CORS middleware
