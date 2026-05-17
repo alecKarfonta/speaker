@@ -1,5 +1,53 @@
 # Speaker TTS Service - Development Plan
 
+## Current (2026-05-17) — GLM-TTS speed investigation
+
+### Problem
+GLM-TTS in `transformers + 4bit` mode is running at **RTF ~1.6-1.8x** (audio is generated 1.6-1.8x slower than it plays). LLM dominates at ~17.7 tok/s → ~95% of total time. Production logs show 5-30s compute for 2-19s audio.
+
+### Root cause
+`docker-compose.yml` regressed to `GLM_TTS_ENGINE=transformers` with BitsAndBytes 4-bit (NF4). BnB NF4 dequantizes on every matmul and cannot use the Blackwell Tensor Cores, so the autoregressive loop is dominated by slow CUDA kernels + per-token `.item()` GPU→CPU syncs in `GLMTTS.inference()` (see `/app/GLM-TTS/llm/glmtts.py` and the Python `for i in range(len(sorted_idx))` loop in `cosyvoice/utils/common.py::nucleus_sampling`).
+
+The earlier parameter sweep (`tests/output/sweep_report.txt`, 2026-01-11) showed:
+
+| Config       | Engine        | LLM quant | RTF speed | Accuracy |
+|--------------|---------------|-----------|-----------|----------|
+| baseline_v2  | **vllm**      | none (fp16) | **5.95x** | 91.6%    |
+| vllm_fp8     | vllm          | fp8       | 0.69x     | 90.4%    |
+| sampling_12  | transformers  | 4bit      | 0.87x     | 91.2%    |
+| (all others) | transformers  | 4bit      | 0.7-0.87x | 89-92%   |
+
+So vLLM with FP16 was ~10x faster than transformers + 4bit, and FP8 was actually *slower* than FP16 in vLLM here (likely Marlin/cutlass FP8 kernels not optimal for SM 12.0 + this model size).
+
+The current docker-compose comment ("vLLM previously OOM'd on saturated GPU") is no longer the limiting factor — GPU 3 only has 6.2 GB / 16 GB used by us; ~10 GB free.
+
+### Fix (applied 2026-05-17)
+Switched `GLM_TTS_ENGINE=transformers` → `vllm` with `GLM_TTS_VLLM_QUANTIZATION=none` (FP16) and `GLM_TTS_FLOW_STEPS=15` (matches baseline_v2).
+
+### Results — same hardware, same voices (biden), before vs after
+
+| Text size | Before total | After total | Before LLM tok/s | After LLM tok/s | Before RTF | After RTF |
+|-----------|-------------:|------------:|-----------------:|----------------:|-----------:|----------:|
+| ~50 chars |  3.6-8.1 s   |  ~1.8 s     |  ~17.7           |  **~106**       |  1.6-1.8x  |  **0.54x** |
+| 248 chars | **30.0 s**   | **6.3 s**   |  17.7            |  **~110**       |  1.62x     |  **0.31x** |
+
+LLM throughput **6x higher** (FlashAttention + PagedAttention + CUDA graphs in vLLM vs slow BnB NF4 dequant per matmul). End-to-end TTS is now well below real time (audio plays back faster than it took to generate).
+
+GPU 3 (RTX 5060 Ti 16 GB) usage: 6.2 GB → 13.7 GB (vLLM pre-allocates KV cache for `gpu_memory_utilization=0.5`, which is 17.5x max concurrency for 4 K-token requests — overkill for single requests; can be lowered in `app/backends/glm_tts_backend.py` line ~501 if OOM later).
+
+### Remaining headroom (not applied, optional)
+- `GLM_TTS_CFG_RATE=0` would give a ~2x Flow speedup. Flow is now ~20–45% of total (e.g. 1248 ms of 6304 ms for 247-char text). Quality tradeoff; would need ear test.
+- `GLM_TTS_FLOW_STEPS=10` (currently 15) — sweep showed ≥10 steps preserved 91+% accuracy. ~33% Flow speedup.
+- Lower vLLM `gpu_memory_utilization` from 0.5 → 0.35 if other services need GPU 3 VRAM.
+- The `nucleus_sampling` Python `for` loop in `cosyvoice/utils/common.py` is no longer hit (vLLM does its own sampling), so that optimization is moot.
+
+### Compose / run
+- **Compose:** `TTS_BACKEND=glm-tts`, `NVIDIA_VISIBLE_DEVICES=3` + `device_ids: ["3"]` so `tts-api` avoids busy GPUs (e.g. 0/2 full of `llama-server`).
+- **GLM `torch.npu`:** Upstream `cosyvoice/cli/frontend.py` calls `torch.npu.is_available()` (Ascend). CUDA PyTorch has no `torch.npu` — fixed via `setattr(torch, "npu", ...)` in `app/backends/glm_tts_backend.py` (live mount) and PATCH 3c in `scripts/patch_glm_tts.py` for the image.
+- **Run:** `docker compose up -d --build tts-api frontend`
+- **URLs:** API `http://localhost:8012`, UI `http://localhost:3012`
+- **Disk:** Root was 100% full during a session; `docker builder prune -f` reclaimed cache. Keep headroom for git/checkout and builds.
+
 ## Current (2026-04-24) — Qwen3-TTS Streaming
 
 - **Goal:** Get Qwen TTS model running with streaming.

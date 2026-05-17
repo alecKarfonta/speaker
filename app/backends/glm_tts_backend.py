@@ -19,6 +19,15 @@ import numpy as np
 import torch
 import torchaudio
 
+# GLM-TTS upstream references torch.npu (Ascend). CUDA-only PyTorch has no such submodule.
+if not hasattr(torch, "npu"):
+    class _TorchNpuCompat:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    setattr(torch, "npu", _TorchNpuCompat())
+
 from app.tts_backend_base import TTSBackendBase, Voice
 
 # Add GLM-TTS to path

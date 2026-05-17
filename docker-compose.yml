@@ -13,7 +13,8 @@ services:
       - HF_HOME=/app/model_cache/huggingface
       - TORCH_HOME=/app/model_cache/torch
       - TRANSFORMERS_CACHE=/app/model_cache/transformers
-      - NVIDIA_VISIBLE_DEVICES=all
+      # Pin to a GPU with free VRAM (0/2 were full of llama-server in one setup)
+      - NVIDIA_VISIBLE_DEVICES=3
       - STT_API_URL=http://192.168.1.196:8603/v1/audio/transcriptions
       - STT_API_KEY=your-api-key
       - COQUI_TOS_AGREED=1
@@ -21,20 +22,22 @@ services:
       # TTS Backend for this container: "glm-tts" or "xtts"
       # Note: MOSS runs via the separate moss-tts container (port 8013)
       # The frontend proxies to moss-tts by default via TTS_BACKEND_HOST
-      # moss-proxy: tts-api forwards TTS calls to the MOSS container over HTTP
-      - TTS_BACKEND=moss-proxy
-      # === OPTIMAL CONFIG FROM PARAMETER SWEEP ===
-      # Best balanced: 5.95x speed, 91.6% accuracy
+      # glm-tts: native GLM-TTS | moss-proxy: forward TTS to moss-tts
+      - TTS_BACKEND=glm-tts
+      # === OPTIMAL CONFIG FROM PARAMETER SWEEP (2026-01-11) ===
+      # baseline_v2 = vLLM (fp16) + 4bit BnB irrelevant + FA2 + flow_steps=15 + sampling=10
+      # measured 5.95x real-time, 91.6% accuracy on biden voice across 65 prompts.
+      # Switching back from transformers→vllm because LLM autoregressive decode
+      # under BitsAndBytes 4-bit was bottlenecking at ~17.7 tok/s (RTF 1.6-1.8x).
       - GLM_TTS_QUANTIZATION=4bit
       - GLM_TTS_ATTENTION=flash_attention_2
-      - GLM_TTS_FLOW_STEPS=13
+      - GLM_TTS_FLOW_STEPS=15
       - GLM_TTS_SAMPLING=10
-      - GLM_TTS_TORCH_COMPILE=false # Not needed with vLLM
+      - GLM_TTS_TORCH_COMPILE=false
       - GLM_TTS_VLLM_QUANTIZATION=none
-      # Use vLLM engine for high-performance inference
+      # LLM: vllm (needs lots of free VRAM) | transformers (uses GLM_TTS_QUANTIZATION, fits ~16GB)
       - GLM_TTS_ENGINE=vllm
-      # Force vLLM V0 engine — V1 spawns an EngineCore subprocess that loads torchcodec
-      # which crashes on this system (undefined symbol in libtorchcodec_core*.so)
+      # vLLM V0 (V1 subprocess + torchcodec issues on some hosts)
       - VLLM_USE_V1=0
       #
       # === RTX 5090 Blackwell Optimizations ===
@@ -88,7 +91,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ["3"]
               capabilities: [ gpu ]
     command: >
       bash -c "./scripts/start.sh"
@@ -161,11 +164,11 @@ services:
       #   moss-tts:8000   → MOSS-TTS (default)
       #   tts-api:8000    → GLM-TTS
       #   qwen-tts:8000   → Qwen3-TTS (qwen profile)
-      - TTS_BACKEND_HOST=qwen-tts:8000
+      - TTS_BACKEND_HOST=tts-api:8000
       # Audiobook API lives on tts-api (separated from TTS engine)
-      - AUDIOBOOK_BACKEND_HOST=qwen-tts:8000
-#    depends_on:
-#      - tts-api
+      - AUDIOBOOK_BACKEND_HOST=tts-api:8000
+    depends_on:
+      - tts-api
     networks:
       - tts-network
     healthcheck:

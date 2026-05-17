@@ -146,6 +146,12 @@ def main():
             "audio, sample_rate = torchaudio.load(utt)",
             "import soundfile as sf; _audio_data, sample_rate = sf.read(utt, dtype='float32'); audio = torch.from_numpy(_audio_data).unsqueeze(0) if len(_audio_data.shape) == 1 else torch.from_numpy(_audio_data.T)"
         ),
+        # Patch 3c: Ascend NPU check — stock CUDA PyTorch has no torch.npu
+        (
+            "_extract_spk_embedding() guard torch.npu for CUDA-only PyTorch",
+            "        if torch.npu.is_available():",
+            "        _torch_npu = getattr(torch, \"npu\", None)\n        if _torch_npu is not None and _torch_npu.is_available():",
+        ),
     ]
     
     patch_file(os.path.join(glm_dir, "cosyvoice/cli/frontend.py"), frontend_patches)
