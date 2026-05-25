@@ -28,6 +28,8 @@ import {
   Sparkles,
   ChevronUp,
   ChevronDown,
+  Archive,
+  Import,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { cn, generateId, formatFileSize, formatDuration, downloadBlob } from '../../lib/utils';
@@ -73,6 +75,8 @@ const VoiceLibrary: React.FC = () => {
   const [combineMode, setCombineMode] = useState(false);
   const [selectedForCombine, setSelectedForCombine] = useState<Set<string>>(new Set());
   const [expandedVoice, setExpandedVoice] = useState<string | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [exportingVoice, setExportingVoice] = useState<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -362,6 +366,56 @@ const VoiceLibrary: React.FC = () => {
     }
   };
 
+  // Export voice as ZIP
+  const handleExportVoice = async (voiceName: string) => {
+    setExportingVoice(voiceName);
+    try {
+      const response = await fetch(`/voices/${encodeURIComponent(voiceName)}/export`);
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Export failed');
+      }
+
+      const blob = await response.blob();
+      downloadBlob(blob, `${voiceName}.zip`);
+      toast.success(`Voice "${voiceName}" exported`);
+    } catch (error) {
+      toast.error(`Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setExportingVoice(null);
+    }
+  };
+
+  // Import voice from ZIP
+  const handleImportVoice = async (voiceName: string, file: File) => {
+    if (!voiceName.trim()) {
+      toast.error('Please enter a voice name');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch(`/voices/import?voice_name=${encodeURIComponent(voiceName)}`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Import failed');
+      }
+
+      const result = await response.json();
+      toast.success(`Voice "${voiceName}" imported (${result.files_imported} files)`);
+      setShowImportModal(false);
+      await loadVoices();
+    } catch (error) {
+      toast.error(`Import failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
   // Filter voices
   const filteredVoices = Object.entries(voices).filter(([name]) =>
     name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -497,6 +551,13 @@ const VoiceLibrary: React.FC = () => {
                       <Combine className="w-4 h-4" />
                       Combine Voices
                     </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => setShowImportModal(true)}
+                    >
+                      <Import className="w-4 h-4" />
+                      Import Voice
+                    </Button>
                     <Button onClick={() => setShowUploadModal(true)}>
                       <Plus className="w-4 h-4" />
                       Add Voice
@@ -567,6 +628,7 @@ const VoiceLibrary: React.FC = () => {
                     isPlaying={audioPlayer?.voiceName === voiceName && audioPlayer.isPlaying}
                     isTesting={testingVoice === voiceName}
                     currentlyPlayingFile={audioPlayer?.voiceName === voiceName ? audioPlayer.fileId : null}
+                    isExporting={exportingVoice === voiceName}
                     onSelect={() => {
                       if (combineMode) {
                         setSelectedForCombine(prev => {
@@ -596,6 +658,7 @@ const VoiceLibrary: React.FC = () => {
                       handleTestVoice(voiceName);
                     }}
                     onDelete={() => handleDeleteVoice(voiceName)}
+                    onExport={() => handleExportVoice(voiceName)}
                     onPlayFile={(fileName) => handlePlayFile(voiceName, fileName)}
                     onDownloadFile={(fileName) => handleDownloadFile(voiceName, fileName)}
                     onDeleteFile={(fileName) => handleDeleteFile(voiceName, fileName)}
@@ -618,6 +681,17 @@ const VoiceLibrary: React.FC = () => {
               uploading={uploadingVoice !== null}
               voiceName={newVoiceName}
               setVoiceName={setNewVoiceName}
+              existingVoices={Object.keys(voices)}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Import Voice Modal */}
+        <AnimatePresence>
+          {showImportModal && (
+            <ImportVoiceModal
+              onClose={() => setShowImportModal(false)}
+              onImport={handleImportVoice}
               existingVoices={Object.keys(voices)}
             />
           )}
@@ -737,10 +811,12 @@ interface VoiceCardProps {
   isPlaying: boolean;
   isTesting: boolean;
   currentlyPlayingFile: string | null;
+  isExporting: boolean;
   onSelect: () => void;
   onExpand: () => void;
   onTest: () => void;
   onDelete: () => void;
+  onExport: () => void;
   onPlayFile: (fileName: string) => void;
   onDownloadFile: (fileName: string) => void;
   onDeleteFile: (fileName: string) => void;
@@ -757,10 +833,12 @@ const VoiceCard: React.FC<VoiceCardProps> = ({
   isPlaying,
   isTesting,
   currentlyPlayingFile,
+  isExporting,
   onSelect,
   onExpand,
   onTest,
   onDelete,
+  onExport,
   onPlayFile,
   onDownloadFile,
   onDeleteFile,
@@ -851,6 +929,17 @@ const VoiceCard: React.FC<VoiceCardProps> = ({
                     exit={{ opacity: 0, scale: 0.95, y: -10 }}
                     className="absolute right-0 top-full mt-2 w-48 card p-2 z-20"
                   >
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onExport();
+                        setShowMenu(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-text-secondary hover:bg-bg-hover transition-colors"
+                    >
+                      <Archive className="w-4 h-4" />
+                      Export Voice
+                    </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1204,4 +1293,208 @@ const UploadModal: React.FC<UploadModalProps> = ({
 };
 
 export default VoiceLibrary;
+
+// Import Voice Modal Component
+interface ImportVoiceModalProps {
+  onClose: () => void;
+  onImport: (voiceName: string, file: File) => Promise<void>;
+  existingVoices: string[];
+}
+
+const ImportVoiceModal: React.FC<ImportVoiceModalProps> = ({
+  onClose,
+  onImport,
+  existingVoices,
+}) => {
+  const [voiceName, setVoiceName] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === 'dragenter' || e.type === 'dragover') {
+      setDragActive(true);
+    } else if (e.type === 'dragleave') {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      if (file.name.toLowerCase().endsWith('.zip')) {
+        setSelectedFile(file);
+      } else {
+        toast.error('Please select a .zip file');
+      }
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setSelectedFile(e.target.files[0]);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!voiceName.trim()) {
+      toast.error('Please enter a voice name');
+      return;
+    }
+
+    if (!selectedFile) {
+      toast.error('Please select a ZIP file');
+      return;
+    }
+
+    setImporting(true);
+    try {
+      await onImport(voiceName, selectedFile);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="w-full max-w-lg card p-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-text-primary flex items-center gap-3">
+            <div className="p-2 rounded-xl bg-gradient-to-br from-accent to-purple-500">
+              <Import className="w-6 h-6 text-white" />
+            </div>
+            Import Voice
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-text-tertiary hover:text-text-primary transition-colors"
+          >
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        <div className="space-y-6">
+          {/* Voice name input */}
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-2">
+              Voice Name
+            </label>
+            <input
+              type="text"
+              value={voiceName}
+              onChange={(e) => setVoiceName(e.target.value.replace(/[^a-zA-Z0-9_]/g, '_'))}
+              placeholder="imported_voice"
+              className="w-full px-4 py-3 rounded-xl bg-bg-tertiary border border-white/5 text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent/50"
+            />
+            <p className="text-xs text-text-tertiary mt-1">
+              Use only letters, numbers, and underscores
+            </p>
+
+            {voiceName && existingVoices.includes(voiceName) && (
+              <div className="flex items-center gap-2 mt-2 text-warning">
+                <AlertCircle className="w-4 h-4" />
+                <span className="text-sm">This voice already exists. Choose a different name.</span>
+              </div>
+            )}
+          </div>
+
+          {/* ZIP file drop zone */}
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-2">
+              Voice Archive
+            </label>
+            <div
+              onDragEnter={handleDrag}
+              onDragLeave={handleDrag}
+              onDragOver={handleDrag}
+              onDrop={handleDrop}
+              className={cn(
+                'relative border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer',
+                dragActive
+                  ? 'border-accent bg-accent/5'
+                  : 'border-white/10 hover:border-white/20 hover:bg-bg-tertiary/50'
+              )}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+
+              <Archive className="w-12 h-12 mx-auto mb-4 text-text-tertiary" />
+
+              {selectedFile ? (
+                <div>
+                  <p className="text-text-primary font-medium mb-1">{selectedFile.name}</p>
+                  <p className="text-sm text-text-tertiary">{formatFileSize(selectedFile.size)}</p>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      fileInputRef.current?.click();
+                    }}
+                    className="text-sm text-accent hover:text-accent-hover mt-2"
+                  >
+                    Choose different file
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-text-primary mb-2">
+                    Drop a voice .zip file here
+                  </p>
+                  <p className="text-text-tertiary text-sm">
+                    or click to browse
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-3">
+            <Button
+              variant="secondary"
+              onClick={onClose}
+              disabled={importing}
+              className="flex-1"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmit}
+              disabled={!voiceName.trim() || !selectedFile || importing || existingVoices.includes(voiceName)}
+              loading={importing}
+              className="flex-1"
+            >
+              <Import className="w-4 h-4" />
+              Import
+            </Button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+};
 

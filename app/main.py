@@ -16,8 +16,11 @@ except Exception:
 import logging
 import numpy as np
 import io
+import shutil
 import soundfile as sf
 import time
+import zipfile
+import tempfile
 from typing import Dict, List, Optional
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -389,6 +392,194 @@ async def get_voice_details(voice_name: str):
         "total_files": len(files),
         "total_size": total_size,
     }
+
+@app.get("/voices/{voice_name}/export")
+async def export_voice(voice_name: str):
+    """
+    Export a voice as a ZIP archive for import on another Speaker instance.
+
+    - **voice_name**: Name of the voice to export
+
+    Returns a ZIP file containing all audio files and optional transcription
+    text files for the voice.
+    """
+    voice_dir = f"data/voices/{voice_name}"
+
+    if not os.path.exists(voice_dir):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Voice '{voice_name}' not found"
+        )
+
+    # Collect files in the voice directory
+    voice_files = []
+    for filename in sorted(os.listdir(voice_dir)):
+        filepath = os.path.join(voice_dir, filename)
+        if os.path.isfile(filepath):
+            voice_files.append((filename, filepath))
+
+    if not voice_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Voice '{voice_name}' has no files to export"
+        )
+
+    # Build ZIP in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for filename, filepath in voice_files:
+            zf.write(filepath, filename)
+
+    zip_buffer.seek(0)
+    zip_bytes = zip_buffer.read()
+
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename={voice_name}.zip",
+            "Content-Length": str(len(zip_bytes)),
+        }
+    )
+
+
+@app.post("/voices/import")
+async def import_voice(
+    voice_name: str,
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Import a voice from a ZIP archive exported by another Speaker instance.
+
+    - **voice_name**: Name for the imported voice (alphanumeric and underscores only)
+    - **file**: ZIP file containing voice audio files
+
+    The ZIP should contain .wav and/or .mp3 files (and optional .txt transcriptions).
+    """
+    check_rate_limit(request)
+
+    # Validate voice name
+    if not voice_name.replace('_', '').isalnum():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Voice name must contain only letters, numbers, and underscores"
+        )
+
+    # Check if voice already exists
+    voice_dir = f"data/voices/{voice_name}"
+    if os.path.exists(voice_dir):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Voice '{voice_name}' already exists. Delete it first or choose a different name."
+        )
+
+    # Validate file type
+    if not file.filename or not file.filename.lower().endswith('.zip'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only .zip files are supported for voice import"
+        )
+
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty"
+        )
+
+    try:
+        # Validate ZIP contents before extracting
+        zip_buffer = io.BytesIO(content)
+        try:
+            with zipfile.ZipFile(zip_buffer, 'r') as zf:
+                # Security: check for path traversal
+                for member in zf.namelist():
+                    if member.startswith('/') or '..' in member:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Invalid path in ZIP: {member}"
+                        )
+
+                # Count valid audio files
+                audio_files = [
+                    m for m in zf.namelist()
+                    if not m.endswith('/') and os.path.splitext(m)[1].lower() in ('.wav', '.mp3')
+                ]
+
+                if not audio_files:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="ZIP contains no .wav or .mp3 files"
+                    )
+
+                # Create voice directory and extract
+                os.makedirs(voice_dir, exist_ok=True)
+
+                for member in zf.namelist():
+                    if member.endswith('/'):
+                        continue  # skip directories
+
+                    # Only extract audio and transcription text files
+                    ext = os.path.splitext(member)[1].lower()
+                    if ext in ('.wav', '.mp3', '.txt'):
+                        # Extract with just the filename (flatten any nested structure)
+                        basename = os.path.basename(member)
+                        if not basename:
+                            continue
+                        target_path = os.path.join(voice_dir, basename)
+
+                        # Don't overwrite existing files
+                        if os.path.exists(target_path):
+                            continue
+
+                        with zf.open(member) as src, open(target_path, 'wb') as dst:
+                            dst.write(src.read())
+
+        except zipfile.BadZipFile:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid ZIP file"
+            )
+
+        # Reload voices
+        tts_service.load_voices()
+
+        # Count what was imported
+        imported_files = [f for f in os.listdir(voice_dir) if os.path.isfile(os.path.join(voice_dir, f))]
+
+        # Log for audit
+        client_ip = request.client.host if request.client else "unknown"
+        user_agent = request.headers.get("user-agent")
+        audit_logger.log_voice_upload(
+            voice_name,
+            f"imported from ZIP ({len(imported_files)} files)",
+            len(content),
+            client_ip,
+            user_agent
+        )
+
+        return {
+            "message": f"Voice '{voice_name}' imported successfully",
+            "voice_name": voice_name,
+            "files_imported": len(imported_files),
+        }
+
+    except HTTPException:
+        # Clean up on error
+        if os.path.exists(voice_dir):
+            shutil.rmtree(voice_dir)
+        raise
+    except Exception as e:
+        logger.error(f"Error importing voice: {str(e)}", exc_info=True)
+        # Clean up on error
+        if os.path.exists(voice_dir):
+            shutil.rmtree(voice_dir)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to import voice: {str(e)}"
+        )
+
 
 @app.get("/voices/{voice_name}/files/{filename}")
 async def download_voice_file(voice_name: str, filename: str):
