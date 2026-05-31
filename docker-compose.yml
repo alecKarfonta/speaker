@@ -154,6 +154,63 @@ services:
     networks:
       - tts-network
 
+  # ── moss-realtime profile: MOSS-TTS-Realtime native voice (see .env.moss-realtime) ──
+  moss-realtime:
+    profiles: [moss-realtime]
+    build:
+      context: .
+      dockerfile: Dockerfile.moss
+    ports:
+      - "8016:8000"
+    environment:
+      - MOSS_ENABLE_MAIN_MODEL=false
+      - MOSS_ENABLE_VOICE_GEN=false
+      - MOSS_ENABLE_REALTIME=true
+      - MOSS_ENABLE_STREAMING=true
+      - MOSS_RT_MODEL_ID=${MOSS_RT_MODEL_ID:-OpenMOSS-Team/MOSS-TTS-Realtime}
+      - MOSS_RT_BASE_MODEL_ID=${MOSS_RT_BASE_MODEL_ID:-OpenMOSS-Team/MOSS-TTS-Realtime}
+      - MOSS_RT_NATIVE_VOICE=${MOSS_RT_NATIVE_VOICE:-false}
+      - MOSS_RT_CODEC_BACKEND=${MOSS_RT_CODEC_BACKEND:-auto}
+      - MOSS_RT_ONNX_CODEC_DIR=${MOSS_RT_ONNX_CODEC_DIR:-/app/training/weights/MOSS-Audio-Tokenizer-ONNX}
+      - MOSS_RT_STREAM_CODEC_BACKEND=${MOSS_RT_STREAM_CODEC_BACKEND:-torch}
+      - MOSS_RT_STREAM_DECODER_OVERLAP_FRAMES=${MOSS_RT_STREAM_DECODER_OVERLAP_FRAMES:-0}
+      - MOSS_RT_STREAM_DECODER_INITIAL_FRAMES=${MOSS_RT_STREAM_DECODER_INITIAL_FRAMES:-none}
+      - MOSS_RT_INITIAL_TEXT_CHUNK=${MOSS_RT_INITIAL_TEXT_CHUNK:-1}
+      - MOSS_RT_STEADY_TEXT_CHUNK=${MOSS_RT_STEADY_TEXT_CHUNK:-24}
+      - MOSS_RT_MIN_SAMPLES_FIRST_MS=${MOSS_RT_MIN_SAMPLES_FIRST_MS:-40}
+      - MOSS_RT_MIN_SAMPLES_STEADY_MS=${MOSS_RT_MIN_SAMPLES_STEADY_MS:-80}
+      - MOSS_RT_DECODER_CHUNK_FRAMES=${MOSS_RT_DECODER_CHUNK_FRAMES:-24}
+      - MOSS_RT_CODEC_ID=OpenMOSS-Team/MOSS-Audio-Tokenizer
+      - MOSS_RT_DEVICES=0
+      - MOSS_QUANTIZE=none
+      - VOICES_DIR=/app/data/voices
+      - HF_HOME=/root/.cache/huggingface
+      - NVIDIA_VISIBLE_DEVICES=3
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCHINDUCTOR_FX_GRAPH_CACHE=1
+      - TORCHINDUCTOR_AUTOGRAD_CACHE=1
+      - CUDA_CACHE_MAXSIZE=4294967296
+    volumes:
+      - ./app:/app/app
+      - ./data/voices:/app/data/voices
+      - moss_hf_cache:/root/.cache/huggingface
+      - ./training/weights/MOSS-Audio-Tokenizer-ONNX:/app/training/weights/MOSS-Audio-Tokenizer-ONNX:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    networks:
+      - tts-network
+
   frontend:
     image: ghcr.io/aleckarfonta/speaker-frontend:latest
     build: ./frontend

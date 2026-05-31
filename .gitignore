@@ -127,3 +127,33 @@ client_shh.json
 
 
 tests/output/*
+
+# MOSS Realtime fine-tune artifacts (local only — not checked in)
+training/moss-realtime/
+training/loli_15s/
+third_party/MOSS-TTS/
+.venv-finetune/
+.env.moss-realtime
+training/weights/
+openmoss/
+
+# Generated voice clone batches and portrait runs (local)
+voice_clones/
+voice_clones_v10/
+voice_clones_openmoss/
+portrait_batch_images/
+portrait_batch_output/
+portrait_batch_videos/
+portrait_faceid_output/
+portrait_faceid_videos/
+
+# Local RT dev/benchmark tooling (keep on disk, not in PR)
+scripts/benchmark_rt_*.py
+scripts/benchmark_rt_*.sh
+scripts/sweep_rt_chunk_sizes.py
+scripts/generate_rt_stream_samples.py
+scripts/test_moss_streaming_stt.py
+scripts/build_moss_onnx_trt_codec.sh
+scripts/run_moss_phase0.sh
+scripts/run_moss_phase1.sh
+docs/moss-realtime-speed.md
