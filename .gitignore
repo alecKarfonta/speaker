@@ -152,6 +152,22 @@ third_party/MOSS-TTS/
 training/weights/
 openmoss/
 
+# Root-level experiment / scratch (keep repo root clean)
+/*.pdf
+/ltx2.3.py
+/notes.md
+/optimization.md
+/start_api.sh
+/moss_v15_*.wav
+/narrator*.zip
+loli_clones/
+moss_rt_samples/
+test_output/
+plans/
+notebooks/
+frontend_backup/
+logs/
+
 # Generated voice clone batches and portrait runs (local)
 voice_clones/
 voice_clones_v10/

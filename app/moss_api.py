@@ -23,13 +23,13 @@ import torch._dynamo
 torch._dynamo.config.cache_size_limit = 64  # Match official Gradio app (prevent recompilation)
 torch.set_float32_matmul_precision('high')  # Enable TF32 tensor cores for matmul
 
-# SDPA backend configuration (optimization.md Priority 2)
+# SDPA backend configuration
 torch.backends.cuda.enable_cudnn_sdp(False)    # Disable broken cuDNN backend
 torch.backends.cuda.enable_flash_sdp(True)     # PyTorch's built-in flash kernel
 torch.backends.cuda.enable_mem_efficient_sdp(True)
 torch.backends.cuda.enable_math_sdp(True)
 
-# Persistent compile caching (optimization.md Priority 1)
+# Persistent compile caching
 import os as _os
 _os.environ.setdefault('TORCHINDUCTOR_FX_GRAPH_CACHE', '1')
 _os.environ.setdefault('TORCHINDUCTOR_AUTOGRAD_CACHE', '1')
