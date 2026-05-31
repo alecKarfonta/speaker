@@ -15,6 +15,7 @@ import torch
 logger = logging.getLogger("moss-tts")
 
 RT_PROFILE = os.environ.get("MOSS_RT_PROFILE", "false").lower() in ("1", "true", "yes")
+RT_BATCH_CHUNK_DURATION = float(os.environ.get("MOSS_RT_BATCH_CHUNK_DURATION", "8"))
 
 
 @dataclass
@@ -314,6 +315,99 @@ def iter_rt_pcm_chunks(
             timing.log()
 
 
+def _stack_generated_codes(worker: Any, inferencer: Any) -> torch.Tensor | None:
+    """Stack inferencer tokens to [C, T] for one-shot batch codec decode."""
+    tokens_list = inferencer._generated_tokens
+    if not tokens_list:
+        return None
+
+    stacked = torch.stack(tokens_list, dim=0)
+    if stacked.dim() == 3:
+        stacked = stacked[:, 0, :]
+    elif stacked.dim() == 2 and stacked.shape[0] == 1:
+        stacked = stacked.squeeze(0).unsqueeze(0)
+
+    if stacked.numel() == 0:
+        return None
+
+    sanitize = make_token_sanitizer(worker)
+    stacked, _ = sanitize(stacked)
+    if stacked.numel() == 0:
+        return None
+    return stacked.permute(1, 0).contiguous()
+
+
+def _run_rt_generation(
+    worker: Any,
+    session: Any,
+    text: str,
+    tune: RTChunkTuning,
+    *,
+    device: torch.device,
+    prime_delay: bool,
+    drain_batch_steps: int,
+    timing: RTTiming,
+) -> None:
+    """Token generation only — no codec decode (official batch infer.py pattern)."""
+    text_tokens = worker.tokenizer.encode(text, add_special_tokens=False)
+    if not text_tokens:
+        raise RuntimeError("Text tokenized to empty — nothing to generate")
+
+    i = 0
+    if prime_delay:
+        prime_n = min(worker.processor.delay_tokens_len, len(text_tokens))
+        if prime_n > 0:
+            t0 = time.perf_counter()
+            with _CudaTimer(device) as ct:
+                session.push_text_tokens(text_tokens[:prime_n])
+            timing.cuda_infer_ms += ct.total_ms
+            timing.infer_s += time.perf_counter() - t0
+            timing.n_infer += 1
+            i = prime_n
+
+    steady_chunk = tune.steady_text_chunk
+    while i < len(text_tokens):
+        token_chunk = text_tokens[i : i + steady_chunk]
+        i += len(token_chunk)
+        t0 = time.perf_counter()
+        with _CudaTimer(device) as ct:
+            session.push_text_tokens(token_chunk)
+        timing.cuda_infer_ms += ct.total_ms
+        timing.infer_s += time.perf_counter() - t0
+        timing.n_infer += 1
+
+    t0 = time.perf_counter()
+    with _CudaTimer(device) as ct:
+        session.end_text()
+    timing.cuda_infer_ms += ct.total_ms
+    timing.infer_s += time.perf_counter() - t0
+
+    while True:
+        t0 = time.perf_counter()
+        with _CudaTimer(device) as ct:
+            audio_frames = session.drain(max_steps=drain_batch_steps)
+        timing.cuda_infer_ms += ct.total_ms
+        timing.infer_s += time.perf_counter() - t0
+        timing.n_infer += 1
+        if not audio_frames:
+            break
+        timing.n_audio_frames += len(audio_frames)
+        if session.inferencer.is_finished:
+            break
+
+
+def decode_rt_codes_batch(worker: Any, codes: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """One-shot batch decode — no codec.streaming(), no AudioStreamDecoder."""
+    with torch.inference_mode():
+        codes_dev = codes.to(device)
+        result = worker.codec.decode(codes_dev, chunk_duration=RT_BATCH_CHUNK_DURATION)
+        if isinstance(result, dict):
+            wav = result["audio"][0]
+        else:
+            wav = result
+        return wav.reshape(-1).detach().cpu().float()
+
+
 def collect_rt_audio(
     worker: Any,
     session: Any,
@@ -324,10 +418,10 @@ def collect_rt_audio(
     prime_delay: bool,
     drain_batch_steps: int,
 ) -> torch.Tensor:
-    """Non-streaming: concatenate all PCM into one tensor."""
-    parts = [
-        torch.from_numpy(chunk)
-        for chunk in iter_rt_pcm_chunks(
+    """Non-streaming: generate tokens, then official one-shot codec decode."""
+    timing = RTTiming()
+    with torch.inference_mode():
+        _run_rt_generation(
             worker,
             session,
             text,
@@ -335,9 +429,22 @@ def collect_rt_audio(
             device=device,
             prime_delay=prime_delay,
             drain_batch_steps=drain_batch_steps,
-            buffer_for_stream=False,
+            timing=timing,
         )
-    ]
-    if not parts:
+
+        codes = _stack_generated_codes(worker, session.inferencer)
+        if codes is None:
+            raise RuntimeError("Realtime model produced no audio tokens")
+
+        t0 = time.perf_counter()
+        with _CudaTimer(device) as ct:
+            wav = decode_rt_codes_batch(worker, codes, device)
+        timing.decode_s = time.perf_counter() - t0
+        timing.cuda_decode_ms += ct.total_ms
+        timing.n_decode = 1
+        timing.n_audio_frames = codes.shape[1]
+        timing.log("Batch-RT")
+
+    if wav.numel() == 0:
         raise RuntimeError("Realtime model produced no audio")
-    return torch.cat(parts, dim=0)
+    return wav

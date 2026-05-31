@@ -193,8 +193,11 @@ services:
     volumes:
       - ./app:/app/app
       - ./data/voices:/app/data/voices
+      - ./models/loli15s-v2-noref-max-lora:/models/loli15s-v2-noref-max-lora:ro
+      - ./models/moss-audio-tokenizer-onnx:/app/training/weights/MOSS-Audio-Tokenizer-ONNX:ro
+      - ./cache/torch_compile:/root/.cache/torch/inductor
+      - ./cache/cuda_jit:/root/.nv/ComputeCache
       - moss_hf_cache:/root/.cache/huggingface
-      - ./training/weights/MOSS-Audio-Tokenizer-ONNX:/app/training/weights/MOSS-Audio-Tokenizer-ONNX:ro
     deploy:
       resources:
         reservations:

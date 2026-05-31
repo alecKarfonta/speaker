@@ -352,29 +352,17 @@ def _ensure_moss_rt_paths() -> Path:
 
 
 def _load_rt_lora_weights(model, checkpoint: Path):
-    """Apply LoRA adapters from a finetune checkpoint (same remap as sample script)."""
-    from moss_tts_realtime.finetuning.lora_patch import apply_lora
-    from safetensors.torch import load_file
+    """Apply LoRA adapters from a finetune checkpoint and merge for inference."""
+    from peft import PeftModel
 
-    cfg = _json.loads((checkpoint / "adapter_config.json").read_text(encoding="utf-8"))
-    model = apply_lora(
-        model,
-        r=int(cfg.get("r", 16)),
-        alpha=int(cfg.get("lora_alpha", 32)),
-        dropout=float(cfg.get("lora_dropout", 0.05)),
-    )
-    weights = load_file(str(checkpoint / "adapter_model.safetensors"))
-    remapped = {
-        k.replace(".lora_A.weight", ".lora_A.default.weight").replace(
-            ".lora_B.weight", ".lora_B.default.weight"
-        ): v
-        for k, v in weights.items()
-    }
-    inc = model.load_state_dict(remapped, strict=False)
-    logger.info(
-        f"LoRA loaded from {checkpoint}: tensors={len(remapped)} "
-        f"missing={len(inc.missing_keys)} unexpected={len(inc.unexpected_keys)}"
-    )
+    logger.info(f"Loading LoRA from {checkpoint} via PEFT ...")
+    model = PeftModel.from_pretrained(model, str(checkpoint), is_trainable=False)
+    try:
+        model = model.merge_and_unload()
+        logger.info("LoRA merged into base weights")
+    except Exception as exc:
+        logger.warning(f"merge_and_unload failed ({exc}) — keeping LoRA adapter attached")
+    model.eval()
     return model
 
 
@@ -615,17 +603,19 @@ def _load_rt_torch_codec(device: str):
     return codec.to(device)
 
 
-def _load_rt_codec(device: str):
+def _load_rt_codec(device: str) -> tuple[Any, str]:
     """PyTorch or ONNX MOSS-Audio-Tokenizer for realtime encode/decode."""
-    from app.rt_codec_onnx import load_onnx_codec, resolve_onnx_codec_paths
-
     backend = RT_CODEC_BACKEND
     if backend == "auto":
+        from app.rt_codec_onnx import resolve_onnx_codec_paths
+
         backend = "onnx" if resolve_onnx_codec_paths() else "torch"
     if backend == "onnx":
+        from app.rt_codec_onnx import load_onnx_codec
+
         logger.info(f"[{device}] Loading ONNX audio codec (frees ~3GB vs PyTorch codec) ...")
-        return load_onnx_codec(device, RT_ONNX_CODEC_DIR or None)
-    return _load_rt_torch_codec(device)
+        return load_onnx_codec(device, RT_ONNX_CODEC_DIR or None), "onnx"
+    return _load_rt_torch_codec(device), "torch"
 
 
 def _load_rt_worker(device: str) -> RTWorker:
@@ -672,12 +662,7 @@ def _load_rt_worker(device: str) -> RTWorker:
             logger.info(f"[{device}] torch.compile(backbone) experimental enabled")
             worker.model = torch.compile(worker.model, mode="reduce-overhead")
 
-    worker.codec = _load_rt_codec(device)
-    from app.rt_codec_onnx import MossRTOnnxCodec
-
-    worker.codec_backend = (
-        "onnx" if isinstance(worker.codec, MossRTOnnxCodec) else "torch"
-    )
+    worker.codec, worker.codec_backend = _load_rt_codec(device)
     if RT_STREAM_CODEC_BACKEND == "onnx":
         worker.codec_stream = worker.codec
     elif worker.codec_backend == "torch":
