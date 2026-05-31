@@ -1,14 +1,6 @@
 # MOSS-TTS-Realtime (standalone)
 
-Low-latency token-level streaming via [MOSS-TTS-Realtime](https://github.com/OpenMOSS/MOSS-TTS/tree/main/moss_tts_realtime) (~1.7B Qwen3 backbone + 200M depth transformer). Separate from **openmoss** (GGML v1.5 clone on port 8012).
-
-## When to use which backend
-
-| Backend | Port | Best for |
-|---------|------|----------|
-| **openmoss** | 8012 | Fast voice clone quality (MOSS-TTS v1.5 Q8 GGML) |
-| **moss-realtime** | 8016 | Low TTFA, token streaming, conversational TTS |
-| **moss-tts** | 8013 | Voice design + long-form v1.5 PyTorch |
+Low-latency token-level streaming via [MOSS-TTS-Realtime](https://github.com/OpenMOSS/MOSS-TTS/tree/main/moss_tts_realtime) (~1.7B Qwen3 backbone + 200M depth transformer).
 
 ## Quick start (Docker)
 
@@ -29,7 +21,7 @@ Requires PyTorch + MOSS-TTS installed (see `Dockerfile.moss`). Docker is the sup
 
 ## GPU sizing
 
-Default: **GPU 3** (`NVIDIA_VISIBLE_DEVICES=3` in compose) so it can run alongside openmoss on GPU 1.
+Default: **GPU 3** (`NVIDIA_VISIBLE_DEVICES=3` in compose).
 
 | Component | VRAM (approx) |
 |-----------|---------------|
@@ -109,11 +101,16 @@ COMPOSE_PROFILES=moss-realtime
 
 Does not start moss-tts, frontend, or other profiles — only `moss-realtime`.
 
-## Native-voice finetuned weights (optional)
+## Native-voice LoRA (distillation)
 
-Point `MOSS_RT_MODEL_ID` at a local merged checkpoint and set `MOSS_RT_NATIVE_VOICE=true`. Finetune/merge scripts live under `training/` locally (gitignored), not in this repo.
+Full pipeline: [training/moss-realtime/README.md](../training/moss-realtime/README.md)
 
-For faster batch `/tts`, enable ONNX codec:
+```bash
+python training/moss-realtime/scripts/distill.py export merge
+MOSS_RT_MODEL_ID=/path/to/exports/merged MOSS_RT_NATIVE_VOICE=true ./scripts/start-moss-realtime.sh
+```
+
+For faster batch `/tts`:
 
 ```bash
 MOSS_RT_DOWNLOAD_ONNX=1 MOSS_RT_CODEC_BACKEND=auto ./scripts/start-moss-realtime.sh
