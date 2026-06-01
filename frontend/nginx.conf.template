@@ -113,6 +113,22 @@ server {
         }
     }
 
+    # Proxy /languages and OpenAI-compatible /v1 routes to the TTS backend
+    location /languages {
+        set $upstream_tts ${TTS_BACKEND_HOST};
+        proxy_pass http://$upstream_tts;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    location /v1/ {
+        set $upstream_tts ${TTS_BACKEND_HOST};
+        proxy_pass http://$upstream_tts;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_read_timeout 600s;
+    }
+
     # Proxy /health requests to the TTS backend
     location /health {
         set $upstream_tts ${TTS_BACKEND_HOST};

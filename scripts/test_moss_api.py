@@ -43,10 +43,15 @@ def test_voices(base_url: str) -> bool:
     print("\n🎤 Testing GET /voices ...")
     try:
         r = requests.get(f"{base_url}/voices", timeout=10)
-        voices = r.json()
+        data = r.json()
         print(f"   Status: {r.status_code}")
+        if isinstance(data, dict) and "voices" in data:
+            voices = data["voices"]
+        elif isinstance(data, list):
+            voices = data
+        else:
+            voices = []
         print(f"   Voices found: {len(voices)}")
-        # Voices may be flat list ["name", ...] or detailed [{name, files}, ...]
         for v in voices:
             if isinstance(v, str):
                 print(f"     - {v}")

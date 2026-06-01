@@ -60,6 +60,8 @@ output.wav
 # Model cache
 model_cache/
 dependencies_cache/
+cache/
+models/
 
 # Docker
 .dockerignore
@@ -151,6 +153,13 @@ third_party/MOSS-TTS/
 .env.moss-realtime
 training/weights/
 openmoss/
+
+# Local audiobook editor state (clips/portraits may remain tracked)
+data/audiobooks/**/project.json
+
+# WIP / scratch (not wired into moss_api yet)
+app/moss_rt_codec.py
+scripts/debug_moss_prompt.py
 
 # Root-level experiment / scratch (keep repo root clean)
 /*.pdf

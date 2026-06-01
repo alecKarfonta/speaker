@@ -253,39 +253,41 @@ class MetricsCollector:
     def get_word_performance_metrics(self) -> Dict[str, Any]:
         """Get word-based performance metrics"""
         with self._lock:
-            metrics = {}
-            
-            for word_range, times in self.word_count_performance.items():
-                if times:
-                    metrics[word_range] = {
-                        'count': len(times),
-                        'avg_time': sum(times) / len(times),
-                        'min_time': min(times),
-                        'max_time': max(times),
-                        'p95_time': sorted(times)[int(len(times) * 0.95)] if len(times) > 0 else 0,
-                        'p99_time': sorted(times)[int(len(times) * 0.99)] if len(times) > 0 else 0
-                    }
-            
-            return metrics
-    
+            return self._word_performance_snapshot()
+
+    def _word_performance_snapshot(self) -> Dict[str, Any]:
+        metrics = {}
+        for word_range, times in self.word_count_performance.items():
+            if times:
+                metrics[word_range] = {
+                    'count': len(times),
+                    'avg_time': sum(times) / len(times),
+                    'min_time': min(times),
+                    'max_time': max(times),
+                    'p95_time': sorted(times)[int(len(times) * 0.95)] if len(times) > 0 else 0,
+                    'p99_time': sorted(times)[int(len(times) * 0.99)] if len(times) > 0 else 0
+                }
+        return metrics
+
     def get_character_performance_metrics(self) -> Dict[str, Any]:
         """Get character-based performance metrics"""
         with self._lock:
-            metrics = {}
-            
-            for char_range, times in self.character_count_performance.items():
-                if times:
-                    metrics[char_range] = {
-                        'count': len(times),
-                        'avg_time': sum(times) / len(times),
-                        'min_time': min(times),
-                        'max_time': max(times),
-                        'p95_time': sorted(times)[int(len(times) * 0.95)] if len(times) > 0 else 0,
-                        'p99_time': sorted(times)[int(len(times) * 0.99)] if len(times) > 0 else 0
-                    }
-            
-            return metrics
-    
+            return self._character_performance_snapshot()
+
+    def _character_performance_snapshot(self) -> Dict[str, Any]:
+        metrics = {}
+        for char_range, times in self.character_count_performance.items():
+            if times:
+                metrics[char_range] = {
+                    'count': len(times),
+                    'avg_time': sum(times) / len(times),
+                    'min_time': min(times),
+                    'max_time': max(times),
+                    'p95_time': sorted(times)[int(len(times) * 0.95)] if len(times) > 0 else 0,
+                    'p99_time': sorted(times)[int(len(times) * 0.99)] if len(times) > 0 else 0
+                }
+        return metrics
+
     def get_metrics(self) -> Dict[str, Any]:
         """Get current metrics"""
         with self._lock:
@@ -317,8 +319,8 @@ class MetricsCollector:
                 'top_voices': dict(sorted(self.voice_usage.items(), key=lambda x: x[1], reverse=True)[:5]),
                 'top_languages': dict(sorted(self.language_usage.items(), key=lambda x: x[1], reverse=True)[:5]),
                 'error_counts': dict(self.error_counts),
-                'word_performance': self.get_word_performance_metrics(),
-                'character_performance': self.get_character_performance_metrics()
+                'word_performance': self._word_performance_snapshot(),
+                'character_performance': self._character_performance_snapshot()
             }
     
     def reset_metrics(self):
