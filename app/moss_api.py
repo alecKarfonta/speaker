@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 import numpy as np
+import requests
 import torch
 import torch._dynamo
 torch._dynamo.config.cache_size_limit = 64  # Match official Gradio app (prevent recompilation)
@@ -50,10 +51,22 @@ def _sf_load(path: str):
     elif wav.dim() == 2:
         wav = wav.T  # soundfile: (samples, ch) → (ch, samples)
     return wav, sr
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from pydantic import BaseModel, Field
+
+from app.models import MetricsResponse, OpenAISpeechRequest, VoiceUploadResponse
+from app.monitoring import get_metrics, metrics_collector
+from app.moss_glm_compat import (
+    _list_voice_names,
+    _resolve_language_name,
+    convert_audio_format,
+    resolve_openai_voice,
+    router as glm_compat_router,
+    save_voice_upload,
+)
 
 # ── Logging ──
 logging.basicConfig(level=logging.INFO)
@@ -68,6 +81,19 @@ VOICE_GEN_GPU = os.environ.get("MOSS_VOICE_GEN_GPU")
 VOICES_DIR = Path(os.environ.get("VOICES_DIR", "/app/data/voices"))
 VOICES_DIR.mkdir(parents=True, exist_ok=True)
 QUANTIZE = os.environ.get("MOSS_QUANTIZE", "4bit")  # "4bit", "8bit", or "none"
+
+
+def _openmoss_batch_url() -> Optional[str]:
+    """Remote openmoss shim for batch /tts (C++ GGML)."""
+    url = os.environ.get("OPENMOSS_TTS_URL", "").strip().rstrip("/")
+    if url:
+        return url
+    if os.environ.get("MOSS_BATCH_ENGINE", "").lower() == "openmoss":
+        return "http://openmoss-tts:8000"
+    return None
+
+
+OPENMOSS_BATCH_URL = _openmoss_batch_url()
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
@@ -589,6 +615,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(glm_compat_router)
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    metrics_collector.record_request(
+        endpoint=request.url.path,
+        method=request.method,
+        status_code=response.status_code,
+        response_time=time.time() - start_time,
+    )
+    metrics_collector.update_system_metrics()
+    return response
 
 # NOTE: Audiobook logic (projects, visuals, export) lives exclusively in `tts-api`.
 # Nginx routes /audiobook/* -> tts-api:8000, /tts and /voices -> moss-tts:8000.
@@ -1232,6 +1274,122 @@ def _generate_audio_realtime(
     return all_audio, worker.sample_rate
 
 
+def _resolve_reference_path(voice_name: Optional[str]) -> Optional[str]:
+    if not voice_name:
+        return None
+    voice_dir = VOICES_DIR / voice_name
+    if not voice_dir.exists():
+        return None
+    audio_files = [
+        f
+        for f in voice_dir.iterdir()
+        if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")
+    ]
+    if not audio_files:
+        return None
+    return str(audio_files[0])
+
+
+def _generate_audio_openmoss(
+    request: TTSRequest,
+    *,
+    voice_name: Optional[str] = None,
+) -> tuple[torch.Tensor, int]:
+    """Batch TTS via openmoss C++ engine (HTTP proxy)."""
+    url = _openmoss_batch_url()
+    if not url:
+        raise HTTPException(status_code=503, detail="OpenMOSS batch URL not configured")
+
+    vn = voice_name or request.voice_name
+    payload: dict = {
+        "text": request.text,
+        "max_new_tokens": request.max_new_tokens,
+    }
+    if vn:
+        payload["voice_name"] = vn
+    if request.tokens is not None:
+        payload["tokens"] = request.tokens
+    else:
+        est = max(32, len(request.text.split()) * 12)
+        payload["tokens"] = est
+        payload["max_new_tokens"] = min(request.max_new_tokens, max(256, est * 3))
+    lang = _resolve_language_name(request.language)
+    if lang:
+        payload["language"] = lang
+    audio_temp = request.audio_temperature or request.temperature
+    audio_tp = request.audio_top_p or request.top_p
+    if audio_temp is not None or audio_tp is not None:
+        sampling: dict = {}
+        if audio_temp is not None:
+            sampling["audio_temperature"] = audio_temp
+        if audio_tp is not None:
+            sampling["audio_top_p"] = audio_tp
+        payload["sampling"] = sampling
+
+    logger.info(f"[TTS/openmoss] POST {url}/tts voice={vn or 'default'}")
+    r = requests.post(f"{url}/tts", json=payload, timeout=300)
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=r.text[:500])
+
+    data, sr = sf.read(io.BytesIO(r.content), dtype="float32")
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    return torch.from_numpy(data).float(), sr
+
+
+async def _run_tts_generation(
+    request: TTSRequest,
+    *,
+    voice_name: Optional[str] = None,
+) -> tuple[torch.Tensor, int]:
+    if _openmoss_batch_url():
+        async with inference_semaphore:
+            return await asyncio.to_thread(
+                _generate_audio_openmoss,
+                request,
+                voice_name=voice_name,
+            )
+
+    if model is None and not rt_workers:
+        raise HTTPException(status_code=503, detail="No TTS model loaded yet")
+
+    audio_temp = request.audio_temperature or request.temperature
+    audio_tp = request.audio_top_p or request.top_p
+    ref_path = _resolve_reference_path(voice_name or request.voice_name)
+    if (voice_name or request.voice_name) and ref_path is None:
+        missing = voice_name or request.voice_name
+        raise HTTPException(status_code=404, detail=f"Voice '{missing}' not found")
+
+    async with inference_semaphore:
+        if model is not None:
+            return await asyncio.to_thread(
+                _generate_audio,
+                text=request.text,
+                reference_path=ref_path,
+                max_new_tokens=request.max_new_tokens,
+                tokens=request.tokens,
+                language=request.language,
+                audio_temperature=audio_temp,
+                audio_top_p=audio_tp,
+                audio_top_k=request.audio_top_k,
+            )
+        if ENABLE_REALTIME and rt_workers:
+            return await asyncio.to_thread(
+                _generate_audio_realtime,
+                text=request.text,
+                reference_path=ref_path,
+                sampling=_rt_sampling_from_request(request),
+            )
+        raise HTTPException(status_code=503, detail="No TTS model loaded yet")
+
+
+def _tensor_to_numpy(audio: torch.Tensor) -> np.ndarray:
+    data = audio.detach().cpu().float().numpy()
+    if data.ndim > 1:
+        data = data.squeeze()
+    return data
+
+
 # ── Endpoints ──
 
 @app.get("/health", response_model=HealthResponse)
@@ -1240,8 +1398,16 @@ async def health_check():
     if DEVICE == "cuda":
         gpu_mem = round(torch.cuda.max_memory_allocated() / 1e9, 2)
 
-    is_ready = model is not None or len(rt_workers) > 0 or voice_gen_model is not None
-    if model is not None:
+    is_ready = (
+        model is not None
+        or len(rt_workers) > 0
+        or voice_gen_model is not None
+        or _openmoss_batch_url() is not None
+    )
+    if _openmoss_batch_url() and model is None and not rt_workers:
+        active_model = "openmoss-ggml"
+        active_sr = 24000
+    elif model is not None:
         active_model = MODEL_ID
         active_sr = sample_rate
     elif len(rt_workers) > 0 and voice_gen_model is None:
@@ -1289,69 +1455,43 @@ async def health_check():
 
 
 @app.get("/voices")
-async def list_voices(format: Optional[str] = Query(None, description="'flat' for name-only list")):
-    """List available reference voices. Default returns flat list for frontend compat."""
-    voices = []
-    if VOICES_DIR.exists():
-        for voice_dir in sorted(VOICES_DIR.iterdir()):
-            if voice_dir.is_dir():
-                files = [f.name for f in voice_dir.iterdir()
-                         if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")]
-                if files:
-                    voices.append(VoiceInfo(name=voice_dir.name, files=sorted(files)))
-    # Default: return flat list of names (frontend expects ["name1", "name2"])
+async def list_voices(format: Optional[str] = Query(None, description="'flat' for name-only list, 'detailed' for file metadata")):
+    """List available reference voices (GLM-compatible default: {\"voices\": [...]})."""
+    names = _list_voice_names()
+    if format == "flat":
+        return JSONResponse(content=names)
     if format == "detailed":
+        voices = []
+        if VOICES_DIR.exists():
+            for voice_dir in sorted(VOICES_DIR.iterdir()):
+                if voice_dir.is_dir() and voice_dir.name in names:
+                    files = [
+                        f.name
+                        for f in voice_dir.iterdir()
+                        if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")
+                    ]
+                    voices.append(VoiceInfo(name=voice_dir.name, files=sorted(files)))
         return voices
-    return JSONResponse(content=[v.name for v in voices])
+    return {"voices": names}
 
 
 @app.post("/tts")
 async def generate_speech(request: TTSRequest):
     """Generate speech from text. If voice_name is provided, auto-routes to cloning."""
-    if model is None and not rt_workers:
-        raise HTTPException(status_code=503, detail="No TTS model loaded yet")
-
-    # Map GLM compat params
-    audio_temp = request.audio_temperature or request.temperature
-    audio_tp = request.audio_top_p or request.top_p
-
-    # Auto-route to voice cloning if voice_name provided
-    ref_path = None
     if request.voice_name:
-        voice_dir = VOICES_DIR / request.voice_name
-        if voice_dir.exists():
-            audio_files = [f for f in voice_dir.iterdir()
-                           if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")]
-            if audio_files:
-                ref_path = str(audio_files[0])
-                logger.info(f"[TTS] Auto-cloning with voice '{request.voice_name}': {ref_path}")
+        ref_path = _resolve_reference_path(request.voice_name)
+        if ref_path:
+            logger.info(
+                f"[TTS] Auto-cloning with voice '{request.voice_name}': {ref_path}"
+            )
 
     logger.info(f"[TTS] Generating: '{request.text[:80]}...'")
     t0 = time.perf_counter()
 
     try:
-        async with inference_semaphore:
-            if model is not None:
-                audio, sr = await asyncio.to_thread(
-                    _generate_audio,
-                    text=request.text,
-                    reference_path=ref_path,
-                    max_new_tokens=request.max_new_tokens,
-                    tokens=request.tokens,
-                    language=request.language,
-                    audio_temperature=audio_temp,
-                    audio_top_p=audio_tp,
-                    audio_top_k=request.audio_top_k,
-                )
-            elif ENABLE_REALTIME and rt_workers:
-                audio, sr = await asyncio.to_thread(
-                    _generate_audio_realtime,
-                    text=request.text,
-                    reference_path=ref_path,
-                    sampling=_rt_sampling_from_request(request),
-                )
-            else:
-                raise HTTPException(status_code=503, detail="No TTS model loaded yet")
+        audio, sr = await _run_tts_generation(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[TTS] Generation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1362,6 +1502,17 @@ async def generate_speech(request: TTSRequest):
 
     logger.info(f"[TTS] Done: {duration:.1f}s audio in {gen_time:.1f}s (RTF={gen_time/duration:.2f}x)")
 
+    metrics_collector.record_request(
+        endpoint="/tts",
+        method="POST",
+        status_code=200,
+        response_time=gen_time,
+        voice_name=request.voice_name,
+        language=request.language,
+        text_length=len(request.text),
+        text=request.text,
+    )
+
     return Response(
         content=wav_bytes,
         media_type="audio/wav",
@@ -1369,6 +1520,88 @@ async def generate_speech(request: TTSRequest):
             "X-Audio-Duration": f"{duration:.2f}",
             "X-Generation-Time": f"{gen_time:.2f}",
             "X-Sample-Rate": str(sr),
+        },
+    )
+
+
+@app.post("/v1/audio/speech", response_class=Response)
+async def openai_create_speech(request: OpenAISpeechRequest):
+    """OpenAI-compatible text-to-speech endpoint."""
+    available_voices = _list_voice_names()
+    voice_name = resolve_openai_voice(
+        request.voice,
+        available_voices,
+        native_voice=RT_NATIVE_VOICE and bool(rt_workers),
+    )
+
+    tts_request = TTSRequest(
+        text=request.input,
+        voice_name=voice_name,
+        language="en",
+    )
+
+    logger.info(
+        f"[OpenAI API] input='{request.input[:50]}...', voice={voice_name or '(native)'}, "
+        f"format={request.response_format.value}"
+    )
+    t0 = time.perf_counter()
+
+    try:
+        audio, sample_rate = await _run_tts_generation(tts_request, voice_name=voice_name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[OpenAI TTS] Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    audio_np = _tensor_to_numpy(audio)
+    if audio_np.size == 0:
+        raise HTTPException(status_code=500, detail="Failed to generate audio")
+
+    audio_bytes, content_type = convert_audio_format(
+        audio_np,
+        sample_rate,
+        request.response_format.value,
+    )
+    gen_time = time.perf_counter() - t0
+
+    metrics_collector.record_request(
+        endpoint="/v1/audio/speech",
+        method="POST",
+        status_code=200,
+        response_time=gen_time,
+        voice_name=voice_name,
+        language="en",
+        text_length=len(request.input),
+        text=request.input,
+    )
+
+    return Response(
+        content=audio_bytes,
+        media_type=content_type,
+        headers={
+            "Content-Length": str(len(audio_bytes)),
+            "X-Request-Id": str(time.time_ns()),
+        },
+    )
+
+
+@app.get("/metrics", response_model=MetricsResponse)
+async def get_api_metrics():
+    """API usage metrics and performance statistics."""
+    return MetricsResponse(**get_metrics())
+
+
+@app.get("/prometheus")
+async def prometheus_metrics():
+    """Prometheus metrics endpoint."""
+    return Response(
+        content=generate_latest(REGISTRY),
+        media_type=CONTENT_TYPE_LATEST,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
         },
     )
 
@@ -1768,15 +2001,20 @@ async def upload_voice(
     return {"voice_name": voice_name, "filename": filename, "size_bytes": len(content)}
 
 
-# ── Frontend compatibility shim: POST /voices?voice_name=X ──
-@app.post("/voices")
+@app.post("/voices", status_code=status.HTTP_201_CREATED, response_model=VoiceUploadResponse)
 async def upload_voice_compat(
     voice_name: str = Query(..., description="Voice name"),
     file: UploadFile = File(..., description="Audio file for voice reference"),
     transcription: Optional[str] = Form(None, description="(GLM compat) Transcription text, ignored"),
 ):
-    """Frontend-compatible voice upload (query param style)."""
-    return await upload_voice(voice_name=voice_name, file=file)
+    """GLM-compatible voice upload (query param style)."""
+    content = await file.read()
+    return save_voice_upload(
+        voice_name=voice_name,
+        filename=file.filename or "reference.wav",
+        content=content,
+        transcription=transcription,
+    )
 
 
 @app.post("/tts/clone/{voice_name}")
@@ -1785,16 +2023,18 @@ async def clone_from_saved_voice(
     request: TTSRequest,
 ):
     """Generate speech using a previously uploaded voice as reference."""
-    if model is None:
+    if model is None and not rt_workers:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
 
     voice_dir = VOICES_DIR / voice_name
     if not voice_dir.exists():
         raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
 
-    # Find the first audio file in the voice directory
-    audio_files = [f for f in voice_dir.iterdir()
-                   if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")]
+    audio_files = [
+        f
+        for f in voice_dir.iterdir()
+        if f.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")
+    ]
     if not audio_files:
         raise HTTPException(status_code=404, detail=f"No audio files found for voice '{voice_name}'")
 
@@ -1803,18 +2043,10 @@ async def clone_from_saved_voice(
     t0 = time.perf_counter()
 
     try:
-        async with inference_semaphore:
-            audio, sr = await asyncio.to_thread(
-                _generate_audio,
-                text=request.text,
-                reference_path=ref_path,
-                max_new_tokens=request.max_new_tokens,
-                tokens=request.tokens,
-                language=request.language,
-                audio_temperature=request.audio_temperature,
-                audio_top_p=request.audio_top_p,
-                audio_top_k=request.audio_top_k,
-            )
+        clone_request = request.model_copy(update={"voice_name": voice_name})
+        audio, sr = await _run_tts_generation(clone_request, voice_name=voice_name)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[Clone/{voice_name}] Generation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

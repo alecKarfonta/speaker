@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1.4
+# MOSS-TTS 1.0 via pwilkin/openmoss — stock (no v1.5 patch) for validation.
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y git cmake g++ python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+ARG CUDA_ARCHITECTURES=120a-real
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/libcuda.so
+
+RUN cmake -S llama.cpp -B llama.cpp/build \
+    -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
+    -DGGML_CUDA_FA_ALL_QUANTS=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=OFF \
+    && cmake --build llama.cpp/build -j"$(nproc)" --target llama ggml ggml-base ggml-cpu ggml-cuda
+
+RUN cmake -S llama.cpp -B llama.cpp/build-quant \
+    -DGGML_CUDA=OFF -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF \
+    && cmake --build llama.cpp/build-quant -j"$(nproc)" --target llama-quantize
+
+RUN git clone --depth 1 https://github.com/pwilkin/openmoss.git
+COPY scripts/convert_openmoss_weights.sh /build/scripts/convert_openmoss_weights.sh
+RUN chmod +x /build/scripts/convert_openmoss_weights.sh
+RUN cmake -S openmoss -B openmoss/build \
+    -DLLAMA_CPP_DIR=/build/llama.cpp -DGGML_CUDA=ON \
+    -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
+    -DGGML_CUDA_FA_ALL_QUANTS=ON \
+    -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -lcuda" \
+    && cmake --build openmoss/build -j"$(nproc)" --target moss-tts-server moss-tts-cli
+
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y python3 python3-pip curl libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --break-system-packages fastapi uvicorn httpx soundfile python-multipart huggingface_hub
+
+WORKDIR /app
+COPY --from=builder /build/llama.cpp/build/bin/libllama.so* /usr/local/lib/
+COPY --from=builder /build/llama.cpp/build/bin/libggml*.so* /usr/local/lib/
+COPY --from=builder /build/llama.cpp/build-quant/bin/llama-quantize /usr/local/bin/
+COPY --from=builder /build/openmoss/build/moss-tts-server /usr/local/bin/
+COPY --from=builder /build/openmoss/build/moss-tts-cli /usr/local/bin/
+COPY --from=builder /build/openmoss /build/openmoss
+COPY --from=builder /build/llama.cpp /build/llama.cpp
+COPY --from=builder /build/scripts/convert_openmoss_weights.sh /build/scripts/convert_openmoss_weights.sh
+RUN ldconfig
+
+COPY app/moss_glm_compat.py /app/app/moss_glm_compat.py
+COPY app/openmoss_shim.py /app/app/openmoss_shim.py
+COPY app/models.py /app/app/models.py
+COPY app/__init__.py /app/app/__init__.py
+COPY scripts/start_openmoss.sh /app/scripts/start_openmoss.sh
+
+RUN mkdir -p /app/weights /app/data/voices /app/output
+ENV PYTHONPATH=/app
+ENV OPENMOSS_MODEL=/app/weights/moss-tts-q8_0.gguf
+ENV OPENMOSS_HF_REPO=local
+ENV OPENMOSS_SERVER=http://127.0.0.1:8081
+ENV VOICES_DIR=/app/data/voices
+ENV GGML_CUDA_FA_ALL_QUANTS=1
+EXPOSE 8000
+ENTRYPOINT ["/app/scripts/start_openmoss.sh"]
