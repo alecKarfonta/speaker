@@ -146,8 +146,44 @@ training/moss-realtime/corpus/*.bak
 training/moss-realtime/train_raw*.jsonl
 training/moss-realtime/*.log
 training/moss-realtime/configs/experiment.yaml
-# Legacy local experiment dir (data only)
-training/loli_15s/
+# loli_15s experiment artifacts (scripts + docs stay in repo)
+training/loli_15s/wavs/
+training/loli_15s/prepared/
+training/loli_15s/output/
+training/loli_15s/checkpoints/
+training/loli_15s/exports/
+training/loli_15s/eval/
+training/loli_15s/qc/
+training/loli_15s/qc_full/
+training/loli_15s/qc_trim/
+training/loli_15s/dataset_stats*.json
+training/loli_15s/corpus/corpus_stats.json
+training/loli_15s/corpus/gap_report.json
+training/loli_15s/logs/
+training/loli_15s/corpus/*.jsonl
+training/loli_15s/corpus/*.bak
+training/loli_15s/train_raw*.jsonl
+training/loli_15s/configs/experiment.yaml
+# gap / batch experiment data (scripts + README tracked)
+training/loli_15s_gap3/wavs/
+training/loli_15s_gap3/logs/
+training/loli_15s_gap3/corpus/*.jsonl
+training/loli_15s_gap3/corpus/corpus_stats.json
+training/loli_15s_gap3/corpus/gap_report.json
+training/loli_15s_gap3/dataset_stats*.json
+training/loli_15s_gap3/*.jsonl
+training/loli_15s_gap3/*.log
+training/loli_15s_batch2/wavs/
+training/loli_15s_batch2/logs/
+training/loli_15s_batch2/corpus/*.jsonl
+training/loli_15s_batch2/corpus/corpus_stats.json
+training/loli_15s_batch2/dataset_stats*.json
+training/loli_15s_batch2/*.jsonl
+training/major_03/wavs/
+training/major_03/logs/
+training/major_03/corpus/*.jsonl
+training/major_03/corpus/corpus_stats.json
+training/major_03/dataset_stats*.json
 third_party/MOSS-TTS/
 .venv-finetune/
 .env.moss-realtime

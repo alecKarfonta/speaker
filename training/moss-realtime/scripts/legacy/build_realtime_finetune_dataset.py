@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -32,10 +33,7 @@ from generate_voice_clone_batch import (  # noqa: E402
     openmoss_token_budget,
     preload_reference,
 )
-from v15_teacher_styles import instruction_for_style, sampling_for_style  # noqa: E402
-
 STT_API = os.environ.get("STT_API", "http://localhost:8603/v1/audio/transcriptions")
-REF_REL = "data/voices/loli/loli_15s.wav"
 
 V15_MODEL = ROOT / "openmoss/weights/moss-tts-v15-q8_0.gguf"
 V10_MODEL = ROOT / "openmoss/weights/moss-tts-v10-q8_0.gguf"
@@ -79,15 +77,26 @@ def transcribe(wav_path: Path) -> str:
     return r.json().get("text", "").strip()
 
 
-def audio_ok(path: Path, min_dur: float, max_dur: float) -> tuple[bool, float, float]:
+def audio_ok(
+    path: Path,
+    min_dur: float,
+    max_dur: float,
+    *,
+    lenient: bool = False,
+) -> tuple[bool, float, float, str]:
+    """Basic file checks. Lenient mode keeps clips that sound fine but are short (MOSS often ~4–8s)."""
     if not path.is_file() or path.stat().st_size < 1024:
-        return False, 0.0, 0.0
+        return False, 0.0, 0.0, "missing_or_tiny"
     x, sr = sf.read(str(path))
     dur = len(x) / sr if sr else 0.0
     peak = float(abs(x).max()) if len(x) else 0.0
-    if dur < min_dur or dur > max_dur or peak < 0.01:
-        return False, dur, peak
-    return True, dur, peak
+    if peak < 0.01:
+        return False, dur, peak, "silent"
+    if dur > max_dur:
+        return False, dur, peak, "too_long"
+    if not lenient and dur < min_dur:
+        return False, dur, peak, "too_short"
+    return True, dur, peak, "ok"
 
 
 def set_teacher_model(teacher: str) -> None:
@@ -101,7 +110,13 @@ def set_teacher_model(teacher: str) -> None:
         raise ValueError(teacher)
 
 
-def synth_opts(teacher: str, text: str, meta: dict | None) -> tuple[str | None, dict | None]:
+def synth_opts(
+    teacher: str,
+    text: str,
+    meta: dict | None,
+    instruction_for_style,
+    sampling_for_style,
+) -> tuple[str | None, dict | None]:
     """v1.5: instruction + per-style sampling; v1.0: plain clone."""
     if teacher != "v15" or not meta:
         return None, None
@@ -116,11 +131,15 @@ def synthesize_teacher(
     out: Path,
     api: str,
     use_cli: bool,
-    teacher: str = "v15",
-    meta: dict | None = None,
+    teacher: str,
+    meta: dict | None,
+    instruction_for_style,
+    sampling_for_style,
 ) -> tuple[bool, str]:
     tokens, max_new = openmoss_token_budget(text, ref)
-    instruction, sampling = synth_opts(teacher, text, meta)
+    instruction, sampling = synth_opts(
+        teacher, text, meta, instruction_for_style, sampling_for_style,
+    )
     if use_cli:
         return generate_openmoss_cli(ref, text, out, tokens, max_new, instruction=instruction)
     return generate_openmoss(
@@ -139,10 +158,28 @@ def load_id_set(path: Path) -> set[str] | None:
     return {line.strip() for line in path.read_text().splitlines() if line.strip()}
 
 
-def build_single_row(corpus_id: str, teacher: str, text: str, wav_rel: str) -> dict:
+def ref_wav_relative(root: Path, ref: Path) -> str:
+    ref = ref.resolve()
+    root = root.resolve()
+    try:
+        return ref.relative_to(root).as_posix()
+    except ValueError:
+        return str(ref.as_posix())
+
+
+def load_teacher_styles(module_name: str):
+    if str(_LEGACY) not in sys.path:
+        sys.path.insert(0, str(_LEGACY))
+    mod = importlib.import_module(module_name)
+    return mod.instruction_for_style, mod.sampling_for_style
+
+
+def build_single_row(
+    corpus_id: str, teacher: str, text: str, wav_rel: str, ref_wav: str,
+) -> dict:
     return {
         "id": f"{corpus_id}_{teacher}",
-        "ref_wav": REF_REL,
+        "ref_wav": ref_wav,
         "teacher": teacher,
         "conversations": [{"role": "assistant", "text": text, "wav": wav_rel}],
     }
@@ -156,14 +193,20 @@ def load_written_ids(jsonl_path: Path) -> set[str]:
     if not jsonl_path.is_file():
         return set()
     ids: set[str] = set()
-    for line in jsonl_path.read_text().splitlines():
-        if not line.strip():
+    for line in jsonl_path.read_text(errors="replace").splitlines():
+        line = line.strip().replace("\x00", "")
+        if not line:
             continue
-        ids.add(json.loads(line)["id"])
+        try:
+            ids.add(json.loads(line)["id"])
+        except json.JSONDecodeError:
+            continue
     return ids
 
 
-def build_multi_row(corpus_id: str, teacher: str, turns: list[dict], wav_rels: list[str]) -> dict:
+def build_multi_row(
+    corpus_id: str, teacher: str, turns: list[dict], wav_rels: list[str], ref_wav: str,
+) -> dict:
     conv = []
     ai = 0
     for turn in turns:
@@ -174,7 +217,7 @@ def build_multi_row(corpus_id: str, teacher: str, turns: list[dict], wav_rels: l
         conv.append(entry)
     return {
         "id": f"{corpus_id}_{teacher}",
-        "ref_wav": REF_REL,
+        "ref_wav": ref_wav,
         "teacher": teacher,
         "conversations": conv,
     }
@@ -206,6 +249,17 @@ def main() -> int:
     parser.add_argument("--max-wer", type=float, default=0.35)
     parser.add_argument("--min-dur", type=float, default=1.0)
     parser.add_argument("--max-dur", type=float, default=25.0)
+    parser.add_argument(
+        "--qc-lenient",
+        action="store_true",
+        help="Only reject silent/empty/too-long clips (not short MOSS outputs).",
+    )
+    parser.add_argument(
+        "--teacher-styles",
+        type=str,
+        default=os.environ.get("TEACHER_STYLES_MODULE", "v15_teacher_styles"),
+        help="Python module for v1.5 instruction/sampling profiles (under legacy/).",
+    )
     parser.add_argument("--limit", type=int, default=0, help="Max corpus rows (0=all)")
     parser.add_argument("--no-stt", action="store_true")
     parser.add_argument("--shard-id", type=int, default=0, help="Shard index for parallel workers")
@@ -219,6 +273,9 @@ def main() -> int:
 
     if not args.ref.is_file():
         raise SystemExit(f"Reference missing: {args.ref}")
+
+    instruction_for_style, sampling_for_style = load_teacher_styles(args.teacher_styles)
+    ref_wav = ref_wav_relative(args.root, args.ref)
 
     preload_reference(args.ref)
 
@@ -281,6 +338,7 @@ def main() -> int:
                     else:
                         ok, detail = synthesize_teacher(
                             args.ref, text, wav, args.api, args.use_cli, teacher, meta,
+                            instruction_for_style, sampling_for_style,
                         )
                         if not ok:
                             print(f"{tag}FAIL {teacher}/{cid}: {detail}", flush=True)
@@ -290,6 +348,7 @@ def main() -> int:
                 else:
                     ok, detail = synthesize_teacher(
                         args.ref, text, wav, args.api, args.use_cli, teacher, meta,
+                        instruction_for_style, sampling_for_style,
                     )
                     if not ok:
                         print(f"{tag}FAIL {teacher}/{cid}: {detail}", flush=True)
@@ -318,6 +377,7 @@ def main() -> int:
                     if not skipped:
                         ok, detail = synthesize_teacher(
                             args.ref, text, wav, args.api, args.use_cli, teacher, meta,
+                            instruction_for_style, sampling_for_style,
                         )
                         if not ok:
                             print(f"{tag}FAIL {teacher}/{cid}_a{ti:02d}: {detail}", flush=True)
@@ -331,11 +391,16 @@ def main() -> int:
                         p.unlink(missing_ok=True)
                     continue
 
-            # QC
+            # QC (duration floor is not a proxy for "sounds good" — use --qc-lenient for teacher gen)
             for wav, text in zip(wav_paths, texts):
-                good, dur, peak = audio_ok(wav, args.min_dur, args.max_dur)
+                good, dur, peak, why = audio_ok(
+                    wav, args.min_dur, args.max_dur, lenient=args.qc_lenient
+                )
                 if not good:
-                    print(f"QC fail {wav.name} dur={dur:.2f} peak={peak:.3f}", flush=True)
+                    print(
+                        f"QC fail {wav.name} reason={why} dur={dur:.2f} peak={peak:.3f}",
+                        flush=True,
+                    )
                     ok_all = False
                     break
                 if not args.no_stt:
@@ -360,9 +425,9 @@ def main() -> int:
                 wav_rel_path(wav_rel_root, teacher, p.name) for p in wav_paths
             ]
             if item["type"] == "single":
-                row = build_single_row(cid, teacher, item["text"], wav_rels[0])
+                row = build_single_row(cid, teacher, item["text"], wav_rels[0], ref_wav)
             else:
-                row = build_multi_row(cid, teacher, item["turns"], wav_rels)
+                row = build_multi_row(cid, teacher, item["turns"], wav_rels, ref_wav)
             row_id = row["id"]
             if row_id in written_ids:
                 continue

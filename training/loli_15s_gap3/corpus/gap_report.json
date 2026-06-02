@@ -1,0 +1,27 @@
+{
+  "rows_analyzed": 8509,
+  "unique_texts": 3438,
+  "text_chars": {
+    "p50": 70,
+    "p90": 152,
+    "max": 463
+  },
+  "coverage_gaps": {
+    "long_text_ge_200_chars_pct": 5.7,
+    "contains_digit_pct": 29.4,
+    "contains_question_pct": 24.9
+  },
+  "audio_sample": {
+    "sample_n": 300,
+    "mean_s": 6.46,
+    "p50_s": 4.98,
+    "p90_s": 11.48,
+    "pct_ge_10s": 17.7,
+    "pct_ge_15s": 0.0
+  },
+  "gap3_targets": {
+    "planned_rows": 2500,
+    "mix": "40% long, 15% numbers, 15% names, 15% questions, 15% emotion",
+    "est_added_hours_at_8s_mean": 5.6
+  }
+}

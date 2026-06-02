@@ -50,7 +50,8 @@ def openmoss_token_budget_chars(text: str) -> tuple[int, int]:
 
     est_sec = max(1.2, len(text) / CHARS_PER_SEC) * slack
     est_sec = min(est_sec, max_sec)
-    tokens = max(48, min(350, int(round(est_sec * FRAME_RATE_HZ))))
+    max_codec = int(os.environ.get("OPENMOSS_MAX_CODEC_TOKENS", "400"))
+    tokens = max(48, min(max_codec, int(round(est_sec * FRAME_RATE_HZ))))
     return tokens, tokens + extra
 OPENMOSS_MODEL = Path(
     os.environ.get(
@@ -229,15 +230,122 @@ def ensure_openmoss_server(api: str | None = None, force_restart: bool = False) 
     with log_path.open("a") as log:
         log.write(f"\n--- start {time.strftime('%Y-%m-%d %H:%M:%S')} "
                   f"model={env.get('OPENMOSS_MODEL_VERSION')} gpu={OPENMOSS_GPU} port={port} ---\n")
+    root = Path(os.environ.get("SPEAKER_ROOT", "/home/alec/git/speaker"))
+    start_script = root / "training/moss-realtime/scripts/legacy/start-openmoss.sh"
+    env["SPEAKER_ROOT"] = str(root)
     with log_path.open("ab") as log:
         subprocess.Popen(
-            ["/home/alec/git/speaker/scripts/start-openmoss.sh"],
+            [str(start_script)],
             stdout=log,
             stderr=subprocess.STDOUT,
             env=env,
+            cwd=str(root),
         )
     for _ in range(120):
         if openmoss_health_ok(health_url):
             return
         time.sleep(2)
-    tail = log_path.read_text(errors="ignore")[-800:] if log_path.is_file() else 
+    tail = log_path.read_text(errors="ignore")[-800:] if log_path.is_file() else ""
+    raise RuntimeError(f"openmoss not ready at {health_url}\n{tail}")
+
+
+def _merge_sampling(overrides: dict | None) -> dict:
+    out = dict(OPENMOSS_SAMPLING)
+    if overrides:
+        out.update(overrides)
+    return out
+
+
+def generate_openmoss(
+    ref: Path,
+    text: str,
+    out: Path,
+    api: str,
+    tokens: int,
+    max_new: int,
+    instruction: str | None = None,
+    sampling: dict | None = None,
+) -> tuple[bool, str]:
+    """Synthesize via openmoss JSON /tts API."""
+    payload: dict = {
+        "text": text,
+        "language": "en",
+        "tokens": int(tokens),
+        "max_new_tokens": int(max_new),
+        "sampling": _merge_sampling(sampling),
+        "reference_wav_b64": reference_wav_b64(ref),
+    }
+    if instruction:
+        payload["instruction"] = instruction
+    try:
+        session = http_session_for_api(api)
+        resp = session.post(api, json=payload, timeout=600)
+    except requests.RequestException as exc:
+        return False, str(exc)
+    if resp.status_code != 200:
+        detail = resp.text[:200] if resp.text else f"HTTP {resp.status_code}"
+        return False, detail
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(resp.content)
+    if out.stat().st_size < 1024:
+        out.unlink(missing_ok=True)
+        return False, "output too small"
+    return True, f"HTTP {resp.status_code}"
+
+
+def generate_openmoss_cli(
+    ref: Path,
+    text: str,
+    out: Path,
+    tokens: int,
+    max_new: int,
+    instruction: str | None = None,
+) -> tuple[bool, str]:
+    """Synthesize via moss-tts-cli (single-GPU fallback)."""
+    preload_reference(ref)
+    if not OPENMOSS_CLI.is_file():
+        return False, f"missing CLI: {OPENMOSS_CLI}"
+    cmd = [
+        str(OPENMOSS_CLI),
+        "--model", str(OPENMOSS_MODEL),
+        "--text", text,
+        "--language", "en",
+        "--tokens", str(tokens),
+        "--max-new-tokens", str(max_new),
+        "--output", str(out),
+    ]
+    ref_path = _prepared_ref_wav
+    if ref_path is not None and ref_path.is_file():
+        cmd.extend(["--reference", str(ref_path)])
+    if instruction:
+        cmd.extend(["--instruction", instruction])
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = f"{LLAMA_LIB}:{env.get('LD_LIBRARY_PATH', '')}"
+    env["CUDA_VISIBLE_DEVICES"] = str(OPENMOSS_GPU)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
+    if proc.returncode != 0:
+        return False, (proc.stderr or proc.stdout or "cli failed")[:200]
+    if out.is_file() and out.stat().st_size > 1024:
+        return True, "cli ok"
+    return False, "cli produced no wav"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Batch MOSS voice-clone samples")
+    parser.add_argument("--ref", type=Path, required=True)
+    parser.add_argument("--api", default="http://127.0.0.1:8014/tts")
+    parser.add_argument("--out-dir", type=Path, default=Path("moss_samples"))
+    args = parser.parse_args()
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_openmoss_server(args.api)
+    preload_reference(args.ref)
+    for i, text in enumerate(TEXTS):
+        out = args.out_dir / f"sample_{i:02d}.wav"
+        tokens, max_new = openmoss_token_budget(text, args.ref)
+        ok, detail = generate_openmoss(args.ref, text, out, args.api, tokens, max_new)
+        print(f"{out.name}: {ok} {detail}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

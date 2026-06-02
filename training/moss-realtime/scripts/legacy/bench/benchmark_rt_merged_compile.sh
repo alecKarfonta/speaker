@@ -9,12 +9,13 @@
 #   SKIP_COMPILE=1 ./scripts/benchmark_rt_merged_compile.sh
 
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../../../.." && pwd)"
 PORT="${MOSS_RT_PORT:-8016}"
 GPU="${MOSS_RT_GPU:-3}"
-MERGED="${MOSS_RT_MERGED_DIR:-$ROOT/training/loli_15s/exports/loli15s-v2-noref-max-merged}"
-LORA_CKPT="${MOSS_RT_LORA_CKPT:-$ROOT/training/loli_15s/checkpoints/loli15s-v2-noref-max}"
+MERGED="${MOSS_RT_MERGED_DIR:-$ROOT/training/loli_15s/exports/loli15s-epoch7-merged}"
+LORA_CKPT="${MOSS_RT_LORA_CKPT:-$ROOT/training/loli_15s/output/sft_ddp_single/checkpoint-epoch-7}"
 LOG_DIR="${MOSS_RT_BENCH_LOG_DIR:-$ROOT/training/loli_15s/logs}"
+BENCH_DIR="$ROOT/training/moss-realtime/scripts/legacy/bench"
 WAIT_SEC="${MOSS_RT_BENCH_WAIT_SEC:-240}"
 
 PYTHON="${MOSS_RT_PYTHON:-}"
@@ -55,10 +56,10 @@ run_bench() {
   local tag="$1"
   echo ""
   echo "========== $tag: stream =========="
-  "$PYTHON" "$ROOT/scripts/benchmark_rt_clean.py" 2>&1 | tee "$LOG_DIR/bench_stream_${tag}.log"
+  "$PYTHON" "$BENCH_DIR/benchmark_rt_clean.py" 2>&1 | tee "$LOG_DIR/bench_stream_${tag}.log"
   echo ""
   echo "========== $tag: POST /tts =========="
-  "$PYTHON" "$ROOT/scripts/benchmark_rt_tts.py" --url "http://127.0.0.1:${PORT}" 2>&1 | tee "$LOG_DIR/bench_tts_${tag}.log"
+  "$PYTHON" "$BENCH_DIR/benchmark_rt_tts.py" --url "http://127.0.0.1:${PORT}" 2>&1 | tee "$LOG_DIR/bench_tts_${tag}.log"
 }
 
 start_server() {
@@ -70,6 +71,11 @@ start_server() {
   export MOSS_RT_PORT="$PORT"
   export MOSS_RT_MODEL_ID="$model_id"
   export MOSS_RT_NATIVE_VOICE=true
+  export MOSS_RT_INITIAL_TEXT_CHUNK="${MOSS_RT_INITIAL_TEXT_CHUNK:-1}"
+  export MOSS_RT_STEADY_TEXT_CHUNK="${MOSS_RT_STEADY_TEXT_CHUNK:-4}"
+  export MOSS_RT_MIN_SAMPLES_FIRST_MS="${MOSS_RT_MIN_SAMPLES_FIRST_MS:-40}"
+  export MOSS_RT_MIN_SAMPLES_STEADY_MS="${MOSS_RT_MIN_SAMPLES_STEADY_MS:-120}"
+  export MOSS_RT_DECODER_CHUNK_FRAMES="${MOSS_RT_DECODER_CHUNK_FRAMES:-6}"
   export MOSS_RT_CODEC_BACKEND=auto
   export MOSS_RT_ONNX_GPU=true
   export MOSS_RT_EXPERIMENTAL_COMPILE_BACKBONE="$compile_flag"

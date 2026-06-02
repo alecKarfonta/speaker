@@ -1,0 +1,712 @@
+{
+  "summary": {
+    "n": 100,
+    "max_wer_threshold": 0.35,
+    "mean_wer": 0.1206,
+    "median_wer": 0.0,
+    "pass": 92,
+    "fail": 8
+  },
+  "results": [
+    {
+      "id": "st_12700_v15",
+      "ref": "What matters is every decision leaves a trace, even when you think nobody is watching, The rest is execution. Systems fail in predictable ways when humans pretend they are unp",
+      "wav": "training/major_03/wavs/v15/st_12700.wav",
+      "hyp": "What matters is, every decision leaves a trace, even when you think nobody is watching, the rest is execution. Systems fail in predictable ways when humans pretend they are un-pom. What matters is, every decision leaves a trace, even when you think nobody is watching, the rest is execution. What matters is, every decision leaves a trace, even when you think nobody is watching, the rest is execution. What matters is, every decision leaves a trace, even when you think nobody is watching, the rest is execution. What matters is, every decision leaves a trace,",
+      "wer": 2.2333333333333334
+    },
+    {
+      "id": "st_01604_v15",
+      "ref": "What matters is the network latency spikes whenever the backup node takes over, We proceed from there. Every protocol exists because someone learned the hard way.",
+      "wav": "training/major_03/wavs/v15/st_01604.wav",
+      "hyp": "What matters is the network latency spikes whenever the backup node takes over. We proceed from there. Every protocol exists because someone learned the hard way. We proceed from there. We proceed from there. We proceed from there. We proceed from there. We proceed from there. We proceed from there. We proceed from there. We proceed from there. We proceed from there. We proceed from there. We proceed from there. We proceed from there. We proceed from there.",
+      "wer": 2.0
+    },
+    {
+      "id": "st_02966_v15",
+      "ref": "The corridor lights flickered once, then steadied. She studied the readout without blinking, counting heartbeats the way others count coins. Somewhere above them, turbines sang a low hymn. When the alert finally arrived, it was almost polite — a soft chime, a line of text, a map highlighted in amber. She tapped the console twice and the world rearranged itself around a single......",
+      "wav": "training/major_03/wavs/v15/st_02966.wav",
+      "hyp": "The corridor lights flickered once, then steadied. She studied the readout without blinking, counting heartbeats the way others count coins. Somewhere above them, Turbine sang a low hymn. When the alert finally arrived, it was almost polite. A soft chime, a line of text, a map highlighted in amber. She tapped the console twice, and the world rearranged itself around a single. The door was opened, the door was closed, and the door was closed. The door was closed, and the door was closed, and the door was closed, and the door was closed. The door was closed, and the door was closed, and the door was closed, and the door was closed. The door was closed, and the door was closed, and the door was closed, and the door was closed. The door was closed, and the door was closed, and the door was closed, and the door was closed, and the door was closed. The door was closed, and the door was closed, and the door was closed, and the door was closed.",
+      "wer": 1.8387096774193548
+    },
+    {
+      "id": "st_09263_v15",
+      "ref": "In practice, the interface between hardware and instinct is thinner than most people admit, The rest is execution. Courage is not the absence of fear, but the decision to act ",
+      "wav": "training/major_03/wavs/v15/st_09263.wav",
+      "hyp": "In practice, the interface between hardware and instinct is thinner than most people admit. The rest is execution. Courage is not the absence of fear, but the decision to act oner since of the all. For the concentration, Ryan and Perryway. Courage is not the absence of fear, but the decision to act oner since of the all.",
+      "wer": 0.9333333333333333
+    },
+    {
+      "id": "st_15673_v15",
+      "ref": "From where I stand, the network latency spikes whenever the backup node takes over, You already know what comes next. You can optimize a machine; you can only negotiate with a",
+      "wav": "training/major_03/wavs/v15/st_15673.wav",
+      "hyp": "From where I stand, the network latency spikes whenever the backup node takes over. You already know what comes next. You can optimize a machine. You can only negotiate with a gaff. So let him air no way through a cluster. Rind Rami. Can Sam.",
+      "wer": 0.45161290322580644
+    },
+    {
+      "id": "st_06541_v15",
+      "ref": "What matters is our last simulation assumed perfect conditions that never appear in the field, We proceed from there. The map is never the territory, especially when the terri",
+      "wav": "training/major_03/wavs/v15/st_06541.wav",
+      "hyp": "What matters is our last simulation assumed perfect conditions that never appear in the field. We proceed from there. The map is never the territory, especially when the Terry 2L from line center case. Line center, curtion, knee, and something dashes",
+      "wer": 0.4482758620689655
+    },
+    {
+      "id": "st_11267_v15",
+      "ref": "The data suggests the network latency spikes whenever the backup node takes over, And that changes the entire timeline. Systems fail in predictable ways when humans pretend th",
+      "wav": "training/major_03/wavs/v15/st_11267.wav",
+      "hyp": "The data suggests the network latency spikes whenever the backup node takes over. And that changes the entire timeline. Systems fail in predictable ways when humans pretend that the the case held the child, chasing share from all.",
+      "wer": 0.39285714285714285
+    },
+    {
+      "id": "st_38403_v15",
+      "ref": "What matters is every decision leaves a trace, even when you think nobody is watching, That is the part people forget. You can optimize a machine; you can only negotiate with ",
+      "wav": "training/major_03/wavs/v15/st_38403.wav",
+      "hyp": "What matters is every decision leaves a trace, even when you think nobody is watching. That is the part people forget. You can optimize a machine. You can only negotiate with ISIL and factions calling. You can optimize a machine. You can only-",
+      "wer": 0.3870967741935484
+    },
+    {
+      "id": "st_19296_v15",
+      "ref": "In practice, the city breathes differently after midnight, as if it is waiting for instructions, We proceed from there. The quietest room in the building held the loudest trut",
+      "wav": "training/major_03/wavs/v15/st_19296.wav",
+      "hyp": "In practice, the city breathes differently after midnight as if it is waiting for instructions. We proceed from there. The quietest room in the building held the loudest trute right or out the round. Howl a weaze to...",
+      "wer": 0.3448275862068966
+    },
+    {
+      "id": "st_18052_v15",
+      "ref": "To be clear, trust is a resource you spend carefully, not a currency you print on demand, We proceed from there. Systems fail in predictable ways when humans pretend they are ",
+      "wav": "training/major_03/wavs/v15/st_18052.wav",
+      "hyp": "To be clear, trust is a resource you spend carefully. Not a currency you print on demand. We proceed from there. Systems fail in predictable ways when humans pretend they are our kind of their rind fort of. Systems fail in...",
+      "wer": 0.3225806451612903
+    },
+    {
+      "id": "st_02914_v15",
+      "ref": "In practice, the algorithm predicted failure, but the team chose hope anyway, We proceed from there. Systems fail in predictable ways when humans pretend they are unpredictabl",
+      "wav": "training/major_03/wavs/v15/st_02914.wav",
+      "hyp": "In practice, the algorithm predicted failure, but the team chose hope anyway. We proceed from there. Systems fail in predictable ways when humans pretend they are unpredictable ways, when humans pretend they are unpredictable.",
+      "wer": 0.2962962962962963
+    },
+    {
+      "id": "st_00154_v15",
+      "ref": "In practice, the algorithm predicted failure, but the team chose hope anyway, Nothing more complicated than that. You can optimize a machine; you can only negotiate with a per",
+      "wav": "training/major_03/wavs/v15/st_00154.wav",
+      "hyp": "In practice, the algorithm predicted failure. But the team chose hope anyway. Nothing more complicated than that. You can optimize a machine. You can only negotiate with a purr. February 3rd, 2024. Serrana's kidnapping occurred.",
+      "wer": 0.2413793103448276
+    },
+    {
+      "id": "st_10034_v15",
+      "ref": "Listen. trust is a resource you spend carefully, not a currency you print on demand, Make of that what you will. Courage is not the absence of fear, but the decision to act wh",
+      "wav": "training/major_03/wavs/v15/st_10034.wav",
+      "hyp": "Listen, trust is a resource you spend carefully, not a currency you print on demand. Make of that what you will. Courage is not the absence of fear, but the decision to act one, show it you will life",
+      "wer": 0.17647058823529413
+    },
+    {
+      "id": "st_07284_v15",
+      "ref": "Before we proceed, the network latency spikes whenever the backup node takes over, Make of that what you will. Courage is not the absence of fear, but the decision to act whil",
+      "wav": "training/major_03/wavs/v15/st_07284.wav",
+      "hyp": "Before we proceed, the network latency spikes whenever the backup node takes over. Make of that what you will. Courage is not the absence of fear, but the decision to act will, when all are not.",
+      "wer": 0.15625
+    },
+    {
+      "id": "st_04629_v15",
+      "ref": "From where I stand, the algorithm predicted failure, but the team chose hope anyway, I will leave the conclusion to you.",
+      "wav": "training/major_03/wavs/v15/st_04629.wav",
+      "hyp": "From where I stand, the algorithm predicted failure, but the team chose hope anyway. I will leave the conclusion to you. February 3rd, 2002.",
+      "wer": 0.14285714285714285
+    },
+    {
+      "id": "st_07496_v15",
+      "ref": "Before we proceed, every decision leaves a trace, even when you think nobody is watching, We proceed from there. Systems fail in predictable ways when humans pretend they are ",
+      "wav": "training/major_03/wavs/v15/st_07496.wav",
+      "hyp": "Before we proceed, every decision leaves a trace, even when you think nobody is watching. We proceed from there. Systems fail in predictable ways when humans pretend they are unpredictable ways when humans",
+      "wer": 0.13793103448275862
+    },
+    {
+      "id": "st_33055_v15",
+      "ref": "The short version is: the algorithm predicted failure, but the team chose hope anyway, Make of that what you will. Courage is not the absence of fear, but the decision to act ",
+      "wav": "training/major_03/wavs/v15/st_33055.wav",
+      "hyp": "The short version is, the algorithm predicted failure, but the team chose hope anyway. Make of that what you will. Courage is not the absence of fear, but the decision to act inclom, accents to act.",
+      "wer": 0.125
+    },
+    {
+      "id": "st_21992_v15",
+      "ref": "From where I stand, trust is a resource you spend carefully, not a currency you print on demand, The rest is execution. The map is never the territory, especially when the ter",
+      "wav": "training/major_03/wavs/v15/st_21992.wav",
+      "hyp": "From where I stand, trust is a resource you spend carefully, not a currency you print on demand. The rest is execution. The map is never the territory.",
+      "wer": 0.125
+    },
+    {
+      "id": "st_26288_v15",
+      "ref": "What matters is silence can be a weapon, or a shield, depending on who breaks it first, Make of that what you will. The map is never the territory, especially when the territo",
+      "wav": "training/major_03/wavs/v15/st_26288.wav",
+      "hyp": "What matters is, silence can be a weapon or a shield, depending on who breaks it first. Make of that what you will. The map is never the territory.",
+      "wer": 0.12121212121212122
+    },
+    {
+      "id": "st_10826_v15",
+      "ref": "Listen. our last simulation assumed perfect conditions that never appear in the field, That is the part people forget. Every protocol exists because someone learned the hard w",
+      "wav": "training/major_03/wavs/v15/st_10826.wav",
+      "hyp": "Listen. Our last simulation assumed perfect conditions that never appear in the field. That is the part people forget. Every protocol exists because someone learned the hard one you want.",
+      "wer": 0.10714285714285714
+    },
+    {
+      "id": "st_11660_v15",
+      "ref": "Listen. the algorithm predicted failure, but the team chose hope anyway, We proceed from there. Courage is not the absence of fear, but the decision to act while fear watches.",
+      "wav": "training/major_03/wavs/v15/st_11660.wav",
+      "hyp": "Listen, the algorithm predicted failure, but the team chose hope anyway. We proceed from there. Courage is not the absence of fear, but the decision to act while fear watches. February 3rd, 2024.",
+      "wer": 0.1
+    },
+    {
+      "id": "st_04873_v15",
+      "ref": "To be clear, silence can be a weapon, or a shield, depending on who breaks it first, The rest is execution. The map is never the territory, especially when the territory is mo",
+      "wav": "training/major_03/wavs/v15/st_04873.wav",
+      "hyp": "To be clear, silence can be a weapon, or a shield, depending on who breaks it first. The rest is execution. The map is never the territory, especially when the ter-",
+      "wer": 0.09090909090909091
+    },
+    {
+      "id": "st_65565_v15",
+      "ref": "Listen. the network latency spikes whenever the backup node takes over, You already know what comes next. Clarity is expensive, but confusion invoices you daily.",
+      "wav": "training/major_03/wavs/v15/st_65565.wav",
+      "hyp": "Listen. The network latency spikes whenever the backup node takes over. You already know what comes next. Clarity is expensive, but confusion invoices you daily. T-Wall.",
+      "wer": 0.08
+    },
+    {
+      "id": "st_04266_v15",
+      "ref": "Listen. every decision leaves a trace, even when you think nobody is watching, Make of that what you will. Systems fail in predictable ways when humans pretend they are unpred",
+      "wav": "training/major_03/wavs/v15/st_04266.wav",
+      "hyp": "Listen, every decision leaves a trace, even when you think nobody is watching. Make of that what you will. Systems fail in predictable ways when humans pretend they are un-pred.",
+      "wer": 0.06666666666666667
+    },
+    {
+      "id": "st_80237_v15",
+      "ref": "To be clear, silence can be a weapon, or a shield, depending on who breaks it first, The rest is execution. Courage is not the absence of fear, but the decision to act while f",
+      "wav": "training/major_03/wavs/v15/st_80237.wav",
+      "hyp": "To be clear, silence can be a weapon, or a shield, depending on who breaks it first. The rest is execution. Courage is not the absence of fear, but the decision to act well for...",
+      "wer": 0.05714285714285714
+    },
+    {
+      "id": "st_02888_v15",
+      "ref": "The corridor lights flickered once, then steadied. She studied the readout without blinking, counting heartbeats the way others count coins. Somewhere above them, turbines sang a low hymn. When the alert finally arrived, it was almost polite — a soft chime, a line of text, a map highlighted in amber. She tapped the console twice and the world rearranged itself around a single......",
+      "wav": "training/major_03/wavs/v15/st_02888.wav",
+      "hyp": "The corridor lights flickered once, then steadied. She studied the readout without blinking, counting heartbeats the way others count coins. Somewhere above them, turbines sang a low hymn. When the alert finally arrived, it was almost polite, a soft chime, a line of text, a map highlighted in amber. She tapped the console twice, and the world rearranged itself around a single. In the plateshen.",
+      "wer": 0.04838709677419355
+    },
+    {
+      "id": "st_01810_v15",
+      "ref": "Let me walk you through it. our last simulation assumed perfect conditions that never appear in the field, We proceed from there.",
+      "wav": "training/major_03/wavs/v15/st_01810.wav",
+      "hyp": "Let me walk you through it. Our last simulation assumed perfect conditions that never appear in the field. We proceed from...",
+      "wer": 0.045454545454545456
+    },
+    {
+      "id": "st_27104_v15",
+      "ref": "Consider this. the network latency spikes whenever the backup node takes over, We proceed from there. Systems fail in predictable ways when humans pretend they are unpredictab",
+      "wav": "training/major_03/wavs/v15/st_27104.wav",
+      "hyp": "Consider this. The network latency spikes whenever the backup node takes over. We proceed from there. Systems fail in predictable ways when humans pretend they are unpredictable.",
+      "wer": 0.037037037037037035
+    },
+    {
+      "id": "st_13051_v15",
+      "ref": "The data suggests the network latency spikes whenever the backup node takes over, Nothing more complicated than that. Every protocol exists because someone learned the hard wa",
+      "wav": "training/major_03/wavs/v15/st_13051.wav",
+      "hyp": "The data suggests the network latency spikes whenever the backup node takes over. Nothing more complicated than that. Every protocol exists because someone learned the hard-wlaw.",
+      "wer": 0.037037037037037035
+    },
+    {
+      "id": "st_17446_v15",
+      "ref": "Consider this. every decision leaves a trace, even when you think nobody is watching, You already know what comes next. Every protocol exists because someone learned the hard ",
+      "wav": "training/major_03/wavs/v15/st_17446.wav",
+      "hyp": "Consider this. Every decision leaves a trace, even when you think nobody is watching. You already know what comes next. Every protocol exists because someone learned the heart...",
+      "wer": 0.03571428571428571
+    },
+    {
+      "id": "st_00992_v15",
+      "ref": "In practice, our last simulation assumed perfect conditions that never appear in the field, The rest is execution. Systems fail in predictable ways when humans pretend they ar",
+      "wav": "training/major_03/wavs/v15/st_00992.wav",
+      "hyp": "In practice, our last simulation assumed perfect conditions that never appear in the field. The rest is execution. Systems fail in predictable ways when humans pretend they are...",
+      "wer": 0.03571428571428571
+    },
+    {
+      "id": "st_08449_v15",
+      "ref": "In practice, the city breathes differently after midnight, as if it is waiting for instructions, We proceed from there. Systems fail in predictable ways when humans pretend th",
+      "wav": "training/major_03/wavs/v15/st_08449.wav",
+      "hyp": "In practice, the city breathes differently after midnight, as if it is waiting for instructions. We proceed from there. Systems fail in predictable ways when humans pretend.",
+      "wer": 0.03571428571428571
+    },
+    {
+      "id": "st_73060_v15",
+      "ref": "Before we proceed, the network latency spikes whenever the backup node takes over, We proceed from there. The map is never the territory, especially when the territory is movi",
+      "wav": "training/major_03/wavs/v15/st_73060.wav",
+      "hyp": "Before we proceed, the network latency spikes whenever the backup node takes over. We proceed from there. The map is never the territory, especially when the territory is moving.",
+      "wer": 0.034482758620689655
+    },
+    {
+      "id": "st_01265_v15",
+      "ref": "Listen. the algorithm predicted failure, but the team chose hope anyway, And that changes the entire timeline. Courage is not the absence of fear, but the decision to act whil",
+      "wav": "training/major_03/wavs/v15/st_01265.wav",
+      "hyp": "Listen. The algorithm predicted failure, but the team chose hope anyway. And that changes the entire timeline. Courage is not the absence of fear, but the decision to act will.",
+      "wer": 0.03333333333333333
+    },
+    {
+      "id": "st_24331_v15",
+      "ref": "Before we proceed, the algorithm predicted failure, but the team chose hope anyway, I will leave the conclusion to you. The quietest room in the building held the loudest trut",
+      "wav": "training/major_03/wavs/v15/st_24331.wav",
+      "hyp": "Before we proceed, the algorithm predicted failure, but the team chose hope anyway. I will leave the conclusion to you. The quietest room in the building held the loudest truth.",
+      "wer": 0.03333333333333333
+    },
+    {
+      "id": "st_02496_v15",
+      "ref": "In practice, the network latency spikes whenever the backup node takes over, That is the part people forget. The map is never the territory, especially when the territory is m",
+      "wav": "training/major_03/wavs/v15/st_02496.wav",
+      "hyp": "In practice, the network latency spikes whenever the backup node takes over. That is the part people forget. The map is never the territory, especially when the territory is MN.",
+      "wer": 0.03333333333333333
+    },
+    {
+      "id": "st_02990_v15",
+      "ref": "The corridor lights flickered once, then steadied. She studied the readout without blinking, counting heartbeats the way others count coins. Somewhere above them, turbines sang a low hymn. When the alert finally arrived, it was almost polite — a soft chime, a line of text, a map highlighted in amber. She tapped the console twice and the world rearranged itself around a single......",
+      "wav": "training/major_03/wavs/v15/st_02990.wav",
+      "hyp": "The corridor lights flickered once, then steadied. She studied the readout without blinking, counting heartbeats the way others count coins. Somewhere above them, turbines sang a low hymn. When the alert finally arrived, it was almost polite, a soft chime, a line of text, a map highlighted in amber. She tapped the console twice, and the world rearranged itself around a single. And do.",
+      "wer": 0.03225806451612903
+    },
+    {
+      "id": "st_44963_v15",
+      "ref": "From where I stand, silence can be a weapon, or a shield, depending on who breaks it first, We proceed from there. The map is never the territory, especially when the territor",
+      "wav": "training/major_03/wavs/v15/st_44963.wav",
+      "hyp": "from where I stand. Silence can be a weapon or a shield, depending on who breaks it first. We proceed from there. The map is never the territory, especially when the territory.",
+      "wer": 0.03125
+    },
+    {
+      "id": "st_71853_v15",
+      "ref": "From where I stand, silence can be a weapon, or a shield, depending on who breaks it first, We proceed from there. Systems fail in predictable ways when humans pretend they ar",
+      "wav": "training/major_03/wavs/v15/st_71853.wav",
+      "hyp": "From where I stand, silence can be a weapon, or a shield, depending on who breaks it first. We proceed from there. Systems fail in predictable ways when humans pretend they are.",
+      "wer": 0.03125
+    },
+    {
+      "id": "st_33951_v15",
+      "ref": "The short version is: the network latency spikes whenever the backup node takes over, Make of that what you will. Courage is not the absence of fear, but the decision to act w",
+      "wav": "training/major_03/wavs/v15/st_33951.wav",
+      "hyp": "The short version is, the network latency spikes whenever the backup node takes over. Make of that what you will. Courage is not the absence of fear, but the decision to act well.",
+      "wer": 0.030303030303030304
+    },
+    {
+      "id": "st_29403_v15",
+      "ref": "To be clear, every decision leaves a trace, even when you think nobody is watching, That is the part people forget. You can optimize a machine; you can only negotiate with a p",
+      "wav": "training/major_03/wavs/v15/st_29403.wav",
+      "hyp": "To be clear, every decision leaves a trace, even when you think nobody is watching. That is the part people forget. You can optimize a machine. You can only negotiate with a...",
+      "wer": 0.030303030303030304
+    },
+    {
+      "id": "st_55785_v15",
+      "ref": "To be clear, trust is a resource you spend carefully, not a currency you print on demand, The rest is execution. You can optimize a machine; you can only negotiate with a pers",
+      "wav": "training/major_03/wavs/v15/st_55785.wav",
+      "hyp": "To be clear, trust is a resource you spend carefully. Not a currency you print on demand. The rest is execution. You can optimize a machine. You can only negotiate with a percent.",
+      "wer": 0.030303030303030304
+    },
+    {
+      "id": "st_03832_v15",
+      "ref": "Keep in mind that every decision leaves a trace, even when you think nobody is watching, We proceed from there. Courage is not the absence of fear, but the decision to act whi",
+      "wav": "training/major_03/wavs/v15/st_03832.wav",
+      "hyp": "Keep in mind that every decision leaves a trace, even when you think nobody is watching. We proceed from there. Courage is not the absence of fear, but the decision to act why.",
+      "wer": 0.030303030303030304
+    },
+    {
+      "id": "st_15183_v15",
+      "ref": "Listen. silence can be a weapon, or a shield, depending on who breaks it first, That is the part people forget. Courage is not the absence of fear, but the decision to act whi",
+      "wav": "training/major_03/wavs/v15/st_15183.wav",
+      "hyp": "Listen, silence can be a weapon or a shield, depending on who breaks it first. That is the part people forget. Courage is not the absence of fear, but the decision to act why.",
+      "wer": 0.029411764705882353
+    },
+    {
+      "id": "st_13727_v15",
+      "ref": "From where I stand, silence can be a weapon, or a shield, depending on who breaks it first, The rest is execution. You can optimize a machine; you can only negotiate with a pe",
+      "wav": "training/major_03/wavs/v15/st_13727.wav",
+      "hyp": "From where I stand, silence can be a weapon, or a shield, depending on who breaks it first. The rest is execution. You can optimize a machine. You can only negotiate with a PEEE.",
+      "wer": 0.029411764705882353
+    },
+    {
+      "id": "st_04601_v15",
+      "ref": "Before we proceed, the algorithm predicted failure, but the team chose hope anyway, That is the part people forget. Speed without direction is just noise with ambition.",
+      "wav": "training/major_03/wavs/v15/st_04601.wav",
+      "hyp": "Before we proceed, the algorithm predicted failure, but the team chose hope anyway. That is the part people forget. Speed without direction is just noise with ambition.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_44555_v15",
+      "ref": "What matters is trust is a resource you spend carefully, not a currency you print on demand, The rest is execution. Clarity is expensive, but confusion invoices you daily.",
+      "wav": "training/major_03/wavs/v15/st_44555.wav",
+      "hyp": "What matters is, trust is a resource you spend carefully. Not a currency you print on demand. The rest is execution. Clarity is expensive, but confusion invoices you daily.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_04260_v15",
+      "ref": "Listen. every decision leaves a trace, even when you think nobody is watching, And that changes the entire timeline. Clarity is expensive, but confusion invoices you daily.",
+      "wav": "training/major_03/wavs/v15/st_04260.wav",
+      "hyp": "Listen every decision leaves a trace even when you think nobody is watching and that changes the entire timeline clarity is expensive but confusion invoices you daily",
+      "wer": 0.0
+    },
+    {
+      "id": "st_03124_v15",
+      "ref": "From where I stand, the network latency spikes whenever the backup node takes over, Nothing more complicated than that. Clarity is expensive, but confusion invoices you daily.",
+      "wav": "training/major_03/wavs/v15/st_03124.wav",
+      "hyp": "From where I stand, the network latency spikes whenever the backup node takes over. Nothing more complicated than that. Clarity is expensive, but confusion invoices you daily.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_43629_v15",
+      "ref": "Here's the situation. silence can be a weapon, or a shield, depending on who breaks it first, We proceed from there. Clarity is expensive, but confusion invoices you daily.",
+      "wav": "training/major_03/wavs/v15/st_43629.wav",
+      "hyp": "Here's the situation. Silence can be a weapon or a shield, depending on who breaks it first. We proceed from there. Clarity is expensive, but confusion invoices you daily.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_32162_v15",
+      "ref": "The data suggests the algorithm predicted failure, but the team chose hope anyway, Make of that what you will. The map is never the territory, especially when the territory is",
+      "wav": "training/major_03/wavs/v15/st_32162.wav",
+      "hyp": "The data suggests the algorithm predicted failure, but the team chose hope anyway. Make of that what you will. The map is never the territory, especially when the territory is.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_01177_v15",
+      "ref": "The short version is: the city breathes differently after midnight, as if it is waiting for instructions, Make of that what you will.",
+      "wav": "training/major_03/wavs/v15/st_01177.wav",
+      "hyp": "The short version is, the city breathes differently after midnight as if it is waiting for instructions. Make of that what you will.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_00962_v15",
+      "ref": "What matters is the algorithm predicted failure, but the team chose hope anyway, I will leave the conclusion to you. The quietest room in the building held the loudest truth.",
+      "wav": "training/major_03/wavs/v15/st_00962.wav",
+      "hyp": "What matters is the algorithm predicted failure, but the team chose hope anyway. I will leave the conclusion to you. The quietest room in the building held the loudest truth.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_07718_v15",
+      "ref": "Let me walk you through it. the algorithm predicted failure, but the team chose hope anyway, You already know what comes next.",
+      "wav": "training/major_03/wavs/v15/st_07718.wav",
+      "hyp": "Let me walk you through it. The algorithm predicted failure, but the team chose hope anyway. You already know what comes next.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_01269_v15",
+      "ref": "The data suggests every decision leaves a trace, even when you think nobody is watching, Make of that what you will. Speed without direction is just noise with ambition.",
+      "wav": "training/major_03/wavs/v15/st_01269.wav",
+      "hyp": "The data suggests every decision leaves a trace, even when you think nobody is watching. Make of that what you will. Speed without direction is just noise with ambition.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_34568_v15",
+      "ref": "What matters is silence can be a weapon, or a shield, depending on who breaks it first, That is the part people forget. Speed without direction is just noise with ambition.",
+      "wav": "training/major_03/wavs/v15/st_34568.wav",
+      "hyp": "What matters is, silence can be a weapon, or a shield, depending on who breaks it first. That is the part people forget. Speed without direction is just noise with ambition.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_01917_v15",
+      "ref": "In practice, silence can be a weapon, or a shield, depending on who breaks it first, You already know what comes next. Clarity is expensive, but confusion invoices you daily.",
+      "wav": "training/major_03/wavs/v15/st_01917.wav",
+      "hyp": "In practice, silence can be a weapon, or a shield, depending on who breaks it first. You already know what comes next. Clarity is expensive, but confusion invoices you daily.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_08374_v15",
+      "ref": "To be clear, our last simulation assumed perfect conditions that never appear in the field, The rest is execution. Speed without direction is just noise with ambition.",
+      "wav": "training/major_03/wavs/v15/st_08374.wav",
+      "hyp": "To be clear, our last simulation assumed perfect conditions that never appear in the field. The rest is execution. Speed without direction is just noise with ambition.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_25185_v15",
+      "ref": "To be clear, silence can be a weapon, or a shield, depending on who breaks it first, We proceed from there. Every protocol exists because someone learned the hard way.",
+      "wav": "training/major_03/wavs/v15/st_25185.wav",
+      "hyp": "To be clear, silence can be a weapon, or a shield, depending on who breaks it first. We proceed from there. Every protocol exists because someone learned the hard way.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_16470_v15",
+      "ref": "What matters is the network latency spikes whenever the backup node takes over, You already know what comes next. Every protocol exists because someone learned the hard way.",
+      "wav": "training/major_03/wavs/v15/st_16470.wav",
+      "hyp": "What matters is the network latency spikes whenever the backup node takes over. You already know what comes next. Every protocol exists because someone learned the hard way.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_04679_v15",
+      "ref": "To be clear, every decision leaves a trace, even when you think nobody is watching, I will leave the conclusion to you. The quietest room in the building held the loudest trut",
+      "wav": "training/major_03/wavs/v15/st_04679.wav",
+      "hyp": "To be clear, every decision leaves a trace. Even when you think nobody is watching, I will leave the conclusion to you. The quietest room in the building held the loudest trut.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_02971_v15",
+      "ref": "In practice, our last simulation assumed perfect conditions that never appear in the field, Make of that what you will. Courage is not the absence of fear, but the decision to",
+      "wav": "training/major_03/wavs/v15/st_02971.wav",
+      "hyp": "In practice, our last simulation assumed perfect conditions that never appear in the field. Make of that what you will. Courage is not the absence of fear, but the decision to...",
+      "wer": 0.0
+    },
+    {
+      "id": "st_01499_v15",
+      "ref": "Here's the situation. the network latency spikes whenever the backup node takes over, Nothing more complicated than that.",
+      "wav": "training/major_03/wavs/v15/st_01499.wav",
+      "hyp": "Here's the situation. The network latency spikes whenever the backup node takes over. Nothing more complicated than that.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_23331_v15",
+      "ref": "To be clear, the algorithm predicted failure, but the team chose hope anyway, That is the part people forget. Courage is not the absence of fear, but the decision to act while",
+      "wav": "training/major_03/wavs/v15/st_23331.wav",
+      "hyp": "To be clear, the algorithm predicted failure, but the team chose hope anyway. That is the part people forget. Courage is not the absence of fear, but the decision to act while.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_50633_v15",
+      "ref": "Listen. silence can be a weapon, or a shield, depending on who breaks it first, Nothing more complicated than that. The quietest room in the building held the loudest truth.",
+      "wav": "training/major_03/wavs/v15/st_50633.wav",
+      "hyp": "Listen, silence can be a weapon, or a shield, depending on who breaks it first. Nothing more complicated than that. The quietest room in the building held the loudest truth.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_02519_v15",
+      "ref": "From where I stand, the algorithm predicted failure, but the team chose hope anyway, The rest is execution. Courage is not the absence of fear, but the decision to act while f",
+      "wav": "training/major_03/wavs/v15/st_02519.wav",
+      "hyp": "From where I stand, the algorithm predicted failure, but the team chose hope anyway. The rest is execution. Courage is not the absence of fear, but the decision to act while F.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_05260_v15",
+      "ref": "Let me walk you through it. every decision leaves a trace, even when you think nobody is watching, Make of that what you will.",
+      "wav": "training/major_03/wavs/v15/st_05260.wav",
+      "hyp": "Let me walk you through it. Every decision leaves a trace, even when you think nobody is watching. Make of that what you will.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_16608_v15",
+      "ref": "From where I stand, the city breathes differently after midnight, as if it is waiting for instructions, The rest is execution.",
+      "wav": "training/major_03/wavs/v15/st_16608.wav",
+      "hyp": "From where I stand, the city breathes differently after midnight, as if it is waiting for instructions. The rest is execution.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_01205_v15",
+      "ref": "Before we proceed, our last simulation assumed perfect conditions that never appear in the field, And that changes the entire timeline.",
+      "wav": "training/major_03/wavs/v15/st_01205.wav",
+      "hyp": "Before we proceed, our last simulation assumed perfect conditions that never appear in the field, and that changes the entire timeline.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_08917_v15",
+      "ref": "Before we proceed, the network latency spikes whenever the backup node takes over, We proceed from there. Speed without direction is just noise with ambition.",
+      "wav": "training/major_03/wavs/v15/st_08917.wav",
+      "hyp": "Before we proceed, the network latency spikes whenever the backup node takes over. We proceed from there. Speed without direction is just noise with ambition.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_00355_v15",
+      "ref": "The data suggests the network latency spikes whenever the backup node takes over, We proceed from there. Clarity is expensive, but confusion invoices you daily.",
+      "wav": "training/major_03/wavs/v15/st_00355.wav",
+      "hyp": "The data suggests the network latency spikes whenever the backup node takes over. We proceed from there. Clarity is expensive, but confusion invoices you daily.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_00130_v15",
+      "ref": "Keep in mind that the network latency spikes whenever the backup node takes over, We proceed from there. The quietest room in the building held the loudest truth.",
+      "wav": "training/major_03/wavs/v15/st_00130.wav",
+      "hyp": "Keep in mind that the network latency spikes whenever the backup node takes over. We proceed from there. The quietest room in the building held the loudest truth.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_05654_v15",
+      "ref": "Consider this. trust is a resource you spend carefully, not a currency you print on demand, The rest is execution. Speed without direction is just noise with ambition.",
+      "wav": "training/major_03/wavs/v15/st_05654.wav",
+      "hyp": "Consider this. Trust is a resource you spend carefully, not a currency you print on demand. The rest is execution. Speed without direction is just noise, with ambition.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_01015_v15",
+      "ref": "In practice, the interface between hardware and instinct is thinner than most people admit, Nothing more complicated than that.",
+      "wav": "training/major_03/wavs/v15/st_01015.wav",
+      "hyp": "In practice, the interface between hardware and instinct is thinner than most people admit. Nothing more complicated than that.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_06638_v15",
+      "ref": "The short version is: the network latency spikes whenever the backup node takes over, You already know what comes next. You can optimize a machine; you can only negotiate with",
+      "wav": "training/major_03/wavs/v15/st_06638.wav",
+      "hyp": "The short version is, the network latency spikes whenever the backup node takes over. You already know what comes next. You can optimize a machine. You can only negotiate with...",
+      "wer": 0.0
+    },
+    {
+      "id": "st_30101_v15",
+      "ref": "Keep in mind that the network latency spikes whenever the backup node takes over, The rest is execution. Clarity is expensive, but confusion invoices you daily.",
+      "wav": "training/major_03/wavs/v15/st_30101.wav",
+      "hyp": "Keep in mind that the network latency spikes whenever the backup node takes over. The rest is execution. Clarity is expensive, but confusion invoices you daily.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_08225_v15",
+      "ref": "The data suggests silence can be a weapon, or a shield, depending on who breaks it first, Make of that what you will. Systems fail in predictable ways when humans pretend they",
+      "wav": "training/major_03/wavs/v15/st_08225.wav",
+      "hyp": "The data suggests silence can be a weapon, or a shield, depending on who breaks it first. Make of that what you will. Systems fail in predictable ways when humans pretend they-",
+      "wer": 0.0
+    },
+    {
+      "id": "st_18995_v15",
+      "ref": "What matters is every decision leaves a trace, even when you think nobody is watching, We proceed from there. Clarity is expensive, but confusion invoices you daily.",
+      "wav": "training/major_03/wavs/v15/st_18995.wav",
+      "hyp": "What matters is every decision leaves a trace. Even when you think nobody is watching, we proceed from there. Clarity is expensive, but confusion invoices you daily.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_04148_v15",
+      "ref": "Let me walk you through it. silence can be a weapon, or a shield, depending on who breaks it first, You already know what comes next.",
+      "wav": "training/major_03/wavs/v15/st_04148.wav",
+      "hyp": "Let me walk you through it. Silence can be a weapon, or a shield, depending on who breaks it first. You already know what comes next.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_00113_v15",
+      "ref": "Before we proceed, every decision leaves a trace, even when you think nobody is watching, Nothing more complicated than that.",
+      "wav": "training/major_03/wavs/v15/st_00113.wav",
+      "hyp": "Before we proceed, every decision leaves a trace, even when you think nobody is watching. Nothing more complicated than that.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_13648_v15",
+      "ref": "In practice, silence can be a weapon, or a shield, depending on who breaks it first, We proceed from there. Courage is not the absence of fear, but the decision to act while f",
+      "wav": "training/major_03/wavs/v15/st_13648.wav",
+      "hyp": "In practice, silence can be a weapon, or a shield, depending on who breaks it first. We proceed from there. Courage is not the absence of fear, but the decision to act while F.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_45705_v15",
+      "ref": "In practice, the network latency spikes whenever the backup node takes over, And that changes the entire timeline. The quietest room in the building held the loudest truth.",
+      "wav": "training/major_03/wavs/v15/st_45705.wav",
+      "hyp": "In practice, the network latency spikes whenever the backup node takes over and that changes the entire timeline. The quietest room in the building held the loudest truth.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_13656_v15",
+      "ref": "Consider this. the algorithm predicted failure, but the team chose hope anyway, The rest is execution. Speed without direction is just noise with ambition.",
+      "wav": "training/major_03/wavs/v15/st_13656.wav",
+      "hyp": "Consider this, the algorithm predicted failure, but the team chose hope anyway. The rest is execution, speed without direction is just noise with ambition.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_04717_v15",
+      "ref": "The short version is: trust is a resource you spend carefully, not a currency you print on demand, That is the part people forget.",
+      "wav": "training/major_03/wavs/v15/st_04717.wav",
+      "hyp": "The short version is, trust is a resource you spend carefully, not a currency you print on demand. That is the part people forget.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_23097_v15",
+      "ref": "Listen. silence can be a weapon, or a shield, depending on who breaks it first, You already know what comes next. The quietest room in the building held the loudest truth.",
+      "wav": "training/major_03/wavs/v15/st_23097.wav",
+      "hyp": "Listen. Silence can be a weapon, or a shield, depending on who breaks it first. You already know what comes next. The quietest room in the building held the loudest truth.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_12535_v15",
+      "ref": "From where I stand, every decision leaves a trace, even when you think nobody is watching, We proceed from there. Systems fail in predictable ways when humans pretend they are",
+      "wav": "training/major_03/wavs/v15/st_12535.wav",
+      "hyp": "From where I stand, every decision leaves a trace. Even when you think nobody is watching, we proceed from there. Systems fail in predictable ways when humans pretend they are.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_35771_v15",
+      "ref": "Before we proceed, every decision leaves a trace, even when you think nobody is watching, The rest is execution. Every protocol exists because someone learned the hard way.",
+      "wav": "training/major_03/wavs/v15/st_35771.wav",
+      "hyp": "Before we proceed, every decision leaves a trace. Even when you think nobody is watching, the rest is execution. Every protocol exists because someone learned the hard way.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_15020_v15",
+      "ref": "What matters is the algorithm predicted failure, but the team chose hope anyway, The rest is execution. Speed without direction is just noise with ambition.",
+      "wav": "training/major_03/wavs/v15/st_15020.wav",
+      "hyp": "What matters is the algorithm predicted failure, but the team chose hope anyway, the rest is execution. Speed without direction is just noise with ambition.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_00827_v15",
+      "ref": "From where I stand, the city breathes differently after midnight, as if it is waiting for instructions, Make of that what you will.",
+      "wav": "training/major_03/wavs/v15/st_00827.wav",
+      "hyp": "From where I stand, the city breathes differently after midnight, as if it is waiting for instructions. Make of that what you will.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_39975_v15",
+      "ref": "What matters is the network latency spikes whenever the backup node takes over, The rest is execution. The map is never the territory, especially when the territory is moving.",
+      "wav": "training/major_03/wavs/v15/st_39975.wav",
+      "hyp": "What matters is the network latency spikes whenever the backup node takes over. The rest is execution. The map is never the territory, especially when the territory is moving.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_38664_v15",
+      "ref": "Listen. the network latency spikes whenever the backup node takes over, We proceed from there. You can optimize a machine; you can only negotiate with a person.",
+      "wav": "training/major_03/wavs/v15/st_38664.wav",
+      "hyp": "Listen, the network latency spikes whenever the backup node takes over. We proceed from there. You can optimize a machine. You can only negotiate with a person.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_02138_v15",
+      "ref": "Consider this. the interface between hardware and instinct is thinner than most people admit, We proceed from there. Speed without direction is just noise with ambition.",
+      "wav": "training/major_03/wavs/v15/st_02138.wav",
+      "hyp": "Consider this. The interface between hardware and instinct is thinner than most people admit. We proceed from there. Speed without direction is just noise with ambition.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_08604_v15",
+      "ref": "The short version is: the network latency spikes whenever the backup node takes over, The rest is execution. The quietest room in the building held the loudest truth.",
+      "wav": "training/major_03/wavs/v15/st_08604.wav",
+      "hyp": "The short version is, the network latency spikes whenever the backup node takes over. The rest is execution. The quietest room in the building held the loudest truth.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_01530_v15",
+      "ref": "Keep in mind that silence can be a weapon, or a shield, depending on who breaks it first, Nothing more complicated than that.",
+      "wav": "training/major_03/wavs/v15/st_01530.wav",
+      "hyp": "Keep in mind that silence can be a weapon, or a shield, depending on who breaks it first. Nothing more complicated than that.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_09794_v15",
+      "ref": "The data suggests the interface between hardware and instinct is thinner than most people admit, You already know what comes next.",
+      "wav": "training/major_03/wavs/v15/st_09794.wav",
+      "hyp": "The data suggests the interface between hardware and instinct is thinner than most people admit. You already know what comes next.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_88574_v15",
+      "ref": "Consider this. the network latency spikes whenever the backup node takes over, And that changes the entire timeline. The quietest room in the building held the loudest truth.",
+      "wav": "training/major_03/wavs/v15/st_88574.wav",
+      "hyp": "Consider this. The network latency spikes whenever the backup node takes over, and that changes the entire timeline. The quietest room in the building held the loudest truth.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_04130_v15",
+      "ref": "Here's the situation. the interface between hardware and instinct is thinner than most people admit, That is the part people forget.",
+      "wav": "training/major_03/wavs/v15/st_04130.wav",
+      "hyp": "Here's the situation. The interface between hardware and instinct is thinner than most people admit. That is the part people forget.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_29535_v15",
+      "ref": "Here's the situation. the network latency spikes whenever the backup node takes over, We proceed from there. The quietest room in the building held the loudest truth.",
+      "wav": "training/major_03/wavs/v15/st_29535.wav",
+      "hyp": "Here's the situation. The network latency spikes whenever the backup node takes over. We proceed from there. The quietest room in the building held the loudest truth.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_13308_v15",
+      "ref": "The data suggests silence can be a weapon, or a shield, depending on who breaks it first, We proceed from there. The quietest room in the building held the loudest truth.",
+      "wav": "training/major_03/wavs/v15/st_13308.wav",
+      "hyp": "The data suggests silence can be a weapon, or a shield, depending on who breaks it first. We proceed from there. The quietest room in the building held the loudest truth.",
+      "wer": 0.0
+    },
+    {
+      "id": "st_02986_v15",
+      "ref": "The short version is: our last simulation assumed perfect conditions that never appear in the field, The rest is execution.",
+      "wav": "training/major_03/wavs/v15/st_02986.wav",
+      "hyp": "The short version is, our last simulation assumed perfect conditions that never appear in the field. The rest is execution.",
+      "wer": 0.0
+    }
+  ]
+}

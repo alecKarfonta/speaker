@@ -10,7 +10,10 @@
 # API:    http://127.0.0.1:8014/tts
 
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+if [[ -n "${SPEAKER_ROOT:-}" ]]; then
+  ROOT="$SPEAKER_ROOT"
+fi
 OPENMOSS="$ROOT/openmoss"
 LLAMA_CPP="${LLAMA_CPP_DIR:-/home/alec/git/llama-nexus/llama.cpp}"
 PORT="${OPENMOSS_PORT:-8014}"

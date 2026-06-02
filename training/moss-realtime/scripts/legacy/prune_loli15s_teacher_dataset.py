@@ -67,6 +67,7 @@ from loli15s_wav_analysis import (  # noqa: E402
 
 STT_API = os.environ.get("STT_API", "http://localhost:8603/v1/audio/transcriptions")
 STT_MODEL = os.environ.get("STT_MODEL", "base")
+REF_PAD_SUFFIX = re.compile(r"\s*\(\d+\)\s*$")
 
 
 @dataclass
@@ -320,7 +321,17 @@ def _reason_tag(r: str) -> str:
     return r.split(":")[0]
 
 
-def _is_hard_reason(r: str) -> bool:
+def _is_hard_reason(
+    r: str,
+    *,
+    trim_only: bool = False,
+    wer_quarantine_threshold: float | None = None,
+) -> bool:
+    if trim_only:
+        if wer_quarantine_threshold is not None:
+            return r.startswith("high_wer")
+        tag = _reason_tag(r)
+        return tag in {"file_too_small", "low_peak"} or tag.startswith("stt_failed")
     if r.startswith("high_wer"):
         return True
     tag = _reason_tag(r)
@@ -355,9 +366,11 @@ def evaluate_clip(
     skip_stt_if_wav_outlier: bool,
     pre_feat: WaveformFeatures | None = None,
     wav_only: bool = False,
+    trim_only: bool = False,
+    wer_quarantine_threshold: float | None = None,
 ) -> tuple[ClipResult, np.ndarray, int]:
     name = wav_path.name
-    ref = meta.get("text", "")
+    ref = REF_PAD_SUFFIX.sub("", meta.get("text", ""))
     res = ClipResult(
         wav=name,
         corpus_id=meta.get("corpus_id", ""),
@@ -374,31 +387,39 @@ def evaluate_clip(
     res.peak = float(np.max(np.abs(x))) if len(x) else 0.0
     res.rms = rms_energy(x)
 
-    feat = pre_feat if pre_feat is not None else extract_waveform_features(x, sr)
-    res.wav_features = feat.as_dict()
-    if wav_profile is not None and wav_profile.n_fit > 0:
-        score, wflags = score_waveform_outlier(
-            feat, wav_profile,
-            z_threshold=wav_z_threshold,
-            score_threshold=wav_score_threshold,
-        )
-        res.wav_outlier_score = score
-        res.wav_outlier_flags = wflags
-        for f in wflags:
-            if f.startswith("wav_artifact_") or f.startswith("wav_outlier"):
-                res.reasons.append(f)
+    if not trim_only:
+        feat = pre_feat if pre_feat is not None else extract_waveform_features(x, sr)
+        res.wav_features = feat.as_dict()
+        if wav_profile is not None and wav_profile.n_fit > 0:
+            score, wflags = score_waveform_outlier(
+                feat, wav_profile,
+                z_threshold=wav_z_threshold,
+                score_threshold=wav_score_threshold,
+            )
+            res.wav_outlier_score = score
+            res.wav_outlier_flags = wflags
+            for f in wflags:
+                if f.startswith("wav_artifact_") or f.startswith("wav_outlier"):
+                    res.reasons.append(f)
 
-    if res.peak < min_peak:
+        if res.peak < min_peak:
+            res.reasons.append("low_peak")
+        if res.orig_duration_s < min_dur:
+            res.reasons.append("too_short")
+        if res.orig_duration_s > max_dur:
+            res.reasons.append("too_long")
+    elif res.peak < min_peak:
         res.reasons.append("low_peak")
-    if res.orig_duration_s < min_dur:
-        res.reasons.append("too_short")
-    if res.orig_duration_s > max_dur:
-        res.reasons.append("too_long")
 
     if wav_only:
         trimmed = x
         res.new_duration_s = res.orig_duration_s
-        if any(_is_hard_reason(r) for r in res.reasons):
+        if any(
+            _is_hard_reason(
+                r, trim_only=trim_only, wer_quarantine_threshold=wer_quarantine_threshold,
+            )
+            for r in res.reasons
+        ):
             res.action = "quarantine"
         else:
             res.action = "pass"
@@ -437,42 +458,52 @@ def evaluate_clip(
         if probs and float(np.mean(probs)) < min_word_prob:
             res.reasons.append("low_confidence")
 
-    if ref:
+    if ref and not trim_only:
         res.wer = word_error_rate(ref, hyp)
         if res.wer > max_wer:
             res.reasons.append(f"high_wer:{res.wer:.2f}")
         if repetition_flag(hyp):
             res.reasons.append("repetition")
+    elif ref:
+        res.wer = word_error_rate(ref, hyp)
+        if wer_quarantine_threshold is not None and res.wer > wer_quarantine_threshold:
+            res.reasons.append(f"high_wer:{res.wer:.2f}")
 
     trimmed = trim_audio(x, sr, cut_s, min_keep_s) if res.n_words > 0 else x
     res.new_duration_s = len(trimmed) / sr if sr else 0.0
     res.trim_removed_s = max(0.0, res.orig_duration_s - res.new_duration_s)
     res.tail_rms_ratio = tail_rms_ratio(x, sr, res.new_duration_s)
 
-    # Re-score trimmed body (garbage tail should shrink outlier score).
-    feat_after = extract_waveform_features(trimmed, sr)
-    res.wav_features["after_trim"] = feat_after.as_dict()
-    if wav_profile is not None and wav_profile.n_fit > 0:
-        score2, wflags2 = score_waveform_outlier(
-            feat_after, wav_profile,
-            z_threshold=wav_z_threshold,
-            score_threshold=wav_score_threshold,
+    if not trim_only:
+        # Re-score trimmed body (garbage tail should shrink outlier score).
+        feat_after = extract_waveform_features(trimmed, sr)
+        res.wav_features["after_trim"] = feat_after.as_dict()
+        if wav_profile is not None and wav_profile.n_fit > 0:
+            score2, wflags2 = score_waveform_outlier(
+                feat_after, wav_profile,
+                z_threshold=wav_z_threshold,
+                score_threshold=wav_score_threshold,
+            )
+            res.wav_features["outlier_score_after_trim"] = score2
+            if score2 < res.wav_outlier_score:
+                res.wav_outlier_score = score2
+                res.wav_outlier_flags = wflags2
+
+        if res.trim_removed_s > max_tail_removed_s:
+            res.reasons.append(f"large_tail_removed:{res.trim_removed_s:.1f}s")
+
+        if res.new_duration_s > max_dur:
+            res.reasons.append("still_too_long_after_trim")
+
+        if res.tail_rms_ratio > 0.35 and res.trim_removed_s < 0.05:
+            res.reasons.append("noisy_tail_remaining")
+
+    if any(
+        _is_hard_reason(
+            r, trim_only=trim_only, wer_quarantine_threshold=wer_quarantine_threshold,
         )
-        res.wav_features["outlier_score_after_trim"] = score2
-        if score2 < res.wav_outlier_score:
-            res.wav_outlier_score = score2
-            res.wav_outlier_flags = wflags2
-
-    if res.trim_removed_s > max_tail_removed_s:
-        res.reasons.append(f"large_tail_removed:{res.trim_removed_s:.1f}s")
-
-    if res.new_duration_s > max_dur:
-        res.reasons.append("still_too_long_after_trim")
-
-    if res.tail_rms_ratio > 0.35 and res.trim_removed_s < 0.05:
-        res.reasons.append("noisy_tail_remaining")
-
-    if any(_is_hard_reason(r) for r in res.reasons):
+        for r in res.reasons
+    ):
         res.action = "quarantine"
     elif res.trim_removed_s > 0.05:
         res.action = "trim"
@@ -688,6 +719,18 @@ def main() -> int:
                         help="Skip STT for obvious waveform artifacts (faster)")
     parser.add_argument("--wav-only", action="store_true",
                         help="Waveform QC only (no STT)")
+    parser.add_argument(
+        "--trim-only",
+        action="store_true",
+        help="STT word-timestamp tail trim only; no WER/wav-outlier quarantine",
+    )
+    parser.add_argument(
+        "--wer-quarantine-threshold",
+        type=float,
+        default=None,
+        help="With --trim-only: quarantine only when WER exceeds this (e.g. 0.75). "
+        "No wav-outlier quarantine.",
+    )
     args = parser.parse_args()
 
     wav_dir = args.wav_dir
@@ -698,7 +741,9 @@ def main() -> int:
     if args.apply and not args.in_place and out_dir is None:
         out_dir = args.root / "training/loli_15s/wavs/v15_pruned"
     quarantine_dir = args.quarantine_dir
-    if args.apply and quarantine_dir is None:
+    if args.trim_only and args.wer_quarantine_threshold is None:
+        quarantine_dir = None
+    elif args.apply and quarantine_dir is None:
         quarantine_dir = args.root / "training/loli_15s/wavs/v15_quarantine"
 
     index = build_wav_index(args.corpus, args.train_ids)
@@ -721,23 +766,30 @@ def main() -> int:
         x, sr = load_audio_mono(path)
         return path.name, extract_waveform_features(x, sr)
 
-    print("Phase 1: waveform features + corpus norms...", flush=True)
-    if args.workers <= 1:
-        for p in wavs:
-            name, feat = extract_only(p)
-            feat_cache[name] = feat
+    wav_profile: NormProfile | None = None
+    if args.trim_only:
+        msg = "Trim-only: STT tail trim"
+        if args.wer_quarantine_threshold is not None:
+            msg += f", quarantine WER>{args.wer_quarantine_threshold}"
+        print(msg, flush=True)
     else:
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            for name, feat in pool.map(extract_only, wavs):
+        print("Phase 1: waveform features + corpus norms...", flush=True)
+        if args.workers <= 1:
+            for p in wavs:
+                name, feat = extract_only(p)
                 feat_cache[name] = feat
+        else:
+            with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                for name, feat in pool.map(extract_only, wavs):
+                    feat_cache[name] = feat
 
-    if args.wav_profile and args.wav_profile.is_file():
-        wav_profile = load_profile(args.wav_profile)
-        print(f"Loaded wav profile: {args.wav_profile} (n_fit={wav_profile.n_fit})", flush=True)
-    else:
-        wav_profile = fit_norm_profile(list(feat_cache.values()))
-        save_profile(wav_profile, profile_path)
-        print(f"Fitted wav profile on {wav_profile.n_fit} clips → {profile_path}", flush=True)
+        if args.wav_profile and args.wav_profile.is_file():
+            wav_profile = load_profile(args.wav_profile)
+            print(f"Loaded wav profile: {args.wav_profile} (n_fit={wav_profile.n_fit})", flush=True)
+        else:
+            wav_profile = fit_norm_profile(list(feat_cache.values()))
+            save_profile(wav_profile, profile_path)
+            print(f"Fitted wav profile on {wav_profile.n_fit} clips → {profile_path}", flush=True)
 
     results: list[ClipResult] = []
     t0 = time.time()
@@ -764,6 +816,8 @@ def main() -> int:
             skip_stt_if_wav_outlier=args.skip_stt_on_wav_outlier,
             pre_feat=feat_cache.get(path.name),
             wav_only=args.wav_only,
+            trim_only=args.trim_only,
+            wer_quarantine_threshold=args.wer_quarantine_threshold,
         )
 
     if args.workers <= 1:
@@ -807,7 +861,7 @@ def main() -> int:
         "out_dir": str(out_dir) if out_dir else None,
         "quarantine_dir": str(quarantine_dir) if quarantine_dir else None,
         "stt": f"{args.stt_api} model={args.stt_model}",
-        "wav_norm_profile": wav_profile.to_dict(),
+        "wav_norm_profile": wav_profile.to_dict() if wav_profile is not None else None,
         "config": {
             "end_buffer_ms": args.end_buffer_ms,
             "max_wer": args.max_wer,
@@ -816,6 +870,8 @@ def main() -> int:
             "wav_z_threshold": args.wav_z_threshold,
             "wav_score_threshold": args.wav_score_threshold,
             "wav_only": args.wav_only,
+            "trim_only": args.trim_only,
+            "wer_quarantine_threshold": args.wer_quarantine_threshold,
         },
     }
 

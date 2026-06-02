@@ -7,10 +7,10 @@ export default defineConfig({
     host: true,
     port: 3000,
     proxy: {
-      '/tts': 'http://localhost:8013',
-      '/voices': 'http://localhost:8013',
-      '/health': 'http://localhost:8013',
-      '/api/v1/qwen': 'http://localhost:8013'
+      '/tts': process.env.VITE_TTS_BACKEND || 'http://localhost:8016',
+      '/voices': process.env.VITE_TTS_BACKEND || 'http://localhost:8016',
+      '/health': process.env.VITE_TTS_BACKEND || 'http://localhost:8016',
+      '/api/v1/qwen': process.env.VITE_TTS_BACKEND || 'http://localhost:8013'
     }
   },
   build: {
