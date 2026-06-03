@@ -68,6 +68,81 @@ SAMPLES: list[tuple[str, str, str]] = [
     ),
 ]
 
+# Training-style emotion cues (text prefixes + prosody from gap_category=emotion corpus).
+EMOTION_SAMPLES: list[tuple[str, str, str]] = [
+    (
+        "01_excited_wait.wav",
+        "excited",
+        "Wait wait wait! I keep replaying that moment in my head, and it still sparkles. I mean it.",
+    ),
+    (
+        "02_curious_tell_me.wav",
+        "curious",
+        "Tell me honestly — the meadow feels like a hug today.",
+    ),
+    (
+        "03_gentle_softly.wav",
+        "gentle",
+        "Softly now, everything is quiet except my heartbeat, and that is okay.",
+    ),
+    (
+        "04_cheerful_wonder.wav",
+        "cheerful",
+        "I wonder, I want to laugh and cry at the same time, in the nicest way. Thank you for listening.",
+    ),
+    (
+        "05_cozy_quietly.wav",
+        "cozy",
+        "Maybe quietly — The market was loud in the nicest way, with laughter and kettle whistles.",
+    ),
+    (
+        "06_whisper_secret.wav",
+        "whisper_soft",
+        "Softly now, my hands were shaking, but I read the note anyway and smiled.",
+    ),
+    (
+        "07_excited_huge.wav",
+        "excited",
+        "This is huge! I was nervous at first, but your message made everything lighter.",
+    ),
+    (
+        "08_gentle_um.wav",
+        "gentle",
+        "Um, so, everything is quiet except my heartbeat, and that is okay.",
+    ),
+    (
+        "09_curious_hmm.wav",
+        "curious",
+        "Hmm, interesting, we started at the little bridge where the stream sounds like bells.",
+    ),
+    (
+        "10_proud_cozy.wav",
+        "cozy",
+        "I am so proud of us — I practiced what to say three times, then just waved instead.",
+    ),
+    (
+        "11_oh_my_gosh.wav",
+        "excited",
+        "Oh my gosh! the world felt too big yesterday, but today it fits in my palms.",
+    ),
+    (
+        "12_playful_look.wav",
+        "playful",
+        "Look at us! everything is quiet except my heartbeat, and that is okay.",
+    ),
+    (
+        "13_story_market.wav",
+        "storytelling",
+        "Wait wait wait! The market was loud in the nicest way — laughter, kettle whistles, and boots on cobblestones. "
+        "When the lanterns rose, the whole square looked like a bowl of warm light.",
+    ),
+    (
+        "14_we_did_it.wav",
+        "excited",
+        "We did it! I keep replaying that moment in my head, and it still sparkles.",
+    ),
+]
+
 
 def stream_to_wav(api: str, text: str) -> tuple[bytes, dict]:
     t0 = time.perf_counter()
@@ -109,14 +184,14 @@ def stream_to_wav(api: str, text: str) -> tuple[bytes, dict]:
     return buf.getvalue(), {"wall_s": round(wall_s, 2), "audio_s": round(audio_s, 2), "sample_rate": sr}
 
 
-def write_index(out: Path, rows: list[dict]) -> None:
+def write_index(out: Path, rows: list[dict], *, html_title: str = "loli15s checkpoint-epoch-7 — variety eval") -> None:
     html = [
         "<!DOCTYPE html><html><head><meta charset=utf-8>",
         "<title>loli15s epoch-7 variety samples</title>",
         "<style>body{font-family:system-ui;max-width:52rem;margin:2rem auto;padding:0 1rem}",
         "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:.5rem;vertical-align:top}",
         "audio{width:100%}</style></head><body>",
-        "<h1>loli15s checkpoint-epoch-7 — variety eval</h1>",
+        f"<h1>{html_title}</h1>",
         "<table><tr><th>#</th><th>Tag</th><th>Text</th><th>Audio</th><th>dur</th></tr>",
     ]
     for i, row in enumerate(rows, 1):
@@ -136,8 +211,17 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--api-url", default=DEFAULT_API)
     p.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    p.add_argument(
+        "--preset",
+        choices=("variety", "emotion"),
+        default="variety",
+        help="variety=length/tone mix; emotion=training-style cue prefixes",
+    )
     p.add_argument("--wait-health", type=int, default=0, help="Seconds to poll /health before giving up")
     args = p.parse_args()
+    samples = EMOTION_SAMPLES if args.preset == "emotion" else SAMPLES
+    if args.preset == "emotion" and args.out == DEFAULT_OUT:
+        args.out = TRAIN_DIR / "eval" / "listen" / "epoch7_emotion_cues"
     api = args.api_url.rstrip("/")
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
@@ -158,14 +242,19 @@ def main() -> int:
 
     rows: list[dict] = []
     print(f"API: {api}\nOut: {out}\n")
-    for fname, tag, text in SAMPLES:
+    title = (
+        "loli15s epoch-7 — emotion cue eval"
+        if args.preset == "emotion"
+        else "loli15s checkpoint-epoch-7 — variety eval"
+    )
+    for fname, tag, text in samples:
         wav, meta = stream_to_wav(api, text)
         path = out / fname
         path.write_bytes(wav)
         row = {"file": fname, "tag": tag, "text": text, **meta}
         rows.append(row)
         print(f"  {fname}  {meta['audio_s']}s  ({tag})")
-    write_index(out, rows)
+    write_index(out, rows, html_title=title)
     print(f"\nWrote {len(rows)} WAVs + index.html + manifest.json")
     return 0
 
