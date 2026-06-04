@@ -1,15 +1,15 @@
-# MOSS-TTS-Realtime distillation experiment (example — copy to experiment.yaml)
+# major_2_03 MOSS-Realtime distillation experiment
 
-voice_ref: data/voices/loli/loli_15s.wav
+voice_ref: data/voices/major/major_2_03_cleaned.wav
 teacher: v15
 corpus: corpus/texts.jsonl
 train_raw: train_raw.jsonl
 
 parallel:
-  num_shards: 4
-  gpus: [0, 1, 2, 3]
-  ports: [8014, 8015, 8016, 8017]
-  staging_dir: /dev/shm/moss_rt_wavs
+  num_shards: 2
+  gpus: [0, 1]
+  ports: [8014, 8015]
+  staging_dir: /dev/shm/major03_wavs
   teachers: v15
 
 sft:
@@ -33,3 +33,9 @@ qc:
 serve:
   api_url: http://127.0.0.1:8016
   native_voice: true
+  # warm_092_072 (MOSS_RT_* defaults in app/moss_api.py)
+  sampling:
+    audio_temperature: 0.92
+    audio_top_p: 0.72
+    audio_top_k: 40
+    audio_repetition_penalty: 1.05

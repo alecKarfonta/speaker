@@ -120,6 +120,8 @@ def cmd_qc_prune(paths: Paths, args: argparse.Namespace) -> int:
     extra = ["--apply", "--wav-dir", str(wav_dir), "--out-dir", str(out_dir)]
     if args.limit:
         extra.extend(["--limit", str(args.limit)])
+    if args.end_buffer_ms is not None:
+        extra.extend(["--end-buffer-ms", str(args.end_buffer_ms)])
     return run_python(paths, paths.legacy_dir / "prune_loli15s_teacher_dataset.py", extra)
 
 
@@ -268,6 +270,12 @@ def build_parser() -> argparse.ArgumentParser:
     qp = qc_sub.add_parser("prune", help="STT tail-prune + quarantine bad clips")
     qp.add_argument("--apply", action="store_true", help=argparse.SUPPRESS)
     qp.add_argument("--limit", type=int, default=0)
+    qp.add_argument(
+        "--end-buffer-ms",
+        type=int,
+        default=None,
+        help="Tail trim buffer after last STT word (default: prune script default)",
+    )
 
     train = sub.add_parser("train", help="LoRA SFT on Realtime model")
     train_sub = train.add_subparsers(dest="train_cmd", required=True)

@@ -700,7 +700,13 @@ def main() -> int:
     parser.add_argument("--stt-api", default=STT_API)
     parser.add_argument("--stt-model", default=STT_MODEL)
     parser.add_argument("--local-whisper-fallback", action="store_true", default=True)
-    parser.add_argument("--end-buffer-ms", type=int, default=200)
+    parser.add_argument(
+        "--end-buffer-ms",
+        type=int,
+        default=500,
+        help="Keep this much audio after STT last-word end (ms). "
+        "200ms often clipped final syllables; 500ms is safer for SFT.",
+    )
     parser.add_argument("--min-keep-ms", type=int, default=400)
     parser.add_argument("--min-dur", type=float, default=0.8)
     parser.add_argument("--max-dur", type=float, default=22.0)

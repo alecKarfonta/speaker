@@ -1,0 +1,4 @@
+# Voice-similarity bench (ECAPA embeddings). Install into .venv-finetune:
+#   .venv-finetune/bin/pip install -r training/major_03/requirements-bench.txt
+speechbrain>=1.0.0
+torchaudio>=2.0.0

@@ -195,6 +195,14 @@ RT_CODEC_ID = os.environ.get("MOSS_RT_CODEC_ID", "OpenMOSS-Team/MOSS-Audio-Token
 RT_CODEC_BACKEND = os.environ.get("MOSS_RT_CODEC_BACKEND", "auto").lower()
 RT_ONNX_CODEC_DIR = os.environ.get("MOSS_RT_ONNX_CODEC_DIR", "")
 # Native voice: no reference WAV at inference (LoRA-distilled timbre only).
+# major_03 production decode (warm_092_072 sweep winner): T=0.92 p=0.72 k=40 rep=1.05
+RT_DEFAULT_AUDIO_TEMPERATURE = float(os.environ.get("MOSS_RT_AUDIO_TEMPERATURE", "0.92"))
+RT_DEFAULT_AUDIO_TOP_P = float(os.environ.get("MOSS_RT_AUDIO_TOP_P", "0.72"))
+RT_DEFAULT_AUDIO_TOP_K = int(os.environ.get("MOSS_RT_AUDIO_TOP_K", "40"))
+RT_DEFAULT_AUDIO_REP_PENALTY = float(
+    os.environ.get("MOSS_RT_AUDIO_REPETITION_PENALTY", "1.05")
+)
+
 RT_NATIVE_VOICE = os.environ.get("MOSS_RT_NATIVE_VOICE", "false").lower() in (
     "1",
     "true",
@@ -247,6 +255,18 @@ RT_PRODUCTION_WARMUP_TEXT = os.environ.get(
     "This is a longer paragraph designed to warm up production streaming. "
     "It includes multiple sentences so compile shapes match real requests.",
 )
+
+
+def _rt_default_sampling() -> dict:
+    """MOSS-RT session sampling when the client omits decode params."""
+    return {
+        "temperature": RT_DEFAULT_AUDIO_TEMPERATURE,
+        "top_p": RT_DEFAULT_AUDIO_TOP_P,
+        "top_k": RT_DEFAULT_AUDIO_TOP_K,
+        "do_sample": True,
+        "repetition_penalty": RT_DEFAULT_AUDIO_REP_PENALTY,
+        "repetition_window": 50,
+    }
 
 
 def _rt_default_chunk_tuning() -> dict:
@@ -912,12 +932,7 @@ def _warmup_worker(worker: RTWorker):
             codec_sample_rate=worker.sample_rate,
             codec_encode_kwargs={"chunk_duration": 0.24},
             prefill_text_len=worker.processor.delay_tokens_len,
-            temperature=0.8,
-            top_p=0.6,
-            top_k=30,
-            do_sample=True,
-            repetition_penalty=1.1,
-            repetition_window=50,
+            **_rt_default_sampling(),
         )
         if prompt_tokens is not None:
             sess.set_voice_prompt_tokens(prompt_tokens)
@@ -1093,16 +1108,17 @@ import re as _re
 
 def _rt_sampling_from_request(request: TTSRequest) -> dict:
     """Resolve MOSS-TTS-Realtime session sampling from request fields."""
+    defaults = _rt_default_sampling()
     rep = request.audio_repetition_penalty
     if rep is None:
         rep = request.repetition_penalty
     return {
-        "temperature": request.audio_temperature or request.temperature or 0.8,
-        "top_p": request.audio_top_p or request.top_p or 0.6,
-        "top_k": request.audio_top_k if request.audio_top_k is not None else 30,
+        "temperature": request.audio_temperature or request.temperature or defaults["temperature"],
+        "top_p": request.audio_top_p or request.top_p or defaults["top_p"],
+        "top_k": request.audio_top_k if request.audio_top_k is not None else defaults["top_k"],
         "do_sample": True,
-        "repetition_penalty": rep if rep is not None else 1.1,
-        "repetition_window": 50,
+        "repetition_penalty": rep if rep is not None else defaults["repetition_penalty"],
+        "repetition_window": defaults["repetition_window"],
     }
 
 
@@ -1241,14 +1257,7 @@ def _generate_audio_realtime(
 
     device = torch.device(worker.device)
     prompt_tokens = _rt_encode_prompt_tokens(worker, reference_path)
-    rt_sample = sampling or {
-        "temperature": 0.8,
-        "top_p": 0.6,
-        "top_k": 30,
-        "do_sample": True,
-        "repetition_penalty": 1.1,
-        "repetition_window": 50,
-    }
+    rt_sample = sampling or _rt_default_sampling()
     session = _rt_build_session(worker, text, prompt_tokens, rt_sample)
     tune_dict = _rt_default_chunk_tuning()
     tune = default_chunk_tuning(
