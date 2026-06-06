@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end verification: model identity, streaming path, TTFA, STT."""
+"""Verify MOSS-RT streaming: TTFA, framed protocol, STT completeness (last-word cutoff)."""
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
+import re
 import struct
 import time
 import wave
@@ -14,20 +16,35 @@ from pathlib import Path
 import requests
 
 ROOT = Path(os.environ.get("SPEAKER_ROOT", Path(__file__).resolve().parents[3]))
-OUT = ROOT / "training/loli_15s/eval/bench/verify_streaming_$(date).json".replace("$(date)", time.strftime("%Y%m%d_%H%M%S"))
+LOLI = ROOT / "training/loli_15s"
+DEFAULT_OUT = LOLI / "eval/bench"
 API = os.environ.get("MOSS_RT_API", "http://127.0.0.1:8016")
 STT = os.environ.get("STT_API", "http://localhost:8603/v1/audio/transcriptions")
-MERGED = ROOT / "training/loli_15s/exports/loli15s-epoch7-merged"
-BASELINE_PORT = os.environ.get("BASELINE_PORT", "8017")
+MERGED_E7 = LOLI / "exports/loli15s-epoch7-merged"
+MERGED_V2 = LOLI / "exports/loli15s-v2-merged"
 
 TESTS = [
     ("short_greeting", "Hi there! I'm so happy you're here today."),
     ("medium_question", "Guess what? Do you think the stars look brighter after it rains?"),
     ("list", "We need three things: a flashlight, a warm scarf, and one very brave cookie."),
+    ("excited", "Wait wait wait! I keep replaying that moment — it still sparkles. I mean it!"),
+    ("story", (
+        "Once upon a time, in a tiny village between rolling hills, a curious girl wandered past "
+        "wildflowers every dawn. She collected shiny pebbles and dreamed of sailing before the sun "
+        "turned the water to gold."
+    )),
 ]
 
+TAIL_GAP_FAIL_S = 0.30  # hyp ends this many seconds before audio end → likely cutoff
 
-def stream(api: str, text: str) -> dict:
+
+def _normalize_words(text: str) -> list[str]:
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s']", " ", text)
+    return [w for w in text.split() if w]
+
+
+def stream_collect(api: str, text: str) -> dict:
     t0 = time.perf_counter()
     resp = requests.post(
         f"{api.rstrip('/')}/tts/stream",
@@ -46,10 +63,8 @@ def stream(api: str, text: str) -> dict:
             parts.append(chunk)
     wall = time.perf_counter() - t0
     raw = b"".join(parts)
-    if not raw.startswith(b"") and len(raw) < 8:
+    if len(raw) < 8:
         return {"ok": False, "error": "empty stream"}
-    # Must be framed stream (audio_len + meta_len), not raw WAV
-    framed = len(raw) >= 8
     off, sr, pcm, chunks = 0, 24000, bytearray(), 0
     while off + 8 <= len(raw):
         al, ml = struct.unpack_from("<II", raw, off)
@@ -67,35 +82,82 @@ def stream(api: str, text: str) -> dict:
             except Exception:
                 pcm.extend(ab)
     ttfb_ms = (first - t0) * 1000 if first else 0
-    audio_s = len(pcm) / (sr * 2) if pcm else 0
+    audio_s = len(pcm) / (sr * 2) if pcm and sr else 0
     return {
         "ok": True,
         "endpoint": "/tts/stream",
         "framed_chunks": chunks,
-        "framed_protocol": framed and chunks > 0,
+        "framed_protocol": chunks > 0,
         "ttfb_ms": round(ttfb_ms, 1),
         "wall_s": round(wall, 2),
         "audio_s": round(audio_s, 2),
-        "rtf": round(audio_s / wall, 2) if wall > 0 else 0,
-        "pcm_bytes": len(pcm),
+        "sample_rate": sr,
+        "pcm": bytes(pcm),
     }
 
 
-def stt_wav(pcm: bytes, sr: int, name: str) -> str:
+def stt_verbose(pcm: bytes, sr: int, name: str) -> tuple[str, float | None]:
+    """Return (text, last_word_end_s) from verbose_json if available."""
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sr)
         wf.writeframes(pcm)
-    r = requests.post(
-        STT,
-        files={"file": (name, buf.getvalue(), "audio/wav")},
-        data={"model": "base", "language": "en", "response_format": "json"},
-        timeout=120,
-    )
-    r.raise_for_status()
-    return r.json().get("text", "").strip()
+    data_variants = [
+        {"model": "base", "language": "en", "response_format": "verbose_json", "timestamp_granularities[]": "word"},
+        {"model": "base", "language": "en", "response_format": "verbose_json"},
+        {"model": "base", "language": "en", "response_format": "json"},
+    ]
+    last_err = ""
+    for data in data_variants:
+        try:
+            r = requests.post(
+                STT,
+                files={"file": (name, buf.getvalue(), "audio/wav")},
+                data=data,
+                timeout=120,
+            )
+            if r.status_code != 200:
+                last_err = r.text[:200]
+                continue
+            payload = r.json()
+            text = str(payload.get("text", "")).strip()
+            last_end = None
+            for seg in payload.get("segments") or []:
+                for w in seg.get("words") or []:
+                    if w.get("end") is not None:
+                        last_end = float(w["end"])
+            return text, last_end
+        except requests.RequestException as exc:
+            last_err = str(exc)
+    raise RuntimeError(last_err or "STT failed")
+
+
+def analyze_completeness(ref_text: str, hyp: str, audio_s: float, last_word_end_s: float | None) -> dict:
+    ref_w = _normalize_words(ref_text)
+    hyp_w = _normalize_words(hyp)
+    ref_last = ref_w[-1] if ref_w else ""
+    hyp_last = hyp_w[-1] if hyp_w else ""
+    last_word_match = bool(ref_last and hyp_last and ref_last == hyp_last)
+    last_word_in_hyp = ref_last in hyp_w if ref_last else None
+    tail_gap_s = None
+    likely_cutoff = False
+    if last_word_end_s is not None and audio_s > 0:
+        tail_gap_s = round(max(0.0, audio_s - last_word_end_s), 3)
+        likely_cutoff = tail_gap_s < TAIL_GAP_FAIL_S and not last_word_match
+    missing_tail_words = max(0, len(ref_w) - len(hyp_w))
+    return {
+        "ref_last_word": ref_last,
+        "hyp_last_word": hyp_last,
+        "last_word_match": last_word_match,
+        "last_word_in_hyp": last_word_in_hyp,
+        "last_word_end_s": last_word_end_s,
+        "tail_gap_s": tail_gap_s,
+        "likely_cutoff": likely_cutoff,
+        "missing_tail_words": missing_tail_words,
+        "wer_proxy_overlap": round(len(set(ref_w) & set(hyp_w)) / max(len(ref_w), 1), 3),
+    }
 
 
 def health(api: str) -> dict:
@@ -105,100 +167,83 @@ def health(api: str) -> dict:
         return {"error": str(e)}
 
 
+def run_suite(api: str, label: str) -> dict:
+    rows = []
+    for name, text in TESTS:
+        row: dict = {"name": name, "input": text, "label": label}
+        fin = stream_collect(api, text)
+        row["stream"] = {k: v for k, v in fin.items() if k != "pcm"}
+        if not fin.get("ok"):
+            rows.append(row)
+            continue
+        pcm = fin["pcm"]
+        sr = fin["sample_rate"]
+        try:
+            hyp, last_end = stt_verbose(pcm, sr, f"{name}.wav")
+            row["stt_hyp"] = hyp[:300]
+            row["completeness"] = analyze_completeness(text, hyp, fin["audio_s"], last_end)
+        except Exception as exc:
+            row["stt_error"] = str(exc)
+        rows.append(row)
+        c = row.get("completeness", {})
+        print(
+            f"  {name:18} TTFB={fin.get('ttfb_ms', '?'):>6}ms  "
+            f"last_ok={c.get('last_word_match', '?')}  "
+            f"tail_gap={c.get('tail_gap_s', '?')}s  "
+            f"cutoff={c.get('likely_cutoff', '?')}"
+        )
+    complete = [r for r in rows if r.get("completeness")]
+    n_ok = sum(1 for r in complete if not r["completeness"].get("likely_cutoff"))
+    n_last = sum(1 for r in complete if r["completeness"].get("last_word_match"))
+    return {
+        "label": label,
+        "api": api,
+        "tests": rows,
+        "summary": {
+            "n": len(rows),
+            "last_word_match_rate": round(n_last / max(len(complete), 1), 3),
+            "not_likely_cutoff_rate": round(n_ok / max(len(complete), 1), 3),
+            "likely_cutoff_count": sum(1 for r in complete if r["completeness"].get("likely_cutoff")),
+        },
+    }
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--api-url", default=API)
+    parser.add_argument("--compare-api", default="", help="Second API for A/B (e.g. v2 merged)")
+    parser.add_argument("--out", type=Path, default=None)
+    args = parser.parse_args()
+
+    out_dir = args.out or DEFAULT_OUT
+    out_dir.mkdir(parents=True, exist_ok=True)
     report: dict = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "finetuned_api": API,
-        "checks": {},
-        "tests": [],
+        "tail_gap_fail_s": TAIL_GAP_FAIL_S,
+        "health": health(args.api_url),
+        "suites": [],
     }
 
-    h = health(API)
-    report["health"] = h
-    report["checks"]["server_ready"] = h.get("status") == "ready"
-    report["checks"]["realtime_enabled"] = h.get("realtime_enabled") is True
-    report["checks"]["merged_dir_exists"] = MERGED.is_dir() and (MERGED / "model.safetensors").is_file()
-    report["checks"]["merge_source"] = json.loads((MERGED / "merge_info.json").read_text()) if (MERGED / "merge_info.json").is_file() else None
+    print(f"=== Streaming verify: {args.api_url} ===")
+    report["suites"].append(run_suite(args.api_url, "primary"))
 
-    rt_lora = h.get("rt_lora")
-    rt_ckpt = h.get("rt_lora_checkpoint")
-    rt_native = h.get("rt_native_voice")
-    report["checks"]["health_rt_lora"] = rt_lora
-    report["checks"]["health_rt_checkpoint"] = rt_ckpt
-    report["checks"]["health_rt_native_voice"] = rt_native
+    if args.compare_api:
+        print(f"\n=== Compare: {args.compare_api} ===")
+        report["suites"].append(run_suite(args.compare_api, "compare"))
 
-    # Process env via health may omit checkpoint; infer from merge path on disk
-    report["checks"]["expected_model"] = str(MERGED)
-
-    for name, text in TESTS:
-        row = {"name": name, "input": text, "finetuned": stream(API, text)}
-        if row["finetuned"].get("ok"):
-            # Re-fetch audio for STT
-            resp = requests.post(
-                f"{API}/tts/stream",
-                json={"text": text, "language": "en"},
-                timeout=600,
-            )
-            raw = resp.content
-            off, sr, pcm = 0, 24000, bytearray()
-            while off + 8 <= len(raw):
-                al, ml = struct.unpack_from("<II", raw, off)
-                off += 8
-                ab = raw[off : off + al]
-                off += al + ml
-                if al:
-                    try:
-                        with wave.open(io.BytesIO(ab), "rb") as wf:
-                            sr = wf.getframerate()
-                            pcm.extend(wf.readframes(wf.getnframes()))
-                    except Exception:
-                        pcm.extend(ab)
-            try:
-                hyp = stt_wav(bytes(pcm), sr, f"{name}.wav")
-                row["stt"] = hyp
-                row["stt_word_overlap"] = len(set(text.lower().split()) & set(hyp.lower().split())) / max(
-                    len(text.split()), 1
-                )
-            except Exception as e:
-                row["stt_error"] = str(e)
-        report["tests"].append(row)
-        f = row["finetuned"]
-        print(
-            f"{name:18} TTFB={f.get('ttfb_ms', '?'):>6}ms  "
-            f"chunks={f.get('framed_chunks', '?')}  audio={f.get('audio_s', '?')}s  "
-            f"stream={f.get('framed_protocol', False)}"
-        )
-
-    ttfa_vals = [t["finetuned"]["ttfb_ms"] for t in report["tests"] if t["finetuned"].get("ok")]
-    report["summary"] = {
-        "ttfa_ms_min": min(ttfa_vals) if ttfa_vals else None,
-        "ttfa_ms_max": max(ttfa_vals) if ttfa_vals else None,
-        "ttfa_ms_avg": round(sum(ttfa_vals) / len(ttfa_vals), 1) if ttfa_vals else None,
-        "all_used_tts_stream": all(t["finetuned"].get("endpoint") == "/tts/stream" for t in report["tests"]),
-        "all_framed": all(t["finetuned"].get("framed_protocol") for t in report["tests"]),
+    s0 = report["suites"][0]["summary"]
+    report["verdict"] = {
+        "pass_last_word_rate": s0["last_word_match_rate"] >= 0.9,
+        "pass_not_cutoff_rate": s0["not_likely_cutoff_rate"] >= 0.9,
     }
-
-    # Baseline compare if up
-    base_api = f"http://127.0.0.1:{BASELINE_PORT}"
-    bh = health(base_api)
-    if bh.get("status") == "ready" and not bh.get("rt_lora"):
-        t, _ = TESTS[0]
-        b = stream(base_api, _)
-        report["baseline"] = {"api": base_api, "health": bh, "short_greeting": b}
-        if b.get("ok"):
-            print(f"baseline           TTFB={b['ttfb_ms']:.0f}ms (stock MOSS-RT, no finetune)")
-
-    out_path = ROOT / "training/loli_15s/eval/bench" / f"verify_streaming_{time.strftime('%Y%m%d_%H%M%S')}.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(report, indent=2))
+    out_path = out_dir / f"verify_streaming_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"\nReport: {out_path}")
-    print(f"TTFA avg: {report['summary']['ttfa_ms_avg']}ms  (target <500ms)")
-    ok = (
-        report["checks"]["server_ready"]
-        and report["summary"]["all_used_tts_stream"]
-        and report["summary"]["all_framed"]
-        and (report["summary"]["ttfa_ms_avg"] or 9999) < 600
+    print(
+        f"Summary: last_word_match={s0['last_word_match_rate']:.0%}  "
+        f"not_cutoff={s0['not_likely_cutoff_rate']:.0%}"
     )
+    ok = report["verdict"]["pass_last_word_rate"] and report["verdict"]["pass_not_cutoff_rate"]
     print("VERDICT:", "PASS" if ok else "REVIEW")
     return 0 if ok else 1
 

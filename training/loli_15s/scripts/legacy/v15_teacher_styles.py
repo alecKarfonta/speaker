@@ -6,15 +6,15 @@ import copy
 import random
 import re
 
-# Base tuned for loli clone; profiles nudge prosody per utterance type.
+# Base aligned with warm_092 RT serve; expressive profiles run hotter for v2 teacher batch.
 OPENMOSS_TEACHER_BASE = {
     "text_temperature": 0.75,
     "text_top_p": 0.6,
     "text_top_k": 30,
-    "audio_temperature": 0.6,
-    "audio_top_p": 0.6,
-    "audio_top_k": 30,
-    "audio_repetition_penalty": 1.08,
+    "audio_temperature": 0.92,
+    "audio_top_p": 0.72,
+    "audio_top_k": 40,
+    "audio_repetition_penalty": 1.05,
 }
 
 STYLE_PROFILES: dict[str, dict] = {
@@ -22,13 +22,13 @@ STYLE_PROFILES: dict[str, dict] = {
         "instruction": (
             "Bright, upbeat young female voice — cheerful, lively, and friendly."
         ),
-        "sampling": {"audio_temperature": 0.62, "text_temperature": 0.78},
+        "sampling": {"audio_temperature": 0.88, "text_temperature": 0.78, "audio_top_p": 0.70},
     },
     "excited": {
         "instruction": (
             "Excited, energetic young girl — fast-paced, amazed, with bright emphasis."
         ),
-        "sampling": {"audio_temperature": 0.68, "text_temperature": 0.82, "audio_top_p": 0.65},
+        "sampling": {"audio_temperature": 0.93, "text_temperature": 0.82, "audio_top_p": 0.74, "audio_top_k": 45},
     },
     "cozy": {
         "instruction": (
@@ -40,13 +40,13 @@ STYLE_PROFILES: dict[str, dict] = {
         "instruction": (
             "Expressive storyteller voice — clear pacing, gentle drama, engaging narration."
         ),
-        "sampling": {"audio_temperature": 0.58, "text_temperature": 0.72, "audio_top_p": 0.58},
+        "sampling": {"audio_temperature": 0.90, "text_temperature": 0.72, "audio_top_p": 0.72, "audio_top_k": 42},
     },
     "curious": {
         "instruction": (
             "Curious, wondering young voice — light questioning tone, playful intrigue."
         ),
-        "sampling": {"audio_temperature": 0.60, "text_temperature": 0.76},
+        "sampling": {"audio_temperature": 0.88, "text_temperature": 0.76, "audio_top_p": 0.70, "audio_top_k": 40},
     },
     "gentle": {
         "instruction": (
@@ -58,7 +58,7 @@ STYLE_PROFILES: dict[str, dict] = {
         "instruction": (
             "Playful, teasing young girl voice — bouncy rhythm, fun and mischievous."
         ),
-        "sampling": {"audio_temperature": 0.64, "text_temperature": 0.80},
+        "sampling": {"audio_temperature": 0.91, "text_temperature": 0.80, "audio_top_p": 0.73, "audio_top_k": 48},
     },
     "whisper_soft": {
         "instruction": (

@@ -4,21 +4,41 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LEGACY="${LEGACY_DIR:-$SCRIPT_DIR}"
 ROOT="${SPEAKER_ROOT:-$(cd "$SCRIPT_DIR/../../../../.." && pwd)}"
+OPENMOSS_START="${OPENMOSS_START:-$ROOT/training/moss-realtime/scripts/legacy/start-openmoss.sh}"
 cd "$ROOT"
 
-NUM_SHARDS="${NUM_SHARDS:-4}"
-GPUS="${GPUS:-0,1,2,3}"
-PORTS="${PORTS:-8014,8015,8016,8017}"
+NUM_SHARDS="${NUM_SHARDS:-2}"
+GPUS="${GPUS:-0,1}"
+PORTS="${PORTS:-8014,8015}"
+MIN_AVAIL_GB="${MIN_AVAIL_GB:-12}"
+# aux on CPU saves VRAM but duplicates codec RAM per server — avoid when NUM_SHARDS>1
+OPENMOSS_AUX_CPU="${OPENMOSS_AUX_CPU:-0}"
+# Extra codec headroom so teacher clips don't cut off the last word
+export OPENMOSS_DUR_SLACK="${OPENMOSS_DUR_SLACK:-1.25}"
+export OPENMOSS_MAX_EXTRA="${OPENMOSS_MAX_EXTRA:-40}"
 TEACHERS="${TEACHERS:-v15}"
 LOG_DIR="${LOG_DIR:-${MOSS_RT_TRAIN_DIR:-$ROOT/training/loli_15s}}"
 STAGGER_SEC="${STAGGER_SEC:-45}"
 MIN_GPU_FREE_MB="${MIN_GPU_FREE_MB:-16000}"
 WAV_STAGING="${WAV_STAGING:-/dev/shm/loli15s_wavs}"
 WAV_SYNC_SEC="${WAV_SYNC_SEC:-120}"
-LIGHT_HOST="${LIGHT_HOST:-1}"
-CLEAR_SWAP="${CLEAR_SWAP:-1}"
+LIGHT_HOST="${LIGHT_HOST:-0}"
+CLEAR_SWAP="${CLEAR_SWAP:-0}"
+VOICE_QC="${VOICE_QC:-1}"
+MIN_COS_REF="${MIN_COS_REF:-0.5}"
+MIN_COS_TEACHER="${MIN_COS_TEACHER:-0.5}"
 EXTRA_ARGS=(--skip-existing --no-stt --no-auto-start)
+if [[ "$VOICE_QC" == "1" ]]; then
+  EXTRA_ARGS+=(--voice-qc --min-cos-ref "$MIN_COS_REF" --min-cos-teacher "$MIN_COS_TEACHER")
+  EXTRA_ARGS+=(
+    --teacher-train-raw "${TEACHER_TRAIN_RAW:-$ROOT/training/loli_15s/train_raw.jsonl}"
+    --teacher-pool "${TEACHER_POOL:-$ROOT/training/loli_15s/wavs/v15_pruned}"
+  )
+fi
 MONITOR="${MONITOR:-1}"
+HEALTH_LOG_DIR="${HEALTH_LOG_DIR:-${LOG_DIR}/logs/health}"
+WATCHDOG="$ROOT/training/moss-realtime/scripts/legacy/watchdog_server_health.py"
+PREFLIGHT="$ROOT/training/moss-realtime/scripts/legacy/preflight_host_resources.sh"
 SYNC_PID=""
 
 IFS=',' read -r -a GPU_ARR <<< "$GPUS"
@@ -57,8 +77,8 @@ start_openmoss() {
   fi
   fuser -k "${port}/tcp" 2>/dev/null || true
   sleep 1
-  OPENMOSS_MAIN_GPU="$gpu" OPENMOSS_PORT="$port" OPENMOSS_AUX_CPU=1 \
-    OPENMOSS_MODEL_VERSION=v15 SPEAKER_ROOT="$ROOT" nohup "${LEGACY}/start-openmoss.sh" \
+  OPENMOSS_MAIN_GPU="$gpu" OPENMOSS_PORT="$port" OPENMOSS_AUX_CPU="$OPENMOSS_AUX_CPU" \
+    OPENMOSS_MODEL_VERSION=v15 SPEAKER_ROOT="$ROOT" nohup "$OPENMOSS_START" \
     >> "/tmp/openmoss-server-${port}.log" 2>&1 &
   wait_openmoss "$port"
 }
@@ -77,6 +97,7 @@ gpu_ghost_mb() {
 stop_all() {
   pkill -f "build_realtime_finetune_dataset.py" 2>/dev/null || true
   pkill -f "monitor_teacher_gen_resources.sh" 2>/dev/null || true
+  pkill -f "watchdog_server_health.py" 2>/dev/null || true
   PORTS="${PORTS}" SPEAKER_ROOT="$ROOT" "${LEGACY}/teardown_openmoss.sh"
 }
 
@@ -110,7 +131,11 @@ trap cleanup EXIT
 
 echo "Stopping prior teacher-gen workers..."
 stop_all
+if [[ -x "$PREFLIGHT" ]]; then
+  MIN_AVAIL_GB="$MIN_AVAIL_GB" GPUS="$GPUS" MIN_GPU_FREE_MB="$MIN_GPU_FREE_MB" "$PREFLIGHT"
+fi
 preflight_gpus
+echo "OPENMOSS_AUX_CPU=$OPENMOSS_AUX_CPU (0 = aux on GPU, saves RAM when multi-shard)"
 
 if [[ "$LIGHT_HOST" == "1" ]]; then
   "${LEGACY}/lighten_host_for_teacher_gen.sh" stop
@@ -123,9 +148,19 @@ fi
 
 if [[ "$MONITOR" == "1" ]]; then
   pkill -f "monitor_teacher_gen_resources.sh" 2>/dev/null || true
+  pkill -f "watchdog_server_health.py" 2>/dev/null || true
+  mkdir -p "$HEALTH_LOG_DIR"
   nohup "${LEGACY}/monitor_teacher_gen_resources.sh" 30 "${LOG_DIR}/resource_monitor.log" \
     >> "${LOG_DIR}/resource_monitor.log" 2>&1 &
+  HEALTH_MIN_AVAIL_GB="${HEALTH_MIN_AVAIL_GB:-8}" \
+    nohup python3 "$WATCHDOG" \
+      --log-dir "$HEALTH_LOG_DIR" \
+      --staging "$WAV_STAGING" \
+      --wav-disk "${LOG_DIR}/wavs" \
+      --interval "${HEALTH_INTERVAL:-15}" \
+    >> "${HEALTH_LOG_DIR}/watchdog.stdout.log" 2>&1 &
   echo "Resource monitor -> ${LOG_DIR}/resource_monitor.log"
+  echo "Health watchdog  -> ${HEALTH_LOG_DIR}/health.jsonl"
 fi
 
 echo "Starting $NUM_SHARDS openmoss servers (stagger ${STAGGER_SEC}s)..."
@@ -157,7 +192,10 @@ SYNC_PID=$!
 
 mkdir -p "$LOG_DIR"
 PIDS=()
-WAV_REL="training/loli_15s/wavs"
+CORPUS="${CORPUS:-$LOG_DIR/corpus/texts.jsonl}"
+OUT_DIR="${OUT_DIR:-$LOG_DIR}"
+REF_WAV="${REF_WAV:-$ROOT/data/voices/loli/loli_15s.wav}"
+WAV_REL="${WAV_REL_ROOT:-training/loli_15s/wavs}"
 for i in $(seq 0 $((NUM_SHARDS - 1))); do
   gpu="${GPU_ARR[$i]}"
   port="${PORT_ARR[$i]}"
@@ -165,7 +203,11 @@ for i in $(seq 0 $((NUM_SHARDS - 1))); do
   log="${LOG_DIR}/teacher_gen.shard${i}.log"
   echo "Launching shard $i gpu=$gpu -> $log"
   SPEAKER_ROOT="$ROOT" MOSS_RT_TRAIN_DIR="$LOG_DIR" PYTHONUNBUFFERED=1 \
+    OPENMOSS_MAIN_GPU="$gpu" OPENMOSS_PORT="$port" \
     nohup python3 "${LEGACY}/build_realtime_finetune_dataset.py" \
+      --corpus "$CORPUS" \
+      --ref "$REF_WAV" \
+      --out-dir "$OUT_DIR" \
       --teachers "$TEACHERS" \
       --wav-dir "$WAV_STAGING" \
       --wav-rel-root "$WAV_REL" \

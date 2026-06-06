@@ -127,7 +127,8 @@ def cmd_qc_report(paths: Paths, args: argparse.Namespace) -> int:
 
 def _qc_prune_args(paths: Paths, args: argparse.Namespace, *, trim_only: bool) -> list[str]:
     cfg = _cfg(paths)
-    wav_dir = Path(cfg.qc.get("wav_dir_pruned" if trim_only else "wav_dir", "wavs/v15_pruned"))
+    wav_key = "wav_dir" if trim_only else "wav_dir"
+    wav_dir = Path(cfg.qc.get(wav_key, "wavs/v15"))
     if not wav_dir.is_absolute():
         wav_dir = paths.train_dir / wav_dir
     corpus = paths.train_dir / "corpus/texts.jsonl"
@@ -141,11 +142,14 @@ def _qc_prune_args(paths: Paths, args: argparse.Namespace, *, trim_only: bool) -
     ]
     if trim_only:
         extra.append("--trim-only")
-        if getattr(args, "no_in_place", False):
-            out_dir = paths.train_dir / "wavs/v15_pruned_trimmed"
-            extra.extend(["--out-dir", str(out_dir)])
-        else:
+        if getattr(args, "in_place", False):
             extra.append("--in-place")
+        else:
+            out_dir = Path(cfg.qc.get("wav_dir_pruned", "wavs/v15_pruned"))
+            if not out_dir.is_absolute():
+                out_dir = paths.train_dir / out_dir
+            quarantine = paths.train_dir / "wavs/v15_quarantine"
+            extra.extend(["--out-dir", str(out_dir), "--quarantine-dir", str(quarantine)])
     else:
         out_dir = Path(cfg.qc.get("wav_dir_pruned", "wavs/v15_pruned"))
         if not out_dir.is_absolute():
@@ -154,6 +158,43 @@ def _qc_prune_args(paths: Paths, args: argparse.Namespace, *, trim_only: bool) -
         extra.extend(["--out-dir", str(out_dir), "--quarantine-dir", str(quarantine)])
     if args.limit:
         extra.extend(["--limit", str(args.limit)])
+    qc_v2 = cfg.get("qc_v2") or {}
+    end_ms = getattr(args, "end_buffer_ms", None)
+    if end_ms is None:
+        end_ms = qc_v2.get("end_buffer_ms")
+    if end_ms is not None:
+        extra.extend(["--end-buffer-ms", str(int(end_ms))])
+    wer_thr = qc_v2.get("wer_quarantine_threshold")
+    if wer_thr is not None and trim_only:
+        extra.extend(["--wer-quarantine-threshold", str(wer_thr)])
+    if qc_v2.get("quarantine_cutoff", True):
+        extra.append("--quarantine-cutoff")
+    else:
+        extra.append("--no-quarantine-cutoff")
+    if qc_v2.get("tail_gap_fail_s") is not None:
+        extra.extend(["--tail-gap-fail-s", str(qc_v2["tail_gap_fail_s"])])
+    if qc_v2.get("min_missing_tail_words") is not None:
+        extra.extend(["--min-missing-tail-words", str(int(qc_v2["min_missing_tail_words"]))])
+    if qc_v2.get("voice_qc", True):
+        extra.append("--voice-qc")
+        ref = cfg.get("voice_ref") or "data/voices/loli/loli_15s.wav"
+        ref_path = Path(ref)
+        if not ref_path.is_absolute():
+            ref_path = paths.repo_root / ref
+        extra.extend(["--ref-wav", str(ref_path)])
+        train_raw = paths.train_dir / cfg.get("train_raw", "train_raw.jsonl")
+        if not train_raw.is_absolute():
+            train_raw = paths.train_dir / train_raw
+        extra.extend(["--teacher-train-raw", str(train_raw)])
+        pool = qc_v2.get("teacher_pool", "wavs/v15_pruned")
+        pool_path = Path(pool)
+        if not pool_path.is_absolute():
+            pool_path = paths.train_dir / pool
+        extra.extend(["--teacher-pool", str(pool_path)])
+        if qc_v2.get("min_cos_ref") is not None:
+            extra.extend(["--min-cos-ref", str(qc_v2["min_cos_ref"])])
+        if qc_v2.get("min_cos_teacher") is not None:
+            extra.extend(["--min-cos-teacher", str(qc_v2["min_cos_teacher"])])
     return extra
 
 
@@ -187,24 +228,44 @@ def cmd_train_preprocess(paths: Paths, args: argparse.Namespace) -> int:
 
 def cmd_train_sft(paths: Paths, args: argparse.Namespace) -> int:
     cfg = _cfg(paths)
+    sft_v2 = cfg.get("sft_v2") or {}
     sft = cfg.sft
+    use_v2 = bool(sft_v2) and (args.resume or os.environ.get("SFT_V2"))
+    if use_v2:
+        sft_cfg = {**sft, **{k: v for k, v in sft_v2.items() if k != "merged"}}
+    else:
+        sft_cfg = sft
     extra = {
         "NUM_GPUS": str(args.gpus),
-        "NUM_EPOCHS": str(args.epochs or sft.get("epochs", 12)),
-        "LEARNING_RATE": str(args.lr or sft.get("lr", 1e-5)),
-        "GRAD_ACCUM": str(sft.get("grad_accum", 4)),
-        "WARMUP_RATIO": str(sft.get("warmup_ratio", 0.05)),
-        "LR_SCHEDULER_TYPE": str(sft.get("lr_scheduler", "cosine")),
+        "NUM_EPOCHS": str(args.epochs or sft_cfg.get("epochs", 12)),
+        "LEARNING_RATE": str(args.lr or sft_cfg.get("lr", 1e-5)),
+        "GRAD_ACCUM": str(sft_cfg.get("grad_accum", 4)),
+        "WARMUP_RATIO": str(sft_cfg.get("warmup_ratio", 0.05)),
+        "LR_SCHEDULER_TYPE": str(sft_cfg.get("lr_scheduler", "cosine")),
     }
-    if args.noref or sft.get("noref"):
+    resume = args.resume or (sft_v2.get("resume_checkpoint") if use_v2 else None)
+    if resume:
+        ckpt = Path(resume)
+        if not ckpt.is_absolute():
+            ckpt = paths.train_dir / ckpt
+        extra["RESUME_CHECKPOINT"] = str(ckpt)
+    if args.noref or sft_cfg.get("noref"):
         return run_shell(paths, paths.finetune_dir / "run_moss_rt_finetune_noref.sh", extra_env=extra)
     return run_shell(paths, paths.finetune_dir / "run_moss_rt_finetune_train.sh", extra_env=extra)
 
 
 def cmd_export_merge(paths: Paths, args: argparse.Namespace) -> int:
     cfg = _cfg(paths)
-    ckpt = Path(cfg.export.get("checkpoint", paths.train_dir / "checkpoints/latest"))
-    out = Path(cfg.export.get("merged", paths.train_dir / "exports/merged"))
+    sft_v2 = cfg.get("sft_v2") or {}
+    ckpt = Path(
+        os.environ.get("MERGE_CHECKPOINT")
+        or cfg.export.get("checkpoint", paths.train_dir / "checkpoints/latest")
+    )
+    out = Path(
+        os.environ.get("MERGE_OUTPUT")
+        or (sft_v2.get("merged") if os.environ.get("SFT_V2") else None)
+        or cfg.export.get("merged", paths.train_dir / "exports/merged")
+    )
     if not ckpt.is_absolute():
         ckpt = paths.train_dir / ckpt
     if not out.is_absolute():
@@ -319,10 +380,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write to wavs/v15_pruned_trimmed instead of overwriting",
     )
+    qt.add_argument(
+        "--end-buffer-ms",
+        type=int,
+        default=None,
+        help="STT tail buffer after last word (default from experiment.yaml qc_v2)",
+    )
     qp = qc_sub.add_parser("prune", help="Full QC: STT trim + WER + wav-outlier quarantine")
     qp.add_argument("--apply", action="store_true", help=argparse.SUPPRESS)
     qp.add_argument("--limit", type=int, default=0)
     qp.add_argument("--workers", type=int, default=4)
+    qp.add_argument("--end-buffer-ms", type=int, default=None)
 
     train = sub.add_parser("train", help="LoRA SFT on Realtime model")
     train_sub = train.add_subparsers(dest="train_cmd", required=True)
@@ -334,6 +402,12 @@ def build_parser() -> argparse.ArgumentParser:
     ts.add_argument("--gpus", type=int, default=4)
     ts.add_argument("--epochs", type=int, default=None)
     ts.add_argument("--lr", type=float, default=None)
+    ts.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Resume from checkpoint dir (e.g. output/sft_ddp_single/checkpoint-epoch-7)",
+    )
 
     export = sub.add_parser("export", help="Post-train artifacts")
     export_sub = export.add_subparsers(dest="export_cmd", required=True)

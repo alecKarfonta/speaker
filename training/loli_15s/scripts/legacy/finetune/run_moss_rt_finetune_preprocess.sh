@@ -24,7 +24,11 @@ source "$VENV/bin/activate"
 mkdir -p "$(dirname "$PREPARED")"
 
 ACCEL_CFG="$MOSS_DIR/moss_tts_realtime/finetuning/configs/accelerate_ddp_8gpu.yaml"
-if [[ "$NUM_GPUS" -lt 8 && -f "$TRAIN_DIR/configs/accelerate_ddp_4gpu.yaml" ]]; then
+if [[ "$NUM_GPUS" -eq 1 && -f "$TRAIN_DIR/configs/accelerate_ddp_1gpu.yaml" ]]; then
+  ACCEL_CFG="$TRAIN_DIR/configs/accelerate_ddp_1gpu.yaml"
+elif [[ "$NUM_GPUS" -eq 2 && -f "$TRAIN_DIR/configs/accelerate_ddp_2gpu.yaml" ]]; then
+  ACCEL_CFG="$TRAIN_DIR/configs/accelerate_ddp_2gpu.yaml"
+elif [[ "$NUM_GPUS" -lt 8 && -f "$TRAIN_DIR/configs/accelerate_ddp_4gpu.yaml" ]]; then
   ACCEL_CFG="$TRAIN_DIR/configs/accelerate_ddp_4gpu.yaml"
 fi
 

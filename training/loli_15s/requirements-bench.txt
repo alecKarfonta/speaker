@@ -1,0 +1,2 @@
+# ECAPA voice-similarity bench (shared with major_03)
+-r ../major_03/requirements-bench.txt

@@ -14,6 +14,8 @@ lib/
 lib64/
 !training/moss-realtime/scripts/lib/
 !training/moss-realtime/scripts/lib/**
+!training/loli_15s/scripts/lib/
+!training/loli_15s/scripts/lib/**
 parts/
 sdist/
 var/
@@ -179,6 +181,14 @@ training/loli_15s_batch2/corpus/*.jsonl
 training/loli_15s_batch2/corpus/corpus_stats.json
 training/loli_15s_batch2/dataset_stats*.json
 training/loli_15s_batch2/*.jsonl
+training/loli_15s_batch3/wavs/
+training/loli_15s_batch3/logs/
+training/loli_15s_batch3/corpus/*.jsonl
+training/loli_15s_batch3/corpus/corpus_stats.json
+training/loli_15s_batch3/dataset_stats*.json
+training/loli_15s_batch3/*.jsonl
+training/loli_15s_batch3/*.log
+training/loli_15s_smoke/
 training/major_03/wavs/
 training/major_03/prepared/
 training/major_03/output/

@@ -30,6 +30,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -55,6 +56,7 @@ from build_realtime_finetune_dataset import (  # noqa: E402
     normalize,
     word_error_rate,
 )
+from corpus_wav_names import corpus_id_from_wav_name, wav_filename_for_row  # noqa: E402
 from loli15s_wav_analysis import (  # noqa: E402
     NormProfile,
     WaveformFeatures,
@@ -83,7 +85,7 @@ class ClipResult:
     wav: str
     corpus_id: str
     ref_text: str
-    action: str  # pass | trim | quarantine | skip
+    action: str  # pass | trim | quarantine | stt_pending | skip
     reasons: list[str] = field(default_factory=list)
     orig_duration_s: float = 0.0
     new_duration_s: float = 0.0
@@ -96,10 +98,19 @@ class ClipResult:
     n_words: int = 0
     last_word: str = ""
     last_word_end_s: float = 0.0
+    ref_last_word: str = ""
+    hyp_last_word: str = ""
+    last_word_match: bool = False
+    likely_cutoff: bool = False
+    missing_tail_words: int = 0
+    tail_gap_s: float | None = None
     out_path: str = ""
     wav_features: dict = field(default_factory=dict)
     wav_outlier_score: float = 0.0
     wav_outlier_flags: list[str] = field(default_factory=list)
+    cos_ref: float | None = None
+    cos_teacher: float | None = None
+    voice_teacher_match: str = ""
 
 
 def load_audio_mono(path: Path) -> tuple[np.ndarray, int]:
@@ -154,13 +165,14 @@ def build_wav_index(corpus_path: Path, train_ids_path: Path | None) -> dict[str,
             continue
         base = {"corpus_id": cid, "style": row.get("style"), "type": row.get("type")}
         if row.get("type") == "single" or "turns" not in row:
-            name = f"{cid}.wav"
-            index[name] = {**base, "text": row["text"]}
+            name = wav_filename_for_row(row)
+            index[name] = {**base, "text": row["text"], "gap_category": row.get("gap_category")}
         else:
             for ti, turn in enumerate(row["turns"]):
                 if turn["role"] != "assistant":
                     continue
-                name = f"{cid}_a{ti:02d}.wav"
+                turn_row = {**row, "style": turn.get("style", row.get("style")), "text": turn["text"]}
+                name = wav_filename_for_row(turn_row, turn_idx=ti)
                 index[name] = {**base, "text": turn["text"], "turn_idx": ti}
     return index
 
@@ -270,22 +282,76 @@ def transcribe_api(wav_path: Path, api: str, model: str) -> tuple[str, list[Word
     raise RuntimeError(last_err or "STT request failed")
 
 
+def _transient_stt_error(detail: str) -> bool:
+    s = detail.lower()
+    return any(
+        x in s
+        for x in (
+            "connection refused",
+            "connection aborted",
+            "max retries exceeded",
+            "timed out",
+            "timeout",
+            "remotedisconnected",
+        )
+    )
+
+
 def transcribe_with_words(
     wav_path: Path,
     api: str,
     model: str,
     allow_local: bool,
+    max_retries: int = 1,
 ) -> tuple[str, list[WordStamp]]:
-    try:
-        return transcribe_api(wav_path, api, model)
-    except Exception as api_exc:
-        if not allow_local:
-            raise
+    last_exc: Exception | None = None
+    retries = max(1, max_retries)
+    for attempt in range(retries):
         try:
-            text, words = transcribe_local_whisper(wav_path, model)
-            return text, words
-        except Exception as local_exc:
-            raise RuntimeError(f"API: {api_exc}; local: {local_exc}") from local_exc
+            return transcribe_api(wav_path, api, model)
+        except Exception as api_exc:
+            last_exc = api_exc
+            if attempt >= retries - 1 or not _transient_stt_error(str(api_exc)):
+                break
+            time.sleep(min(30, 3 * (attempt + 1)))
+    assert last_exc is not None
+    if not allow_local:
+        raise last_exc
+    try:
+        text, words = transcribe_local_whisper(wav_path, model)
+        return text, words
+    except Exception as local_exc:
+        raise RuntimeError(f"API: {last_exc}; local: {local_exc}") from local_exc
+
+
+def analyze_completeness(
+    ref_text: str,
+    hyp: str,
+    audio_s: float,
+    last_word_end_s: float | None,
+    *,
+    tail_gap_fail_s: float = 0.30,
+) -> dict:
+    """Detect teacher clips that end before the reference last word (MOSS cutoff)."""
+    ref_w = normalize(ref_text).split()
+    hyp_w = normalize(hyp).split()
+    ref_last = ref_w[-1] if ref_w else ""
+    hyp_last = hyp_w[-1] if hyp_w else ""
+    last_word_match = bool(ref_last and hyp_last and ref_last == hyp_last)
+    missing_tail_words = max(0, len(ref_w) - len(hyp_w))
+    tail_gap_s = None
+    likely_cutoff = False
+    if last_word_end_s is not None and audio_s > 0:
+        tail_gap_s = round(max(0.0, audio_s - last_word_end_s), 3)
+        likely_cutoff = tail_gap_s < tail_gap_fail_s and not last_word_match
+    return {
+        "ref_last_word": ref_last,
+        "hyp_last_word": hyp_last,
+        "last_word_match": last_word_match,
+        "likely_cutoff": likely_cutoff,
+        "missing_tail_words": missing_tail_words,
+        "tail_gap_s": tail_gap_s,
+    }
 
 
 def meaningful_words(words: list[WordStamp]) -> list[WordStamp]:
@@ -329,8 +395,14 @@ def _is_hard_reason(
 ) -> bool:
     if trim_only:
         if wer_quarantine_threshold is not None:
-            return r.startswith("high_wer")
+            if r.startswith("high_wer"):
+                return True
         tag = _reason_tag(r)
+        if tag in {
+            "low_cos_ref", "low_cos_teacher", "likely_cutoff",
+            "last_word_mismatch", "missing_tail_words",
+        }:
+            return True
         return tag in {"file_too_small", "low_peak"} or tag.startswith("stt_failed")
     if r.startswith("high_wer"):
         return True
@@ -338,7 +410,8 @@ def _is_hard_reason(
     hard = {
         "file_too_small", "low_peak", "too_short", "too_long", "no_stt_words",
         "stt_failed", "low_confidence", "repetition", "still_too_long_after_trim",
-        "noisy_tail_remaining", "large_tail_removed",
+        "noisy_tail_remaining", "large_tail_removed", "low_cos_ref", "low_cos_teacher",
+        "likely_cutoff", "missing_tail_words",
     }
     if tag in hard:
         return True
@@ -368,6 +441,12 @@ def evaluate_clip(
     wav_only: bool = False,
     trim_only: bool = False,
     wer_quarantine_threshold: float | None = None,
+    voice_gate: object | None = None,
+    quarantine_cutoff: bool = True,
+    tail_gap_fail_s: float = 0.30,
+    min_missing_tail_words: int = 2,
+    defer_stt_fail: bool = False,
+    stt_max_retries: int = 5,
 ) -> tuple[ClipResult, np.ndarray, int]:
     name = wav_path.name
     ref = REF_PAD_SUFFIX.sub("", meta.get("text", ""))
@@ -438,10 +517,13 @@ def evaluate_clip(
         return res, trimmed, sr
 
     try:
-        hyp, words = transcribe_with_words(wav_path, api, model, allow_local)
+        hyp, words = transcribe_with_words(
+            wav_path, api, model, allow_local, max_retries=stt_max_retries,
+        )
     except Exception as exc:
         res.reasons.append(f"stt_failed:{exc}")
         res.hyp_text = ""
+        res.action = "stt_pending" if defer_stt_fail else "quarantine"
         return res, x, sr
 
     res.hyp_text = hyp
@@ -449,6 +531,21 @@ def evaluate_clip(
     cut_s, last_w, _ = compute_cut_time(words, buffer_s, res.orig_duration_s)
     res.last_word = last_w
     res.last_word_end_s = cut_s - buffer_s if cut_s > buffer_s else 0.0
+
+    if ref and quarantine_cutoff:
+        comp = analyze_completeness(
+            ref, hyp, res.orig_duration_s, res.last_word_end_s, tail_gap_fail_s=tail_gap_fail_s,
+        )
+        res.ref_last_word = comp["ref_last_word"]
+        res.hyp_last_word = comp["hyp_last_word"]
+        res.last_word_match = comp["last_word_match"]
+        res.likely_cutoff = comp["likely_cutoff"]
+        res.missing_tail_words = comp["missing_tail_words"]
+        res.tail_gap_s = comp["tail_gap_s"]
+        if comp["likely_cutoff"]:
+            res.reasons.append("likely_cutoff")
+        if comp["missing_tail_words"] >= min_missing_tail_words:
+            res.reasons.append(f"missing_tail_words:{comp['missing_tail_words']}")
 
     if res.n_words == 0:
         res.reasons.append("no_stt_words")
@@ -498,6 +595,19 @@ def evaluate_clip(
         if res.tail_rms_ratio > 0.35 and res.trim_removed_s < 0.05:
             res.reasons.append("noisy_tail_remaining")
 
+    if voice_gate is not None and len(trimmed) > 0:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            sf.write(str(tmp_path), trimmed, sr, subtype="PCM_16")
+            cos_r, cos_t, note, vreasons = voice_gate.check(tmp_path, ref)
+            res.cos_ref = round(cos_r, 4)
+            res.cos_teacher = round(cos_t, 4) if cos_t is not None else None
+            res.voice_teacher_match = note or ""
+            res.reasons.extend(vreasons)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
     if any(
         _is_hard_reason(
             r, trim_only=trim_only, wer_quarantine_threshold=wer_quarantine_threshold,
@@ -528,6 +638,9 @@ def apply_result(
     if not apply:
         return
 
+    if res.action == "stt_pending":
+        return
+
     if res.action == "quarantine":
         if quarantine_dir is not None:
             dest = quarantine_dir / wav_path.name
@@ -548,13 +661,15 @@ def apply_result(
         if not in_place:
             shutil.copy2(wav_path, target)
         res.out_path = str(target)
-        return
+    else:
+        if backup and in_place and not Path(str(wav_path) + ".bak").exists():
+            shutil.copy2(wav_path, str(wav_path) + ".bak")
+        sf.write(str(target), trimmed, sr, subtype="PCM_16")
+        res.out_path = str(target)
 
-    if backup and in_place and not Path(str(wav_path) + ".bak").exists():
-        shutil.copy2(wav_path, str(wav_path) + ".bak")
-
-    sf.write(str(target), trimmed, sr, subtype="PCM_16")
-    res.out_path = str(target)
+    if quarantine_dir is not None:
+        stale = quarantine_dir / wav_path.name
+        stale.unlink(missing_ok=True)
 
 
 def render_html(summary: dict, results: list[ClipResult], out_path: Path) -> None:
@@ -581,8 +696,17 @@ def render_html(summary: dict, results: list[ClipResult], out_path: Path) -> Non
         for reason in r.reasons:
             reason_counts[reason.split(":")[0]] += 1
 
+    voice_low = [r for r in results if any(
+        x.startswith("low_cos_ref") or x.startswith("low_cos_teacher") for x in r.reasons
+    )]
+    cos_refs = [r.cos_ref for r in results if r.cos_ref is not None]
+    cos_tchrs = [r.cos_teacher for r in results if r.cos_teacher is not None]
+
     rows_q = "\n".join(
-        f"<tr><td>{r.wav}</td><td>{r.orig_duration_s:.2f}</td><td>{r.wer if r.wer is not None else '—'}</td>"
+        f"<tr><td>{r.wav}</td><td>{r.orig_duration_s:.2f}</td>"
+        f"<td>{r.cos_ref if r.cos_ref is not None else '—'}</td>"
+        f"<td>{r.cos_teacher if r.cos_teacher is not None else '—'}</td>"
+        f"<td>{r.wer if r.wer is not None else '—'}</td>"
         f"<td>{', '.join(r.reasons)}</td><td>{r.hyp_text[:80]!r}</td></tr>"
         for r in quarantine_samples
     )
@@ -642,10 +766,15 @@ def render_html(summary: dict, results: list[ClipResult], out_path: Path) -> Non
     <div class="card"><span class="muted">Pass</span><b>{by_action.get('pass', 0)}</b></div>
     <div class="card"><span class="muted">Trimmed</span><b>{by_action.get('trim', 0)}</b></div>
     <div class="card"><span class="muted">Quarantine</span><b>{by_action.get('quarantine', 0)}</b></div>
+    <div class="card"><span class="muted">STT pending</span><b>{by_action.get('stt_pending', 0)}</b></div>
     <div class="card"><span class="muted">WER median</span><b>{pct(wer_vals, 50):.2f}</b></div>
     <div class="card"><span class="muted">Tail cut median</span><b>{pct(trim_vals, 50):.2f}s</b></div>
     <div class="card"><span class="muted">WAV outliers</span><b>{n_wav_flagged}</b></div>
+    <div class="card"><span class="muted">Voice QC fail</span><b>{len(voice_low)}</b></div>
+    <div class="card"><span class="muted">cos(ref) med</span><b>{pct(cos_refs, 50) if cos_refs else 0:.3f}</b></div>
+    <div class="card"><span class="muted">cos(tchr) med</span><b>{pct(cos_tchrs, 50) if cos_tchrs else 0:.3f}</b></div>
   </div>
+  <p class="muted">Voice floor: cos(ref) and cos(teacher) ≥ {summary.get('config', {}).get('min_cos_ref', 0.5)} (quarantine below).</p>
 
   <h2>Corpus waveform norms (robust median / MAD)</h2>
   <p class="muted">Clips that look like speech build the baseline; per-feature robust-z &gt; {summary.get('config', {}).get('wav_z_threshold', 3.5)} flags outliers.</p>
@@ -666,7 +795,7 @@ def render_html(summary: dict, results: list[ClipResult], out_path: Path) -> Non
 
   <h2>Quarantine samples (first 40)</h2>
   <table>
-    <tr><th>WAV</th><th>Dur (s)</th><th>WER</th><th>Reasons</th><th>STT (snippet)</th></tr>
+    <tr><th>WAV</th><th>Dur (s)</th><th>cos(ref)</th><th>cos(tchr)</th><th>WER</th><th>Reasons</th><th>STT (snippet)</th></tr>
     {rows_q or '<tr><td colspan="5">None</td></tr>'}
   </table>
 
@@ -699,7 +828,29 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--stt-api", default=STT_API)
     parser.add_argument("--stt-model", default=STT_MODEL)
-    parser.add_argument("--local-whisper-fallback", action="store_true", default=True)
+    parser.add_argument(
+        "--local-whisper-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Fallback to local openai-whisper (often broken on long clips; default off)",
+    )
+    parser.add_argument(
+        "--stt-max-retries",
+        type=int,
+        default=int(os.environ.get("STT_MAX_RETRIES", "5")),
+        help="Retry transient STT API errors before marking failure",
+    )
+    parser.add_argument(
+        "--defer-stt-fail",
+        action="store_true",
+        help="On STT failure after retries, mark stt_pending (not quarantine) for later mop-up",
+    )
+    parser.add_argument(
+        "--retry-stt-from-manifest",
+        type=Path,
+        default=None,
+        help="Only process WAVs flagged stt_failed in a prior prune_manifest.jsonl",
+    )
     parser.add_argument(
         "--end-buffer-ms",
         type=int,
@@ -737,7 +888,79 @@ def main() -> int:
         help="With --trim-only: quarantine only when WER exceeds this (e.g. 0.75). "
         "No wav-outlier quarantine.",
     )
+    parser.add_argument(
+        "--quarantine-cutoff",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Quarantine clips with missing tail words / likely last-word cutoff (default on)",
+    )
+    parser.add_argument(
+        "--tail-gap-fail-s",
+        type=float,
+        default=float(os.environ.get("QC_TAIL_GAP_FAIL_S", "0.30")),
+        help="Audio ends within this many seconds of STT last word + mismatch → likely_cutoff",
+    )
+    parser.add_argument(
+        "--min-missing-tail-words",
+        type=int,
+        default=int(os.environ.get("QC_MIN_MISSING_TAIL_WORDS", "2")),
+        help="Quarantine when STT hyp is this many words shorter than reference",
+    )
+    parser.add_argument(
+        "--voice-qc",
+        action="store_true",
+        help="ECAPA cos(ref) vs enrollment + cos(teacher) vs matched/pr prototype pool",
+    )
+    parser.add_argument(
+        "--no-voice-qc",
+        action="store_true",
+        help="Disable voice QC even if --voice-qc was set via env default",
+    )
+    parser.add_argument(
+        "--ref-wav",
+        type=Path,
+        default=ROOT / "data/voices/loli/loli_15s.wav",
+        help="Enrollment reference for cos(ref)",
+    )
+    parser.add_argument(
+        "--teacher-train-raw",
+        type=Path,
+        default=ROOT / "training/loli_15s/train_raw.jsonl",
+        help="train_raw for text-matched cos(teacher)",
+    )
+    parser.add_argument(
+        "--teacher-pool",
+        type=Path,
+        default=ROOT / "training/loli_15s/wavs/v15_pruned",
+        help="Directory of accepted teacher WAVs for matching / prototype",
+    )
+    parser.add_argument(
+        "--min-cos-ref",
+        type=float,
+        default=float(os.environ.get("MIN_COS_REF", "0.5")),
+        help="Quarantine when cos(ref) below this (default 0.5)",
+    )
+    parser.add_argument(
+        "--min-cos-teacher",
+        type=float,
+        default=float(os.environ.get("MIN_COS_TEACHER", "0.5")),
+        help="Quarantine when cos(teacher) below this (default 0.5)",
+    )
+    parser.add_argument(
+        "--voice-qc-device",
+        default=os.environ.get("VOICE_QC_DEVICE", ""),
+        help="ECAPA device (default cuda:0 or cpu)",
+    )
+    parser.add_argument(
+        "--voice-qc-cache",
+        type=Path,
+        default=ROOT / "training/loli_15s/.cache/ecapa",
+    )
     args = parser.parse_args()
+    if args.no_voice_qc:
+        args.voice_qc = False
+    elif os.environ.get("VOICE_QC", "").strip() in ("1", "true", "yes"):
+        args.voice_qc = True
 
     wav_dir = args.wav_dir
     if not wav_dir.is_dir():
@@ -747,13 +970,28 @@ def main() -> int:
     if args.apply and not args.in_place and out_dir is None:
         out_dir = args.root / "training/loli_15s/wavs/v15_pruned"
     quarantine_dir = args.quarantine_dir
-    if args.trim_only and args.wer_quarantine_threshold is None:
+    if (
+        args.trim_only
+        and args.wer_quarantine_threshold is None
+        and not args.voice_qc
+        and not args.quarantine_cutoff
+    ):
         quarantine_dir = None
     elif args.apply and quarantine_dir is None:
         quarantine_dir = args.root / "training/loli_15s/wavs/v15_quarantine"
 
     index = build_wav_index(args.corpus, args.train_ids)
     wavs = sorted(wav_dir.glob("*.wav"))
+    if args.retry_stt_from_manifest and args.retry_stt_from_manifest.is_file():
+        retry_names: set[str] = set()
+        for line in args.retry_stt_from_manifest.read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if any(str(r).startswith("stt_failed") for r in row.get("reasons") or []):
+                retry_names.add(row["wav"])
+        wavs = [p for p in wavs if p.name in retry_names]
+        print(f"Retry STT failures only: {len(wavs)} WAVs from {args.retry_stt_from_manifest}", flush=True)
     if args.limit:
         wavs = wavs[: args.limit]
 
@@ -772,11 +1010,55 @@ def main() -> int:
         x, sr = load_audio_mono(path)
         return path.name, extract_waveform_features(x, sr)
 
+    voice_gate = None
+    if args.voice_qc:
+        from voice_ecapa_qc import (  # noqa: E402
+            VoiceQcGate,
+            build_teacher_index,
+            default_device,
+        )
+
+        ref_wav = args.ref_wav if args.ref_wav.is_absolute() else args.root / args.ref_wav
+        if not ref_wav.is_file():
+            raise SystemExit(f"Missing --ref-wav: {ref_wav}")
+        train_raw = (
+            args.teacher_train_raw
+            if args.teacher_train_raw.is_absolute()
+            else args.root / args.teacher_train_raw
+        )
+        teacher_root = (
+            args.teacher_pool
+            if args.teacher_pool.is_absolute()
+            else args.root / args.teacher_pool
+        )
+        teacher_index = build_teacher_index(train_raw, teacher_root, root=args.root)
+        device = args.voice_qc_device or default_device()
+        print(
+            f"Voice QC: ECAPA on {device}, cos(ref)>={args.min_cos_ref}, "
+            f"cos(teacher)>={args.min_cos_teacher}, pool={len(teacher_index)} teachers",
+            flush=True,
+        )
+        voice_gate = VoiceQcGate(
+            ref_wav=ref_wav,
+            teacher_index=teacher_index,
+            device=device,
+            cache_dir=args.voice_qc_cache,
+            min_cos_ref=args.min_cos_ref,
+            min_cos_teacher=args.min_cos_teacher,
+        )
+
     wav_profile: NormProfile | None = None
     if args.trim_only:
         msg = "Trim-only: STT tail trim"
         if args.wer_quarantine_threshold is not None:
             msg += f", quarantine WER>{args.wer_quarantine_threshold}"
+        if args.voice_qc:
+            msg += f", voice cos(ref/tchr)>={args.min_cos_ref}"
+        if args.quarantine_cutoff:
+            msg += (
+                f", quarantine cutoff (tail_gap<{args.tail_gap_fail_s}s, "
+                f"missing_words>={args.min_missing_tail_words})"
+            )
         print(msg, flush=True)
     else:
         print("Phase 1: waveform features + corpus norms...", flush=True)
@@ -801,7 +1083,9 @@ def main() -> int:
     t0 = time.time()
 
     def work(path: Path) -> tuple[ClipResult, np.ndarray, int]:
-        meta = index.get(path.name, {"text": "", "corpus_id": path.stem})
+        meta = index.get(path.name)
+        if meta is None:
+            meta = {"text": "", "corpus_id": corpus_id_from_wav_name(path.name)}
         return evaluate_clip(
             path,
             meta,
@@ -824,6 +1108,12 @@ def main() -> int:
             wav_only=args.wav_only,
             trim_only=args.trim_only,
             wer_quarantine_threshold=args.wer_quarantine_threshold,
+            voice_gate=voice_gate,
+            quarantine_cutoff=args.quarantine_cutoff,
+            tail_gap_fail_s=args.tail_gap_fail_s,
+            min_missing_tail_words=args.min_missing_tail_words,
+            defer_stt_fail=args.defer_stt_fail,
+            stt_max_retries=args.stt_max_retries,
         )
 
     if args.workers <= 1:
@@ -878,6 +1168,14 @@ def main() -> int:
             "wav_only": args.wav_only,
             "trim_only": args.trim_only,
             "wer_quarantine_threshold": args.wer_quarantine_threshold,
+            "voice_qc": args.voice_qc,
+            "min_cos_ref": args.min_cos_ref,
+            "min_cos_teacher": args.min_cos_teacher,
+            "ref_wav": str(args.ref_wav),
+            "teacher_pool": str(args.teacher_pool),
+            "quarantine_cutoff": args.quarantine_cutoff,
+            "tail_gap_fail_s": args.tail_gap_fail_s,
+            "min_missing_tail_words": args.min_missing_tail_words,
         },
     }
 
@@ -900,6 +1198,10 @@ def main() -> int:
     pass_list.write_text("\n".join(r.wav for r in results if r.action == "pass") + "\n")
     trim_list.write_text("\n".join(r.wav for r in results if r.action == "trim") + "\n")
     quarantine_list.write_text("\n".join(r.wav for r in results if r.action == "quarantine") + "\n")
+    stt_pending_list = args.qc_dir / "stt_pending_wavs.txt"
+    stt_pending_list.write_text(
+        "\n".join(r.wav for r in results if r.action == "stt_pending") + "\n"
+    )
 
     print(json.dumps(summary, indent=2), flush=True)
     print(f"Report: {html_path}", flush=True)

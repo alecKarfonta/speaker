@@ -1,6 +1,6 @@
 # loli15s epoch-7 production serve (TTFA-first)
 
-Native-voice MOSS-TTS-Realtime finetuned on 5,133 QC-clean single-turn rows.  
+Native-voice MOSS-TTS-Realtime finetuned on **8,902** QC-clean single-turn rows (~18.9h, 2,101 emotion).  
 **Do not use openmoss GGUF for inference** — that stack is teacher-gen only.
 
 ## Recommended production config
@@ -10,8 +10,28 @@ export MOSS_RT_GPU=0                    # dedicated GPU; avoid sharing
 export MOSS_RT_PORT=8016
 export MOSS_RT_MODEL_ID=/path/to/speaker/training/loli_15s/exports/loli15s-epoch7-merged
 export MOSS_RT_NATIVE_VOICE=true
+# Decode defaults (warm_092_072 — omit on /tts/stream to use these)
+export MOSS_RT_AUDIO_TEMPERATURE=0.92
+export MOSS_RT_AUDIO_TOP_P=0.72
+export MOSS_RT_AUDIO_TOP_K=40
+export MOSS_RT_AUDIO_REPETITION_PENALTY=1.05
 ./scripts/start-moss-realtime.sh
 ```
+
+Production v2 voice: `exports/loli15s-v2-merged` (8-epoch full SFT on merged 8.9k corpus).
+
+## Audio sampling (warm_092)
+
+When the client does not pass `audio_temperature` / `audio_top_p` / `audio_top_k`, the server uses:
+
+| Param | Value |
+|-------|------:|
+| `audio_temperature` | 0.92 |
+| `audio_top_p` | 0.72 |
+| `audio_top_k` | 40 |
+| `audio_repetition_penalty` | 1.05 |
+
+These are set in `scripts/start-moss-realtime.sh` and [`app/moss_api.py`](../../app/moss_api.py). Lower temps (0.8/0.6) sound flatter on the LoRA; avoid unless A/B testing.
 
 Merged weights are exported from `checkpoint-epoch-7`:
 
@@ -93,3 +113,19 @@ Generate varied eval clips:
 MOSS_RT_API=http://127.0.0.1:8016 \
   python training/loli_15s/scripts/generate_eval_samples.py
 ```
+
+## v2 streaming cutoff audit
+
+After serving epoch-7 or v2 merged weights with warm_092:
+
+```bash
+MOSS_RT_API=http://127.0.0.1:8016 \
+  python training/loli_15s/scripts/verify_streaming_stack.py
+
+# A/B epoch-7 vs v2 (second server on another port)
+COMPARE_API=http://127.0.0.1:8017 \
+  MOSS_RT_MODEL_ID=training/loli_15s/exports/loli15s-v2-merged \
+  training/loli_15s/scripts/run_eval_v2.sh
+```
+
+Reports land in `training/loli_15s/eval/bench/verify_streaming_*.json` with `last_word_match_rate` and `likely_cutoff` flags.

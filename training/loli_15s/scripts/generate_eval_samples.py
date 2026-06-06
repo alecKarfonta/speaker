@@ -218,8 +218,27 @@ def main() -> int:
         help="variety=length/tone mix; emotion=training-style cue prefixes",
     )
     p.add_argument("--wait-health", type=int, default=0, help="Seconds to poll /health before giving up")
+    p.add_argument(
+        "--quick-ab",
+        action="store_true",
+        help="Emotion preset only: 8 clips for fast v1/v2 comparison",
+    )
     args = p.parse_args()
     samples = EMOTION_SAMPLES if args.preset == "emotion" else SAMPLES
+    if args.quick_ab:
+        if args.preset != "emotion":
+            raise SystemExit("--quick-ab requires --preset emotion")
+        keep = {
+            "01_excited_wait.wav",
+            "02_curious_tell_me.wav",
+            "03_gentle_softly.wav",
+            "05_cozy_quietly.wav",
+            "07_excited_huge.wav",
+            "12_playful_look.wav",
+            "13_story_market.wav",
+            "14_we_did_it.wav",
+        }
+        samples = [s for s in EMOTION_SAMPLES if s[0] in keep]
     if args.preset == "emotion" and args.out == DEFAULT_OUT:
         args.out = TRAIN_DIR / "eval" / "listen" / "epoch7_emotion_cues"
     api = args.api_url.rstrip("/")
