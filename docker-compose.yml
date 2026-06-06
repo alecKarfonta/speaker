@@ -164,8 +164,8 @@ services:
       openmoss-tts:
         condition: service_healthy
     environment:
-      - MOSS_BATCH_ENGINE=openmoss
-      - OPENMOSS_TTS_URL=http://openmoss-tts:8000
+      - MOSS_BATCH_ENGINE=${MOSS_BATCH_ENGINE}
+      - OPENMOSS_TTS_URL=${OPENMOSS_TTS_URL}
       - MOSS_ENABLE_MAIN_MODEL=${MOSS_ENABLE_MAIN_MODEL:-false}
       - MOSS_MODEL_ID=${MOSS_MODEL_ID:-OpenMOSS-Team/MOSS-TTS-v1.5}
       - MOSS_ENABLE_VOICE_GEN=false
@@ -185,7 +185,7 @@ services:
       - MOSS_RT_MIN_SAMPLES_STEADY_MS=${MOSS_RT_MIN_SAMPLES_STEADY_MS:-80}
       - MOSS_RT_DECODER_CHUNK_FRAMES=${MOSS_RT_DECODER_CHUNK_FRAMES:-24}
       - MOSS_RT_CODEC_ID=OpenMOSS-Team/MOSS-Audio-Tokenizer
-      - MOSS_RT_DEVICES=0
+      - MOSS_RT_DEVICES=${MOSS_RT_DEVICES:-0}
       - MOSS_QUANTIZE=${MOSS_QUANTIZE:-4bit}
       - VOICES_DIR=/app/data/voices
       - HF_HOME=/root/.cache/huggingface
@@ -194,14 +194,58 @@ services:
       - ./app:/app/app
       - ./data/voices:/app/data/voices
       - ./models/loli15s-v2-noref-max-lora:/models/loli15s-v2-noref-max-lora:ro
+      - ./models/loli15s-epoch7-merged:/models/loli15s-epoch7-merged:ro
       - ./models/moss-audio-tokenizer-onnx:/app/training/weights/MOSS-Audio-Tokenizer-ONNX:ro
       - moss_hf_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${MOSS_RT_GPU_ID:-1}"]
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 300s
+    networks:
+      - tts-network
+
+  # ── moss-sfx profile: MOSS-SoundEffect v2.0 text-to-audio (see .env.moss-sfx) ──
+  moss-sfx:
+    profiles: [moss-sfx]
+    build:
+      context: .
+      dockerfile: Dockerfile.moss-sfx
+    ports:
+      - "8017:8000"
+    environment:
+      - MOSS_SFX_MODEL_ID=${MOSS_SFX_MODEL_ID:-OpenMOSS-Team/MOSS-SoundEffect-v2.0}
+      - MOSS_SFX_DEVICE=cuda
+      - MOSS_SFX_MAX_SECONDS=${MOSS_SFX_MAX_SECONDS:-30}
+      - TORCHDYNAMO_DISABLE=${TORCHDYNAMO_DISABLE:-1}
+      - TORCHINDUCTOR_DISABLE_CUDAGRAPHS=1
+      - MOSS_SFX_TORCH_DTYPE=${MOSS_SFX_TORCH_DTYPE:-float32}
+      - HF_HOME=/root/.cache/huggingface
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - ./app/sfx_api.py:/app/app/sfx_api.py:ro
+      - moss_sfx_hf_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${MOSS_SFX_GPU_ID:-3}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
     networks:
       - tts-network
 
@@ -218,6 +262,8 @@ services:
       - TTS_BACKEND_HOST=tts-api:8000
       # Audiobook API lives on tts-api (separated from TTS engine)
       - AUDIOBOOK_BACKEND_HOST=tts-api:8000
+      # MOSS-SoundEffect v2 (moss-sfx profile, port 8017 on host)
+      - SFX_BACKEND_HOST=moss-sfx:8000
     depends_on:
       - tts-api
     networks:
@@ -282,6 +328,7 @@ services:
       - OPENMOSS_HF_REPO=local
       - OPENMOSS_MODEL=/app/weights/moss-tts-v1.5-q8_0.gguf
       - OPENMOSS_MAIN_GPU=0
+      - OPENMOSS_AUX_CPU=${OPENMOSS_AUX_CPU:-true}
       - MOSS_MODEL_ID=OpenMOSS-Team/MOSS-TTS-v1.5
       - GGML_CUDA_FA_ALL_QUANTS=1
       - VOICES_DIR=/app/data/voices
@@ -295,7 +342,8 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["1"]
+              # Host GPU index: 0 = RTX 5070 Ti (default), 1/2 = 5060 Ti
+              device_ids: ["${OPENMOSS_GPU_ID:-0}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -310,6 +358,7 @@ volumes:
   prometheus_data:
   grafana_data:
   moss_hf_cache:
+  moss_sfx_hf_cache:
   openmoss_local_weights:
     external: true
 

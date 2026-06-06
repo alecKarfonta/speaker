@@ -10,7 +10,8 @@ export default defineConfig({
       '/tts': process.env.VITE_TTS_BACKEND || 'http://localhost:8016',
       '/voices': process.env.VITE_TTS_BACKEND || 'http://localhost:8016',
       '/health': process.env.VITE_TTS_BACKEND || 'http://localhost:8016',
-      '/api/v1/qwen': process.env.VITE_TTS_BACKEND || 'http://localhost:8013'
+      '/api/v1/qwen': process.env.VITE_TTS_BACKEND || 'http://localhost:8013',
+      '/sfx': process.env.VITE_SFX_BACKEND || 'http://localhost:8017',
     }
   },
   build: {

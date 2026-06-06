@@ -12,7 +12,8 @@ import {
   Sparkles,
   Zap,
   BookOpen,
-  Wand2
+  Wand2,
+  Volume2,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useTTSStore } from '../../stores/ttsStore';
@@ -29,6 +30,7 @@ const navItems: NavItem[] = [
   { path: '/audiobook', label: 'Audiobook', icon: BookOpen, gradient: 'from-amber-500 to-orange-500' },
   { path: '/studio', label: 'Voice Studio', icon: Wand2, gradient: 'from-cyan-500 to-blue-500' },
   { path: '/stream', label: 'Live Stream', icon: Radio, gradient: 'from-emerald-500 to-teal-500' },
+  { path: '/sound-effects', label: 'Sound Effects', icon: Volume2, gradient: 'from-rose-500 to-orange-500' },
   { path: '/voices', label: 'Voice Library', icon: Users, gradient: 'from-orange-500 to-pink-500' },
 ];
 

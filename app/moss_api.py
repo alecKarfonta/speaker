@@ -86,6 +86,8 @@ QUANTIZE = os.environ.get("MOSS_QUANTIZE", "4bit")  # "4bit", "8bit", or "none"
 def _openmoss_batch_url() -> Optional[str]:
     """Remote openmoss shim for batch /tts (C++ GGML)."""
     url = os.environ.get("OPENMOSS_TTS_URL", "").strip().rstrip("/")
+    if url.lower() in ("", "none", "disabled", "false", "0"):
+        url = ""
     if url:
         return url
     if os.environ.get("MOSS_BATCH_ENGINE", "").lower() == "openmoss":
@@ -1096,6 +1098,10 @@ class HealthResponse(BaseModel):
     streaming_mode: Optional[str] = None
     streaming_enabled: Optional[bool] = None
     realtime_enabled: Optional[bool] = None
+    # Present when batch /tts proxies to openmoss (device above is this Python process).
+    batch_engine: Optional[str] = None
+    inference_device: Optional[str] = None
+    openmoss_engine: Optional[str] = None
 
 
 class VoiceInfo(BaseModel):
@@ -1438,6 +1444,25 @@ async def health_check():
     else:
         stream_mode = "disabled"
 
+    batch_engine = None
+    inference_device = None
+    openmoss_engine = None
+    if _openmoss_batch_url() and model is None and not rt_workers:
+        batch_engine = "openmoss"
+        inference_device = "cuda"
+        openmoss_engine = "openmoss-ggml"
+    elif ENABLE_REALTIME and rt_workers and model is None:
+        batch_engine = "realtime"
+        inference_device = DEVICE if DEVICE == "cuda" else "cuda"
+        try:
+            r = requests.get(f"{_openmoss_batch_url()}/health", timeout=3)
+            if r.ok:
+                om = r.json()
+                inference_device = om.get("device", "cuda")
+                openmoss_engine = om.get("engine", "openmoss-ggml")
+        except Exception:
+            pass
+
     response = HealthResponse(
         status="ready" if is_ready else "loading",
         model_id=active_model,
@@ -1448,6 +1473,9 @@ async def health_check():
         streaming_mode=stream_mode,
         streaming_enabled=ENABLE_STREAMING,
         realtime_enabled=ENABLE_REALTIME and bool(rt_workers),
+        batch_engine=batch_engine,
+        inference_device=inference_device,
+        openmoss_engine=openmoss_engine,
     )
     response_dict = response.model_dump()
     if rt_workers:

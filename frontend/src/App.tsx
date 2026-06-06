@@ -5,6 +5,7 @@ import TTSWorkspace from './components/tts/TTSWorkspace';
 import VoiceLibrary from './components/voices/VoiceLibrary';
 import AudiobookGenerator from './components/audiobook/AudiobookGenerator';
 import VoiceStudio from './components/studio/VoiceStudio';
+import SoundEffectsPage from './components/sfx/SoundEffectsPage';
 
 // Placeholder components for other routes
 const LiveStream: React.FC = () => (
@@ -28,6 +29,7 @@ function App() {
         <Route path="/studio" element={<VoiceStudio />} />
         <Route path="/stream" element={<LiveStream />} />
         <Route path="/voices" element={<VoiceLibrary />} />
+        <Route path="/sound-effects" element={<SoundEffectsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Routes>
 

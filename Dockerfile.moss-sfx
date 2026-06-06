@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1.4
+# MOSS-SoundEffect v2 — isolated env (not compatible with main MOSS-TTS stack)
+#
+# Build:  docker compose --profile moss-sfx build moss-sfx
+# Run:    docker compose --env-file .env.moss-sfx up -d moss-sfx
+
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV TORCHDYNAMO_DISABLE=1
+
+RUN apt-get update && apt-get install -y \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    curl \
+    git \
+    git-lfs \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python
+
+WORKDIR /app
+
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip setuptools wheel
+
+RUN git clone --depth 1 https://github.com/OpenMOSS/MOSS-TTS.git /app/MOSS-TTS
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    cd /app/MOSS-TTS/moss_soundeffect_v2 && \
+    pip install --extra-index-url https://download.pytorch.org/whl/cu128 \
+        -e ".[torch-cu128]" && \
+    pip install fastapi uvicorn python-multipart
+
+# torch.compile + Triton CUDA graphs produce garbage audio on Blackwell GPUs.
+RUN python3 -c "\
+from pathlib import Path; \
+p = Path('/app/MOSS-TTS/moss_soundeffect_v2/diffsynth/pipelines/wan_audio.py'); \
+t = p.read_text(); \
+t = t.replace('@torch.compile(options={\"triton.cudagraphs\": True}, fullgraph=True)\n', '# compile disabled\n'); \
+t = t.replace('torch.compiler.cudagraph_mark_step_begin()', '# cudagraph disabled'); \
+p.write_text(t); \
+p = Path('/app/MOSS-TTS/moss_soundeffect_v2/pipeline_moss_soundeffect.py'); \
+t = p.read_text(); \
+t = t.replace('import torch', 'import contextlib\nimport torch', 1); \
+t = t.replace('with torch.autocast(device_type, dtype=torch.bfloat16):', 'with contextlib.nullcontext():'); \
+p.write_text(t)"
+
+RUN python3 -c "import torch; from moss_soundeffect_v2 import MossSoundEffectPipeline; print('OK', torch.__version__)"
+
+COPY app/sfx_api.py /app/app/sfx_api.py
+COPY app/__init__.py /app/app/__init__.py
+
+RUN mkdir -p /app/output
+
+ENV PYTHONPATH=/app:/app/MOSS-TTS
+ENV MOSS_SFX_MODEL_ID=OpenMOSS-Team/MOSS-SoundEffect-v2.0
+ENV MOSS_SFX_TORCH_DTYPE=float32
+ENV HF_HOME=/root/.cache/huggingface
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=600s --retries=5 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+ENTRYPOINT []
+CMD ["python3", "-m", "app.sfx_api"]

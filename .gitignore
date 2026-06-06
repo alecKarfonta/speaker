@@ -200,6 +200,8 @@ training/major_03/stt_verify_results.json
 third_party/MOSS-TTS/
 .venv-finetune/
 .env.moss-realtime
+.env.moss-sfx
+.env.moss-rt-loli
 training/weights/
 openmoss/
 
