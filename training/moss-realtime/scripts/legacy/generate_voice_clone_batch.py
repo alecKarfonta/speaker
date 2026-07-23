@@ -131,6 +131,55 @@ def openmoss_token_budget(text: str, reference_wav: Path | None) -> tuple[int, i
     return tokens, max_new
 
 
+DOCKER_CONTAINER_BY_PORT: dict[int, str] = {
+    8014: "speaker-openmoss-tts-1",
+    8015: "speaker-openmoss-tts-0-1",
+    8017: "speaker-openmoss-tts-1-1",
+}
+
+
+def docker_container_for_api(api: str) -> str | None:
+    """Map host openmoss shim port → docker container for raw :8081 API."""
+    override = os.environ.get("OPENMOSS_DOCKER_CONTAINER")
+    if override:
+        return override
+    return DOCKER_CONTAINER_BY_PORT.get(port_from_api(api))
+
+
+def generate_openmoss_docker(
+    container: str,
+    payload: dict,
+    out: Path,
+) -> tuple[bool, str]:
+    """POST JSON to raw moss-tts-server (:8081) inside a docker container."""
+    script = """
+import json, sys, urllib.request
+payload = json.loads(sys.stdin.read())
+req = urllib.request.Request(
+    "http://127.0.0.1:8081/tts",
+    data=json.dumps(payload).encode(),
+    headers={"Content-Type": "application/json"},
+)
+resp = urllib.request.urlopen(req, timeout=600)
+sys.stdout.buffer.write(resp.read())
+"""
+    proc = subprocess.run(
+        ["docker", "exec", "-i", container, "python3", "-c", script],
+        input=json.dumps(payload).encode(),
+        capture_output=True,
+        timeout=600,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.decode(errors="ignore")[:200]
+        return False, detail or "docker raw openmoss failed"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(proc.stdout)
+    if out.stat().st_size < 1024:
+        out.unlink(missing_ok=True)
+        return False, "output too small"
+    return True, "raw ok"
+
+
 def http_session_for_api(api: str) -> requests.Session:
     base = api.rsplit("/", 1)[0]
     if base not in _http_sessions:
@@ -266,17 +315,23 @@ def generate_openmoss(
     instruction: str | None = None,
     sampling: dict | None = None,
 ) -> tuple[bool, str]:
-    """Synthesize via openmoss JSON /tts API."""
+    """Synthesize via openmoss JSON /tts API (raw server, not Speaker shim)."""
     payload: dict = {
         "text": text,
         "language": "en",
-        "tokens": int(tokens),
-        "max_new_tokens": int(max_new),
+        "max_new_tokens": max(256, int(max_new)),
         "sampling": _merge_sampling(sampling),
         "reference_wav_b64": reference_wav_b64(ref),
     }
+    if os.environ.get("OPENMOSS_NO_TOKENS", "").lower() not in ("1", "true", "yes"):
+        payload["tokens"] = int(tokens)
     if instruction:
         payload["instruction"] = instruction
+
+    container = docker_container_for_api(api)
+    if container:
+        return generate_openmoss_docker(container, payload, out)
+
     try:
         session = http_session_for_api(api)
         resp = session.post(api, json=payload, timeout=600)

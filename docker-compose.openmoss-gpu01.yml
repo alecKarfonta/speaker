@@ -1,0 +1,76 @@
+# openmoss q8_0 on host GPUs 0 and 1.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.openmoss-gpu01.yml up -d openmoss-tts-0 openmoss-tts-1
+
+services:
+  openmoss-tts-0:
+    build:
+      context: .
+      dockerfile: Dockerfile.openmoss
+    image: speaker-openmoss-tts:latest
+    ports:
+      - "8015:8000"
+    environment:
+      - OPENMOSS_HF_REPO=local
+      - OPENMOSS_MODEL=/app/weights/moss-tts-v1.5-q8_0.gguf
+      - OPENMOSS_MAIN_GPU=0
+      - OPENMOSS_AUX_CPU=${OPENMOSS_AUX_CPU:-true}
+      - MOSS_MODEL_ID=OpenMOSS-Team/MOSS-TTS-v1.5
+      - GGML_CUDA_FA_ALL_QUANTS=1
+      - VOICES_DIR=/app/data/voices
+    volumes:
+      - openmoss_local_weights:/app/weights
+      - ./data/voices:/app/data/voices:ro
+      - ./app/openmoss_shim.py:/app/app/openmoss_shim.py:ro
+      - ./app/moss_glm_compat.py:/app/app/moss_glm_compat.py:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - tts-network
+
+  openmoss-tts-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.openmoss
+    image: speaker-openmoss-tts:latest
+    ports:
+      - "8017:8000"
+    environment:
+      - OPENMOSS_HF_REPO=local
+      - OPENMOSS_MODEL=/app/weights/moss-tts-v1.5-q8_0.gguf
+      - OPENMOSS_MAIN_GPU=0
+      - OPENMOSS_AUX_CPU=${OPENMOSS_AUX_CPU:-true}
+      - MOSS_MODEL_ID=OpenMOSS-Team/MOSS-TTS-v1.5
+      - GGML_CUDA_FA_ALL_QUANTS=1
+      - VOICES_DIR=/app/data/voices
+    volumes:
+      - openmoss_local_weights:/app/weights
+      - ./data/voices:/app/data/voices:ro
+      - ./app/openmoss_shim.py:/app/app/openmoss_shim.py:ro
+      - ./app/moss_glm_compat.py:/app/app/moss_glm_compat.py:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - tts-network

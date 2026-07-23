@@ -1,0 +1,13 @@
+# openmoss q8_0 on host GPU 3.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.openmoss-gpu3.yml up -d openmoss-tts moss-tts
+
+services:
+  openmoss-tts:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]

@@ -140,6 +140,9 @@ def synthesize_teacher(
     instruction, sampling = synth_opts(
         teacher, text, meta, instruction_for_style, sampling_for_style,
     )
+    # Voice-clone teacher: reference WAV defines the voice. Style instructions
+    # leak into synthesized audio (spoken tail garbage, trained into finetune).
+    instruction = None
     if use_cli:
         return generate_openmoss_cli(ref, text, out, tokens, max_new, instruction=instruction)
     return generate_openmoss(
