@@ -7,13 +7,13 @@ import {
     Volume2, Mic, Zap, AlertCircle, Loader2, FileText, Music,
     Sparkles, Settings2, Square, Radio, Wifi, WifiOff, Clock,
     Hash, Headphones, Layers, Image, Film, Sliders, Timer,
-    Package, Palette, Maximize2,
+    Package, Palette, Maximize2, Heart,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import Layout from '../layout/Layout';
 import { useAudiobookStore } from '../../stores/audiobookStore';
 import { useGenerationSocket } from '../../hooks/useGenerationSocket';
-import { getSegmentAudioUrl, getSegmentVisualUrl, getChapterExportUrl, getFullExportUrl, getVideoUrl, getDownloadAllUrl, setVideoFillMode, getPortraitUrl, getVisualAssetFileUrl, getVisualCandidateUrl } from '../../services/audiobookApi';
+import { getSegmentAudioUrl, getSegmentVisualUrl, getChapterExportUrl, getFullExportUrl, getVideoUrl, getDownloadAllUrl, setVideoFillMode, getPortraitUrl, getVisualAssetFileUrl, getVisualCandidateUrl, MOSS_EMOTION_TAGS } from '../../services/audiobookApi';
 import type { SegmentResponse, ChapterResponse, VisualParams, VisualAsset } from '../../services/audiobookApi';
 import CharacterProfileModal from './CharacterProfileModal';
 import VisualPlayer from './VisualPlayer';
@@ -397,10 +397,12 @@ const SegmentRow: React.FC<{
     voices: string[];
     index: number;
 }> = ({ segment, projectId, voices, index }) => {
-    const { generateSegment, updateSegment, splitSegment, mergeSegment, generating, playingSegmentId, setPlayingSegment } = useAudiobookStore();
+    const { generateSegment, updateSegment, splitSegment, mergeSegment, generating, playingSegmentId, setPlayingSegment, annotateSegmentEmotion } = useAudiobookStore();
     const [editing, setEditing] = useState(false);
     const [editText, setEditText] = useState(segment.text);
     const [editVoice, setEditVoice] = useState(segment.voice_name || '');
+    const [editEmotion, setEditEmotion] = useState(segment.emotion || '');
+    const [annotatingEmotion, setAnnotatingEmotion] = useState(false);
     const audioRef = useRef<HTMLAudioElement>(null);
     const isGenerating = generating.has(segment.id);
     const isPlaying = playingSegmentId === segment.id;
@@ -434,14 +436,29 @@ const SegmentRow: React.FC<{
     }, [segment.id, segment.has_audio, isPlaying, projectId, setPlayingSegment]);
 
     const handleSaveEdit = useCallback(() => {
-        const updates: { text?: string; voice_name?: string } = {};
+        const updates: { text?: string; voice_name?: string; emotion?: string | null } = {};
         if (editText !== segment.text) updates.text = editText;
         if (editVoice !== segment.voice_name) updates.voice_name = editVoice;
+        const normalizedEmotion = editEmotion.trim().toLowerCase() || null;
+        const currentEmotion = segment.emotion || null;
+        if (normalizedEmotion !== currentEmotion) updates.emotion = normalizedEmotion;
         if (Object.keys(updates).length > 0) {
             updateSegment(segment.id, updates);
         }
         setEditing(false);
-    }, [editText, editVoice, segment, updateSegment]);
+    }, [editText, editVoice, editEmotion, segment, updateSegment]);
+
+    const handleAnnotateEmotion = useCallback(async () => {
+        setAnnotatingEmotion(true);
+        try {
+            await annotateSegmentEmotion(segment.id);
+            toast.success('Emotion tagged');
+        } catch (e: any) {
+            toast.error(e?.message || 'Emotion tagging failed');
+        } finally {
+            setAnnotatingEmotion(false);
+        }
+    }, [annotateSegmentEmotion, segment.id]);
 
     return (
         <motion.div
@@ -506,6 +523,17 @@ const SegmentRow: React.FC<{
                                 >
                                     {voices.map((v) => (
                                         <option key={v} value={v} className="bg-[#0f0f1a]">{v}</option>
+                                    ))}
+                                </select>
+                                <select
+                                    value={editEmotion}
+                                    onChange={(e) => setEditEmotion(e.target.value)}
+                                    className={selectStyle}
+                                    title="MOSS TTS emotion tag"
+                                >
+                                    <option value="" className="bg-[#0f0f1a]">No emotion</option>
+                                    {MOSS_EMOTION_TAGS.map((tag) => (
+                                        <option key={tag} value={tag} className="bg-[#0f0f1a]">{tag}</option>
                                     ))}
                                 </select>
                                 <div className="flex-1" />
@@ -573,7 +601,8 @@ const SegmentRow: React.FC<{
                 {!editing && (
                     <div className="relative flex items-center gap-0.5 flex-shrink-0">
                         {[
-                            { icon: <Edit3 size={13} />, title: 'Edit text', onClick: () => { setEditText(segment.text); setEditVoice(segment.voice_name || ''); setEditing(true); }, color: 'hover:text-white/80' },
+                            { icon: <Edit3 size={13} />, title: 'Edit text', onClick: () => { setEditText(segment.text); setEditVoice(segment.voice_name || ''); setEditEmotion(segment.emotion || ''); setEditing(true); }, color: 'hover:text-white/80' },
+                            { icon: annotatingEmotion ? <Loader2 size={13} className="animate-spin" /> : <Heart size={13} />, title: 'AI emotion tag', onClick: handleAnnotateEmotion, color: 'hover:text-pink-400', disabled: annotatingEmotion },
                             { icon: <Sparkles size={13} />, title: 'Split segment', onClick: () => splitSegment(segment.id), color: 'hover:text-sky-400' },
                             { icon: <Layers size={13} />, title: 'Merge with next', onClick: () => mergeSegment(segment.id), color: 'hover:text-violet-400' },
                             { icon: <RefreshCw size={13} />, title: 'Re-generate audio', onClick: () => generateSegment(segment.id), color: 'hover:text-amber-400', disabled: isGenerating },
@@ -903,6 +932,7 @@ const NewProjectModal: React.FC<{
     const [pattern, setPattern] = useState('auto');
     const [dragOver, setDragOver] = useState(false);
     const [importFile, setImportFile] = useState<File | null>(null);
+    const [importing, setImporting] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const bookFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -943,10 +973,17 @@ const NewProjectModal: React.FC<{
 
     const handleCreate = useCallback(async () => {
         if (importFile) {
-            await importProject(importFile);
-            toast.success('Book imported!');
-            onClose();
-            setName(''); setText(''); setImportFile(null);
+            setImporting(true);
+            try {
+                await importProject(importFile);
+                toast.success('Book imported!');
+                onClose();
+                setName(''); setText(''); setImportFile(null);
+            } catch (e: any) {
+                toast.error(e?.message || 'Import failed');
+            } finally {
+                setImporting(false);
+            }
             return;
         }
         if (!name.trim() || !text.trim()) { toast.error('Name and text are required'); return; }
@@ -1011,7 +1048,9 @@ const NewProjectModal: React.FC<{
                                 </div>
                                 <div className="text-left">
                                     <p className="text-sm font-semibold text-emerald-400">{importFile.name}</p>
-                                    <p className="text-xs text-white/35 mt-0.5">{(importFile.size / 1024).toFixed(0)} KB — Ready to import</p>
+                                    <p className="text-xs text-white/35 mt-0.5">
+                                        {(importFile.size / 1024).toFixed(0)} KB — {importing ? 'Importing…' : 'Ready to import'}
+                                    </p>
                                 </div>
                                 <button
                                     onClick={(e) => { e.stopPropagation(); setImportFile(null); }}
@@ -1090,11 +1129,11 @@ const NewProjectModal: React.FC<{
                     </button>
                     <button
                         onClick={handleCreate}
-                        disabled={loading || (importFile ? false : (!name.trim() || !text.trim()))}
+                        disabled={loading || importing || (importFile ? false : (!name.trim() || !text.trim()))}
                         className={`${btnPrimary} flex items-center gap-2`}
                     >
-                        {loading ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-                        {importFile ? 'Import Book' : 'Create Project'}
+                        {(loading || importing) ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                        {importing ? 'Importing…' : importFile ? 'Import Book' : 'Create Project'}
                     </button>
                 </div>
             </motion.div>
@@ -2519,10 +2558,10 @@ const VisualsColumn: React.FC<{ projectId: string; visuals: VisualAsset[]; chara
 // ============================================================
 const AudiobookGenerator: React.FC = () => {
     const {
-        projects, currentProject, availableVoices, loading, analyzing, error,
+        projects, currentProject, availableVoices, loading, analyzing, annotatingEmotions, error,
         fetchProjects, fetchVoices, loadProject, deleteProject, clearError, retryFailed,
         generateAllVisuals, exportVideo, visualMode, setVisualMode, videoExporting,
-        createVisualAsset, assignVisual,
+        createVisualAsset, assignVisual, annotateEmotions, updateEmotionSettings,
     } = useAudiobookStore();
 
     const [showNewModal, setShowNewModal] = useState(false);
@@ -2687,6 +2726,63 @@ const AudiobookGenerator: React.FC = () => {
                                 >
                                     <Volume2 size={10} /> Auto-play {autoPlay ? 'ON' : 'OFF'}
                                 </button>
+
+                                {/* MOSS emotion tagging */}
+                                <div className="rounded-xl border border-pink-500/10 bg-pink-500/[0.03] p-2.5 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-[10px] font-semibold text-pink-300/80 flex items-center gap-1">
+                                            <Heart size={10} /> Emotion Tags
+                                        </span>
+                                        <button
+                                            onClick={() => updateEmotionSettings({
+                                                emotion_tags_enabled: !currentProject.emotion_tags_enabled,
+                                                emotion_tagging_mode: (currentProject.emotion_tagging_mode as 'segment' | 'inline') || 'segment',
+                                            })}
+                                            className={`px-2 py-0.5 rounded-md text-[9px] font-semibold border transition-all
+                                                ${currentProject.emotion_tags_enabled
+                                                    ? 'bg-pink-500/20 border-pink-500/25 text-pink-300'
+                                                    : 'bg-white/[0.03] border-white/[0.06] text-white/30'
+                                                }`}
+                                        >
+                                            {currentProject.emotion_tags_enabled ? 'ON' : 'OFF'}
+                                        </button>
+                                    </div>
+                                    <div className="flex rounded-lg border border-white/[0.06] overflow-hidden">
+                                        {(['segment', 'inline'] as const).map((mode) => (
+                                            <button
+                                                key={mode}
+                                                onClick={() => updateEmotionSettings({
+                                                    emotion_tags_enabled: currentProject.emotion_tags_enabled ?? false,
+                                                    emotion_tagging_mode: mode,
+                                                })}
+                                                className={`flex-1 py-1 text-[9px] font-medium transition-all
+                                                    ${(currentProject.emotion_tagging_mode || 'segment') === mode
+                                                        ? 'bg-pink-500/15 text-pink-300'
+                                                        : 'text-white/25 hover:text-white/45'
+                                                    }`}
+                                                title={mode === 'segment' ? 'One emotion per segment' : 'Inline tags within text'}
+                                            >
+                                                {mode === 'segment' ? 'Per segment' : 'Inline'}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <button
+                                        onClick={() => annotateEmotions()
+                                            .then(() => toast.success('Emotion tags applied — re-generate audio to hear changes'))
+                                            .catch((e) => toast.error(e?.message || 'Emotion tagging failed'))}
+                                        disabled={annotatingEmotions || progress.isGenerating}
+                                        className="w-full px-2 py-1.5 rounded-lg text-[10px] font-semibold bg-pink-500/10 hover:bg-pink-500/15 border border-pink-500/15 text-pink-300 hover:text-pink-200 transition-all disabled:opacity-40 flex items-center justify-center gap-1.5"
+                                        title="Use AI to add MOSS emotion tags to all segments"
+                                    >
+                                        {annotatingEmotions
+                                            ? <><Loader2 size={10} className="animate-spin" /> Tagging…</>
+                                            : <><Sparkles size={10} /> AI Tag Emotions</>
+                                        }
+                                    </button>
+                                    <p className="text-[9px] text-white/20 leading-relaxed">
+                                        Uses instruct LLM + MOSS tags: happy, sad, angry, excited…
+                                    </p>
+                                </div>
 
                                 {currentProject.error_segments > 0 && (
                                     <button

@@ -85,6 +85,8 @@ export interface ProjectDetail {
     characters?: CharacterRef[];
     narrator_voice_prompt?: string;
     visuals: VisualAsset[];
+    emotion_tags_enabled?: boolean;
+    emotion_tagging_mode?: 'segment' | 'inline';
 }
 
 export interface CharacterRef {
@@ -123,10 +125,28 @@ export interface GenerationResult {
 
 // --- API Functions ---
 
+function formatApiError(body: unknown, statusText: string): string {
+    if (!body || typeof body !== 'object') return statusText;
+    const record = body as { detail?: unknown; error?: { message?: string } };
+    if (Array.isArray(record.detail)) {
+        return record.detail
+            .map((item) => {
+                if (item && typeof item === 'object' && 'msg' in item) {
+                    return String((item as { msg: string }).msg);
+                }
+                return JSON.stringify(item);
+            })
+            .join('; ');
+    }
+    if (typeof record.detail === 'string') return record.detail;
+    if (record.error?.message) return record.error.message;
+    return statusText;
+}
+
 async function handleResponse<T>(res: Response): Promise<T> {
     if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail || err.error?.message || res.statusText);
+        throw new Error(formatApiError(err, res.statusText));
     }
     return res.json();
 }
@@ -212,7 +232,7 @@ export async function updateCharacterMap(
 export async function updateSegment(
     projectId: string,
     segmentId: string,
-    update: { text?: string; voice_name?: string; scene_prompt?: string }
+    update: { text?: string; voice_name?: string; scene_prompt?: string; emotion?: string | null }
 ): Promise<ProjectDetail> {
     const res = await fetch(
         `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}`,
@@ -316,6 +336,48 @@ export async function analyzeCharacters(projectId: string): Promise<ProjectDetai
 export async function checkAiStatus(): Promise<{ available: boolean }> {
     const res = await fetch(`${API_BASE}/audiobook/ai-status`);
     return handleResponse<{ available: boolean }>(res);
+}
+
+// --- Emotion tagging (MOSS TTS) ---
+
+export const MOSS_EMOTION_TAGS = [
+    'happy', 'sad', 'angry', 'excited', 'calm',
+    'nervous', 'confident', 'shy', 'serious', 'playful',
+] as const;
+
+export async function updateEmotionSettings(
+    projectId: string,
+    settings: { emotion_tags_enabled: boolean; emotion_tagging_mode: 'segment' | 'inline' }
+): Promise<ProjectDetail> {
+    const res = await fetch(`${API_BASE}/audiobook/projects/${projectId}/emotion-settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+    });
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function annotateEmotions(
+    projectId: string,
+    chapterIdx?: number
+): Promise<ProjectDetail> {
+    const qs = chapterIdx !== undefined ? `?chapter_idx=${chapterIdx}` : '';
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/annotate-emotions${qs}`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
+}
+
+export async function annotateSegmentEmotion(
+    projectId: string,
+    segmentId: string
+): Promise<ProjectDetail> {
+    const res = await fetch(
+        `${API_BASE}/audiobook/projects/${projectId}/segments/${segmentId}/annotate-emotion`,
+        { method: 'POST' }
+    );
+    return handleResponse<ProjectDetail>(res);
 }
 
 // --- File Import ---

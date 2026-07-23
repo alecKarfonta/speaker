@@ -127,6 +127,9 @@ class AudiobookProject(BaseModel):
     video_status: str = "idle"  # idle | generating | done | error
     video_path: str = ""
     video_error: str = ""
+    # MOSS TTS emotion tagging (LLM-assisted)
+    emotion_tags_enabled: bool = False
+    emotion_tagging_mode: str = "segment"  # segment | inline
 
     @property
     def total_segments(self) -> int:
@@ -162,6 +165,12 @@ class UpdateSegmentRequest(BaseModel):
     text: Optional[str] = None
     voice_name: Optional[str] = None
     scene_prompt: Optional[str] = None  # Editable visual generation prompt
+    emotion: Optional[str] = None  # MOSS TTS emotion tag (segment mode)
+
+
+class EmotionSettingsRequest(BaseModel):
+    emotion_tags_enabled: bool
+    emotion_tagging_mode: str = "segment"  # segment | inline
 
 
 class ReparseRequest(BaseModel):
@@ -264,6 +273,8 @@ class ProjectDetailResponse(BaseModel):
     characters: List[dict] = []  # character references with portraits
     narrator_voice_prompt: str = ""  # editable narrator voice description
     visuals: List[VisualAssetResponse] = []  # independent visual assets
+    emotion_tags_enabled: bool = False
+    emotion_tagging_mode: str = "segment"
 
 
 # --- Persistence helpers ---
@@ -562,4 +573,29 @@ def project_to_detail_response(project: AudiobookProject) -> ProjectDetailRespon
         characters=[c.model_dump() for c in project.characters],
         narrator_voice_prompt=project.narrator_voice_prompt,
         visuals=visual_responses,
+        emotion_tags_enabled=project.emotion_tags_enabled,
+        emotion_tagging_mode=project.emotion_tagging_mode,
     )
+
+
+MOSS_EMOTION_TAGS = (
+    "happy", "sad", "angry", "excited", "calm",
+    "nervous", "confident", "shy", "serious", "playful",
+)
+
+
+def prepare_segment_tts_text(segment: Segment, project: AudiobookProject) -> str:
+    """Apply MOSS emotion tags to segment text when project settings allow."""
+    text = segment.text
+    if not project.emotion_tags_enabled:
+        return text
+    if project.emotion_tagging_mode == "inline":
+        return text
+    emotion = (segment.emotion or "").strip()
+    if not emotion or emotion.lower() in ("none", "neutral"):
+        return text
+    tag = emotion if emotion.startswith("(") else f"({emotion})"
+    stripped = text.lstrip()
+    if stripped.startswith("(") and ")" in stripped.split(" ", 1)[0]:
+        return text
+    return f"{tag} {text}"

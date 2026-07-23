@@ -195,15 +195,16 @@ async def _tts_worker():
             })
 
             import os
-            from .audiobook_models import get_project_dir
+            from .audiobook_models import get_project_dir, prepare_segment_tts_text
             audio_dir = os.path.join(get_project_dir(job.project_id), "audio")
             os.makedirs(audio_dir, exist_ok=True)
             audio_path = os.path.join(audio_dir, f"{job.segment_id}.wav")
 
             try:
                 import soundfile as sf
+                tts_text = prepare_segment_tts_text(segment, project)
                 audio_data, sample_rate = await asyncio.to_thread(
-                    tts.generate_speech, segment.text, voice
+                    tts.generate_speech, tts_text, voice
                 )
                 sf.write(audio_path, audio_data, sample_rate, format="WAV", subtype="PCM_16")
 

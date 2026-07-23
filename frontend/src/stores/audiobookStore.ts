@@ -15,6 +15,7 @@ interface AudiobookState {
     // UI state
     loading: boolean;
     analyzing: boolean; // AI analysis in progress
+    annotatingEmotions: boolean;
     extractingCharacters: boolean; // character extraction / portrait generation in progress
     generating: Set<string>; // segment IDs currently generating
     playingSegmentId: string | null;
@@ -32,11 +33,14 @@ interface AudiobookState {
     createProject: (name: string, text: string, chapterPattern?: string) => Promise<void>;
     deleteProject: (projectId: string) => Promise<void>;
     updateCharacterMap: (map: Record<string, string>, narratorVoice?: string) => Promise<void>;
-    updateSegment: (segmentId: string, update: { text?: string; voice_name?: string; scene_prompt?: string }) => Promise<void>;
+    updateSegment: (segmentId: string, update: { text?: string; voice_name?: string; scene_prompt?: string; emotion?: string | null }) => Promise<void>;
     generateSegment: (segmentId: string) => Promise<void>;
     generateChapter: (chapterIdx: number) => Promise<void>;
     generateAll: () => Promise<void>;
     analyzeCharacters: () => Promise<void>;
+    annotateEmotions: (chapterIdx?: number) => Promise<void>;
+    annotateSegmentEmotion: (segmentId: string) => Promise<void>;
+    updateEmotionSettings: (settings: { emotion_tags_enabled: boolean; emotion_tagging_mode: 'segment' | 'inline' }) => Promise<void>;
     extractCharacters: () => Promise<void>;
     generatePortraits: () => Promise<void>;
     importProject: (file: File) => Promise<void>;
@@ -75,6 +79,7 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     availableVoices: [],
     loading: false,
     analyzing: false,
+    annotatingEmotions: false,
     extractingCharacters: false,
     generating: new Set(),
     playingSegmentId: null,
@@ -301,6 +306,42 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
         }
     },
 
+    annotateEmotions: async (chapterIdx?: number) => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        set({ annotatingEmotions: true, error: null });
+        try {
+            const updated = await api.annotateEmotions(currentProject.id, chapterIdx);
+            set({ currentProject: updated, annotatingEmotions: false });
+        } catch (e: any) {
+            set({ error: e.message, annotatingEmotions: false });
+            throw e;
+        }
+    },
+
+    annotateSegmentEmotion: async (segmentId: string) => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        try {
+            const updated = await api.annotateSegmentEmotion(currentProject.id, segmentId);
+            set({ currentProject: updated });
+        } catch (e: any) {
+            set({ error: e.message });
+            throw e;
+        }
+    },
+
+    updateEmotionSettings: async (settings) => {
+        const { currentProject } = get();
+        if (!currentProject) return;
+        try {
+            const updated = await api.updateEmotionSettings(currentProject.id, settings);
+            set({ currentProject: updated });
+        } catch (e: any) {
+            set({ error: e.message });
+        }
+    },
+
     extractCharacters: async () => {
         const { currentProject } = get();
         if (!currentProject) return;
@@ -326,16 +367,11 @@ export const useAudiobookStore = create<AudiobookState>((set, get) => ({
     },
 
     importProject: async (file: File) => {
-        set({ loading: true, error: null });
-        try {
-            const project = await api.importProject(file);
-            set({ currentProject: project, loading: false });
-            // Refresh project list
-            const projects = await api.listProjects();
-            set({ projects });
-        } catch (e: any) {
-            set({ error: e.message, loading: false });
-        }
+        set({ error: null });
+        const project = await api.importProject(file);
+        set({ currentProject: project });
+        const projects = await api.listProjects();
+        set({ projects });
     },
 
     splitSegment: async (segmentId: string, splitAt?: number) => {

@@ -59,7 +59,13 @@ class MossProxyBackend(TTSBackendBase):
             import requests
             resp = requests.get(f"{self._moss_url}/voices", timeout=10)
             resp.raise_for_status()
-            voice_names = resp.json()
+            data = resp.json()
+            if isinstance(data, list):
+                voice_names = data
+            elif isinstance(data, dict):
+                voice_names = data.get("voices", [])
+            else:
+                voice_names = []
             for name in voice_names:
                 self.voices[name] = Voice(name=name, file_paths=[])
             self.logger.info(f"Loaded {len(voice_names)} voices from MOSS at {self._moss_url}")
@@ -78,20 +84,12 @@ class MossProxyBackend(TTSBackendBase):
         **kwargs,
     ) -> Tuple[np.ndarray, int]:
         """
-        Generate speech by calling the remote MOSS /tts/stream endpoint.
-
-        Uses the streaming endpoint because the non-streaming /tts endpoint
-        has a known CUDA assertion issue with the MOSS-TTS-Realtime codec
-        decode. The streaming endpoint handles codec decode correctly.
-
-        The binary framing format is:
-            4-byte audio_len (LE) + 4-byte metadata_len (LE) + audio_bytes + metadata_json
+        Generate speech by calling the remote MOSS /tts endpoint.
 
         Returns:
             Tuple of (audio_data as numpy array, sample_rate)
         """
         import requests
-        import struct
 
         payload = {
             "text": text,
@@ -103,59 +101,35 @@ class MossProxyBackend(TTSBackendBase):
 
         try:
             resp = requests.post(
-                f"{self._moss_url}/tts/stream",
+                f"{self._moss_url}/tts",
                 json=payload,
-                timeout=120,
-                stream=True,
+                timeout=300,
             )
             resp.raise_for_status()
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"MOSS TTS request failed: {e}") from e
 
-        # Read the full streaming response and reassemble audio from
-        # binary-framed chunks: [4B audio_len][4B meta_len][audio][meta] ...
-        audio_chunks = []
-        sr = self._sample_rate
-        buf = b""
+        wav_bytes = resp.content
+        if len(wav_bytes) < 1000:
+            raise RuntimeError("MOSS TTS returned empty or invalid audio")
 
-        for chunk in resp.iter_content(chunk_size=65536):
-            buf += chunk
-            # Parse as many complete frames as available
-            while len(buf) >= 8:
-                audio_len, meta_len = struct.unpack_from("<II", buf, 0)
-                frame_size = 8 + audio_len + meta_len
-                if len(buf) < frame_size:
-                    break  # incomplete frame, wait for more data
-                audio_bytes = buf[8 : 8 + audio_len]
-                # meta_bytes = buf[8 + audio_len : frame_size]  # not needed
-                buf = buf[frame_size:]
-                if audio_len > 0:
-                    audio_chunks.append(audio_bytes)
+        sr = int(resp.headers.get("X-Sample-Rate", self._sample_rate))
+        audio_data, chunk_sr = sf.read(io.BytesIO(wav_bytes), dtype="float32")
+        self._sample_rate = chunk_sr or sr
 
-        # Concatenate all WAV chunks and decode
-        if not audio_chunks:
-            raise RuntimeError("MOSS TTS stream returned no audio data")
+        duration = len(audio_data) / self._sample_rate
+        self.logger.debug(f"MOSS proxy: received {duration:.1f}s audio ({self._sample_rate}Hz)")
 
-        # Each chunk is a complete WAV file; decode and concatenate
-        all_audio = []
-        for wav_bytes in audio_chunks:
-            data, chunk_sr = sf.read(io.BytesIO(wav_bytes), dtype="float32")
-            sr = chunk_sr
-            all_audio.append(data)
-
-        audio_data = np.concatenate(all_audio, axis=0) if len(all_audio) > 1 else all_audio[0]
-        self._sample_rate = sr
-
-        duration = len(audio_data) / sr
-        self.logger.debug(f"MOSS proxy: received {duration:.1f}s audio ({sr}Hz, {len(audio_chunks)} chunks)")
-
-        return audio_data, sr
+        return audio_data, self._sample_rate
 
     # -- Voice design (optional, used by audiobook character voices) ----------
 
     def design_voice(self, voice_name: str, description: str) -> Optional[str]:
         """
         Design a voice on the remote MOSS service using /tts/design.
+
+        Generates sample audio from a voice description, then saves it as a
+        named reference voice on the remote MOSS service for clip synthesis.
 
         Args:
             voice_name: Identifier for the new voice
@@ -166,31 +140,52 @@ class MossProxyBackend(TTSBackendBase):
         """
         import requests
 
-        payload = {
-            "voice_name": voice_name,
-            "description": description,
-        }
+        design_url = os.environ.get("MOSS_DESIGN_URL", self._moss_url)
+        if not design_url.startswith("http"):
+            design_url = f"http://{design_url}"
 
-        self.logger.info(f"MOSS proxy: designing voice '{voice_name}' ({len(description)} chars)")
+        sample_text = (
+            "Hello. This is a short voice sample so you can hear how I sound. "
+            "I will be reading your audiobook with this voice."
+        )
+        design_mode = os.environ.get("MOSS_DESIGN_MODE", "voice_gen").lower()
+        use_realtime = design_mode in ("realtime", "rt", "native")
+
+        if use_realtime:
+            payload = {"text": sample_text, "language": "en"}
+            design_endpoint = f"{design_url}/tts"
+        else:
+            payload = {"text": sample_text, "instruction": description}
+            design_endpoint = f"{design_url}/tts/design"
+
+        self.logger.info(
+            f"MOSS proxy: designing voice '{voice_name}' via {design_mode} "
+            f"({len(description)} chars)"
+        )
 
         try:
             resp = requests.post(
-                f"{self._moss_url}/tts/design",
+                design_endpoint,
                 json=payload,
                 timeout=180,
             )
             resp.raise_for_status()
+            wav_bytes = resp.content
+            if len(wav_bytes) < 1000:
+                raise RuntimeError("MOSS voice design returned empty or invalid audio")
 
-            # Response may be JSON with voice info
-            try:
-                data = resp.json()
-                voice_path = data.get("voice_path") or data.get("path")
-            except Exception:
-                voice_path = None
+            upload_resp = requests.post(
+                f"{self._moss_url}/voices",
+                params={"voice_name": voice_name},
+                files={"file": ("reference.wav", wav_bytes, "audio/wav")},
+                timeout=60,
+            )
+            upload_resp.raise_for_status()
 
-            # Register the voice locally
-            self.voices[voice_name] = Voice(name=voice_name, file_paths=[voice_path] if voice_path else [])
-            self.logger.info(f"MOSS proxy: designed voice '{voice_name}' → {voice_path}")
+            voices_dir = os.environ.get("VOICES_DIR", "data/voices")
+            voice_path = os.path.join(voices_dir, voice_name)
+            self.voices[voice_name] = Voice(name=voice_name, file_paths=[voice_path])
+            self.logger.info(f"MOSS proxy: designed and saved voice '{voice_name}' → {voice_path}")
             return voice_path
 
         except requests.exceptions.RequestException as e:

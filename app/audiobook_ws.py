@@ -16,7 +16,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from .audiobook_models import (
     AudiobookProject, SegmentStatus,
-    load_project, save_project, get_project_dir,
+    load_project, save_project, get_project_dir, prepare_segment_tts_text,
 )
 from .generation_queue import add_visual_listener, remove_visual_listener, add_tts_listener, remove_tts_listener
 
@@ -63,7 +63,6 @@ async def _generate_segment_async(text: str, voice: str, language: str = "en"):
         language=language,
     )
 
-
 async def _run_generation(
     ws: WebSocket,
     project: AudiobookProject,
@@ -109,7 +108,8 @@ async def _run_generation(
                      text_preview=seg.text[:80], voice=voice, total=total)
 
         try:
-            audio, sample_rate = await _generate_segment_async(seg.text, voice)
+            tts_text = prepare_segment_tts_text(seg, project)
+            audio, sample_rate = await _generate_segment_async(tts_text, voice)
 
             if audio is None or len(audio) == 0:
                 raise RuntimeError("TTS returned empty audio")

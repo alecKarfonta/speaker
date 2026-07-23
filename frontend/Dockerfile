@@ -30,6 +30,7 @@ COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 
 # Default backends (can be overridden via docker-compose environment)
 ENV TTS_BACKEND_HOST=moss-tts:8000
+ENV MOSS_RT_BACKEND_HOST=moss-realtime:8000
 ENV AUDIOBOOK_BACKEND_HOST=tts-api:8000
 ENV SFX_BACKEND_HOST=moss-sfx:8000
 

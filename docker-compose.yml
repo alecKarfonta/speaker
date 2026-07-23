@@ -22,8 +22,12 @@ services:
       # TTS Backend for this container: "glm-tts" or "xtts"
       # Note: MOSS runs via the separate moss-tts container (port 8013)
       # The frontend proxies to moss-tts by default via TTS_BACKEND_HOST
-      # glm-tts: native GLM-TTS | moss-proxy: forward TTS to moss-tts
-      - TTS_BACKEND=glm-tts
+      # glm-tts: native GLM-TTS | moss-proxy: forward TTS to moss-tts (audiobook)
+      - TTS_BACKEND=moss-proxy
+      - MOSS_PROXY_URL=http://moss-tts:8000
+      # Voice design via moss-realtime (loli15s native voice) instead of MOSS-VoiceGenerator
+      - MOSS_DESIGN_URL=http://moss-realtime:8000
+      - MOSS_DESIGN_MODE=realtime
       # === OPTIMAL CONFIG FROM PARAMETER SWEEP (2026-01-11) ===
       # baseline_v2 = vLLM (fp16) + 4bit BnB irrelevant + FA2 + flow_steps=15 + sampling=10
       # measured 5.95x real-time, 91.6% accuracy on biden voice across 65 prompts.
@@ -95,6 +99,11 @@ services:
               capabilities: [ gpu ]
     command: >
       bash -c "./scripts/start.sh"
+    depends_on:
+      moss-realtime:
+        condition: service_healthy
+      moss-tts:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 30s
@@ -113,13 +122,13 @@ services:
       - "8013:8000"
     environment:
       - MOSS_MODEL_ID=OpenMOSS-Team/MOSS-TTS-v1.5
-      - MOSS_VOICE_GEN_MODEL=OpenMOSS-Team/MOSS-VoiceGenerator
       - MOSS_ENABLE_VOICE_GEN=false
+      - MOSS_ENABLE_MAIN_MODEL=false
       - MOSS_ENABLE_REALTIME=false
-      - MOSS_QUANTIZE=4bit
+      - MOSS_BATCH_ENGINE=openmoss
+      - OPENMOSS_TTS_URL=http://openmoss-tts:8000
       - VOICES_DIR=/app/data/voices
       - HF_HOME=/root/.cache/huggingface
-      - NVIDIA_VISIBLE_DEVICES=3
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       # AI Character Analysis + Visual Generation (same as tts-api)
       - INSTRUCT_LLM_API_URL=http://192.168.1.196:8600/v1/chat/completions
@@ -136,65 +145,56 @@ services:
       - ./data/voices:/app/data/voices
       - ./data/audiobooks:/app/data/audiobooks
       - moss_hf_cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["3"]
-              capabilities: [ gpu ]
+    depends_on:
+      openmoss-tts:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 180s
+      start_period: 120s
     networks:
       - tts-network
 
-  # ── moss-realtime profile: batch /tts → openmoss C++ (see .env.moss-realtime) ──
+  # MOSS-TTS-Realtime with loli15s custom native voice (voice design + streaming)
   moss-realtime:
-    profiles: [moss-realtime]
     build:
       context: .
       dockerfile: Dockerfile.moss
     ports:
       - "8016:8000"
-    depends_on:
-      openmoss-tts:
-        condition: service_healthy
     environment:
-      - MOSS_BATCH_ENGINE=${MOSS_BATCH_ENGINE}
-      - OPENMOSS_TTS_URL=${OPENMOSS_TTS_URL}
-      - MOSS_ENABLE_MAIN_MODEL=${MOSS_ENABLE_MAIN_MODEL:-false}
-      - MOSS_MODEL_ID=${MOSS_MODEL_ID:-OpenMOSS-Team/MOSS-TTS-v1.5}
+      - MOSS_ENABLE_MAIN_MODEL=false
       - MOSS_ENABLE_VOICE_GEN=false
-      - MOSS_ENABLE_REALTIME=${MOSS_ENABLE_REALTIME:-false}
+      - MOSS_ENABLE_REALTIME=true
       - MOSS_ENABLE_STREAMING=true
-      - MOSS_RT_MODEL_ID=${MOSS_RT_MODEL_ID:-OpenMOSS-Team/MOSS-TTS-Realtime}
-      - MOSS_RT_BASE_MODEL_ID=${MOSS_RT_BASE_MODEL_ID:-OpenMOSS-Team/MOSS-TTS-Realtime}
-      - MOSS_RT_NATIVE_VOICE=${MOSS_RT_NATIVE_VOICE:-false}
-      - MOSS_RT_CODEC_BACKEND=${MOSS_RT_CODEC_BACKEND:-auto}
-      - MOSS_RT_ONNX_CODEC_DIR=${MOSS_RT_ONNX_CODEC_DIR:-/app/training/weights/MOSS-Audio-Tokenizer-ONNX}
-      - MOSS_RT_STREAM_CODEC_BACKEND=${MOSS_RT_STREAM_CODEC_BACKEND:-torch}
-      - MOSS_RT_STREAM_DECODER_OVERLAP_FRAMES=${MOSS_RT_STREAM_DECODER_OVERLAP_FRAMES:-0}
-      - MOSS_RT_STREAM_DECODER_INITIAL_FRAMES=${MOSS_RT_STREAM_DECODER_INITIAL_FRAMES:-none}
-      - MOSS_RT_INITIAL_TEXT_CHUNK=${MOSS_RT_INITIAL_TEXT_CHUNK:-1}
-      - MOSS_RT_STEADY_TEXT_CHUNK=${MOSS_RT_STEADY_TEXT_CHUNK:-24}
-      - MOSS_RT_MIN_SAMPLES_FIRST_MS=${MOSS_RT_MIN_SAMPLES_FIRST_MS:-40}
-      - MOSS_RT_MIN_SAMPLES_STEADY_MS=${MOSS_RT_MIN_SAMPLES_STEADY_MS:-80}
-      - MOSS_RT_DECODER_CHUNK_FRAMES=${MOSS_RT_DECODER_CHUNK_FRAMES:-24}
+      - MOSS_RT_MODEL_ID=/models/loli15s-v2-merged
+      - MOSS_RT_BASE_MODEL_ID=OpenMOSS-Team/MOSS-TTS-Realtime
+      - MOSS_RT_NATIVE_VOICE=true
+      - MOSS_RT_CODEC_BACKEND=torch
+      - MOSS_RT_STREAM_CODEC_BACKEND=torch
+      - MOSS_RT_STREAM_DECODER_OVERLAP_FRAMES=0
+      - MOSS_RT_STREAM_DECODER_INITIAL_FRAMES=none
+      - MOSS_RT_INITIAL_TEXT_CHUNK=1
+      - MOSS_RT_STEADY_TEXT_CHUNK=4
+      - MOSS_RT_MIN_SAMPLES_FIRST_MS=40
+      - MOSS_RT_MIN_SAMPLES_STEADY_MS=120
+      - MOSS_RT_DECODER_CHUNK_FRAMES=6
       - MOSS_RT_CODEC_ID=OpenMOSS-Team/MOSS-Audio-Tokenizer
-      - MOSS_RT_DEVICES=${MOSS_RT_DEVICES:-0}
-      - MOSS_QUANTIZE=${MOSS_QUANTIZE:-4bit}
+      - MOSS_RT_DEVICES=0
+      - MOSS_QUANTIZE=none
       - VOICES_DIR=/app/data/voices
       - HF_HOME=/root/.cache/huggingface
+      - NVIDIA_VISIBLE_DEVICES=2
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - CUDA_CACHE_MAXSIZE=4294967296
     volumes:
       - ./app:/app/app
       - ./data/voices:/app/data/voices
       - ./models/loli15s-v2-noref-max-lora:/models/loli15s-v2-noref-max-lora:ro
       - ./models/loli15s-epoch7-merged:/models/loli15s-epoch7-merged:ro
+      - ./models/loli15s-v2-merged:/models/loli15s-v2-merged:ro
       - ./models/moss-audio-tokenizer-onnx:/app/training/weights/MOSS-Audio-Tokenizer-ONNX:ro
       - moss_hf_cache:/root/.cache/huggingface
     deploy:
@@ -202,14 +202,14 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${MOSS_RT_GPU_ID:-1}"]
+              device_ids: ["2"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 300s
+      start_period: 600s
     networks:
       - tts-network
 
@@ -260,12 +260,15 @@ services:
       #   tts-api:8000    → GLM-TTS
       #   qwen-tts:8000   → Qwen3-TTS (qwen profile)
       - TTS_BACKEND_HOST=tts-api:8000
+      # VoiceStudio / streaming → moss-realtime (custom native voice)
+      - MOSS_RT_BACKEND_HOST=moss-realtime:8000
       # Audiobook API lives on tts-api (separated from TTS engine)
       - AUDIOBOOK_BACKEND_HOST=tts-api:8000
       # MOSS-SoundEffect v2 (moss-sfx profile, port 8017 on host)
       - SFX_BACKEND_HOST=moss-sfx:8000
     depends_on:
       - tts-api
+      - moss-realtime
     networks:
       - tts-network
     healthcheck:
@@ -315,9 +318,8 @@ services:
       retries: 3
       start_period: 30s
 
-  # MOSS-TTS v1.5 via openmoss C++/GGML (~0.4× RTF on Blackwell with 120a-real build)
+  # MOSS-TTS v1.5 via openmoss C++/GGML — batch clip generation for audiobook
   openmoss-tts:
-    profiles: [moss-realtime]
     build:
       context: .
       dockerfile: Dockerfile.openmoss
@@ -343,7 +345,7 @@ services:
           devices:
             - driver: nvidia
               # Host GPU index: 0 = RTX 5070 Ti (default), 1/2 = 5060 Ti
-              device_ids: ["${OPENMOSS_GPU_ID:-0}"]
+              device_ids: ["2"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

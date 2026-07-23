@@ -70,6 +70,40 @@ Text: "{text}"
 
 Emotion:"""
 
+# MOSS TTS emotion tags (parenthesized form used inline in text)
+MOSS_EMOTION_TAGS = (
+    "happy", "sad", "angry", "excited", "calm",
+    "nervous", "confident", "shy", "serious", "playful",
+)
+
+EMOTION_TAGGING_SEGMENT_PROMPT = """Analyze this audiobook passage and choose the primary emotional delivery for text-to-speech.
+
+Respond with ONE word from this list only: {emotions}
+If the passage is neutral narration with no strong emotion, respond with: none
+
+Passage:
+"{text}"
+
+Emotion:"""
+
+EMOTION_TAGGING_INLINE_PROMPT = """You are an audiobook director preparing text for expressive MOSS text-to-speech.
+
+Insert emotion tags before phrases where delivery should change. Use ONLY these tags: {tag_list}
+
+Rules:
+- Place a tag immediately before the phrase it applies to
+- Only tag sections that need non-neutral delivery — do not over-tag
+- Keep all original words unchanged; only add emotion tags
+- Do NOT add tags to dialogue attribution like "he said" or "she whispered"
+- Return ONLY the annotated text, no explanation or markdown
+
+Text:
+---
+{text}
+---
+
+Annotated text:"""
+
 SCENE_PROMPT_TEMPLATE = """You are a visual scene describer for an audiobook illustration system. Given a passage from a book, describe a cinematic visual scene that could illustrate this passage.
 
 Rules:
@@ -371,7 +405,7 @@ def analyze_characters(
 
 def detect_segment_emotion(text: str) -> Optional[str]:
     """
-    Detect the emotional tone of a text segment.
+    Detect the emotional tone of a text segment (for visuals).
     Returns an emotion string or None.
     """
     if len(text) < 20:
@@ -394,6 +428,70 @@ def detect_segment_emotion(text: str) -> Optional[str]:
         if e in emotion:
             return e
 
+    return None
+
+
+def _normalize_moss_emotion(emotion: str) -> Optional[str]:
+    """Map LLM output to a MOSS-compatible emotion tag name, or None."""
+    cleaned = emotion.strip().lower().rstrip(".")
+    if cleaned in ("none", "neutral", ""):
+        return None
+    if cleaned in MOSS_EMOTION_TAGS:
+        return cleaned
+    for tag in MOSS_EMOTION_TAGS:
+        if tag in cleaned:
+            return tag
+    return None
+
+
+def annotate_segment_emotion(text: str, mode: str = "segment") -> Optional[dict]:
+    """
+    Use the instruct LLM to annotate a segment with MOSS TTS emotions.
+
+    Returns dict with:
+    - emotion: primary tag for segment mode (or None)
+    - text: annotated text for inline mode (or original)
+    """
+    if len(text.strip()) < 10:
+        return {"emotion": None, "text": text}
+
+    if mode == "inline":
+        tag_list = ", ".join(f"({t})" for t in MOSS_EMOTION_TAGS)
+        prompt = EMOTION_TAGGING_INLINE_PROMPT.format(
+            tag_list=tag_list,
+            text=text[:1500],
+        )
+        response = _call_llm(
+            prompt,
+            system_message="You annotate audiobook text with MOSS TTS emotion tags. Respond with only the annotated text.",
+            max_tokens=2000,
+            temperature=0.2,
+        )
+        if not response:
+            return None
+        annotated = response.strip().strip('"').strip()
+        # Strip accidental markdown fences
+        annotated = re.sub(r"^```\w*\n?", "", annotated)
+        annotated = re.sub(r"\n?```$", "", annotated).strip()
+        primary = _extract_primary_emotion(annotated)
+        return {"emotion": primary, "text": annotated}
+
+    prompt = EMOTION_TAGGING_SEGMENT_PROMPT.format(
+        emotions=", ".join(MOSS_EMOTION_TAGS),
+        text=text[:800],
+    )
+    response = _call_llm(prompt, max_tokens=100, temperature=0.1)
+    if not response:
+        return None
+    emotion = _normalize_moss_emotion(response)
+    return {"emotion": emotion, "text": text}
+
+
+def _extract_primary_emotion(text: str) -> Optional[str]:
+    """Extract the first MOSS emotion tag from annotated text for display."""
+    match = re.search(r"\((" + "|".join(MOSS_EMOTION_TAGS) + r")\)", text, re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
     return None
 
 

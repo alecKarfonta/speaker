@@ -21,15 +21,21 @@ from datetime import datetime
 from .audiobook_models import (
     AudiobookProject, Chapter, Segment, SegmentStatus, VisualAsset,
     CreateProjectRequest, UpdateCharacterMapRequest, UpdateSegmentRequest,
+    EmotionSettingsRequest,
     SplitSegmentRequest, ReparseRequest, ProjectSummary, ProjectDetailResponse,
-    VisualAssetResponse,
+    VisualAssetResponse, MOSS_EMOTION_TAGS, prepare_segment_tts_text,
     save_project, load_project, list_projects, delete_project_from_disk,
     project_to_detail_response, get_project_dir, _resolve_visual,
 )
 from .audiobook_parser import (
     parse_book_text, detect_characters, assign_segment_voices,
 )
-from .audiobook_llm import analyze_characters as llm_analyze_characters, check_llm_available, generate_narrator_voice_prompt as llm_generate_narrator_voice_prompt
+from .audiobook_llm import (
+    analyze_characters as llm_analyze_characters,
+    check_llm_available,
+    generate_narrator_voice_prompt as llm_generate_narrator_voice_prompt,
+    annotate_segment_emotion,
+)
 from .audiobook_parsers import parse_uploaded_file, SUPPORTED_EXTENSIONS
 
 logger = logging.getLogger("speaker.audiobook")
@@ -186,6 +192,14 @@ async def import_audiobook_project(
         narrator_voice=narrator,
         detected_characters=characters,
     )
+
+    for ch in project.chapters:
+        for seg in ch.segments:
+            asset = VisualAsset(
+                label=f"Visual for seg {seg.id}",
+            )
+            project.visuals.append(asset)
+            seg.visual_id = asset.id
 
     save_project(project)
     total_segs = sum(len(ch.segments) for ch in chapters)
@@ -371,6 +385,99 @@ async def analyze_project_characters(project_id: str):
     return project_to_detail_response(project)
 
 
+@router.get("/emotion-tags")
+async def list_emotion_tags():
+    """Return MOSS TTS emotion tags supported for audiobook annotation."""
+    return {"tags": list(MOSS_EMOTION_TAGS)}
+
+
+@router.put("/projects/{project_id}/emotion-settings", response_model=ProjectDetailResponse)
+async def update_emotion_settings(project_id: str, request: EmotionSettingsRequest):
+    """Enable/disable emotion tagging and choose segment vs inline mode."""
+    if request.emotion_tagging_mode not in ("segment", "inline"):
+        raise HTTPException(status_code=400, detail="emotion_tagging_mode must be 'segment' or 'inline'")
+    project = _get_project_or_404(project_id)
+    project.emotion_tags_enabled = request.emotion_tags_enabled
+    project.emotion_tagging_mode = request.emotion_tagging_mode
+    save_project(project)
+    return project_to_detail_response(project)
+
+
+@router.post("/projects/{project_id}/annotate-emotions", response_model=ProjectDetailResponse)
+async def annotate_project_emotions(project_id: str, chapter_idx: Optional[int] = None):
+    """
+    Use the instruct LLM to add MOSS emotion tags to segments.
+    Respects project.emotion_tagging_mode (segment-level tag or inline tags in text).
+    """
+    if not check_llm_available():
+        raise HTTPException(status_code=503, detail="LLM endpoint unreachable")
+
+    project = _get_project_or_404(project_id)
+    mode = project.emotion_tagging_mode or "segment"
+    annotated = 0
+    failed = 0
+
+    chapters = project.chapters
+    if chapter_idx is not None:
+        if chapter_idx < 0 or chapter_idx >= len(chapters):
+            raise HTTPException(status_code=404, detail=f"Chapter {chapter_idx} not found")
+        chapters = [chapters[chapter_idx]]
+
+    for ch in chapters:
+        for seg in ch.segments:
+            if len(seg.text.strip()) < 10:
+                continue
+            result = await asyncio.to_thread(annotate_segment_emotion, seg.text, mode)
+            if not result:
+                failed += 1
+                continue
+            if mode == "inline":
+                if result.get("text") and result["text"] != seg.text:
+                    seg.text = result["text"]
+                    seg.status = SegmentStatus.PENDING
+                    seg.audio_path = None
+                    seg.duration = None
+                seg.emotion = result.get("emotion")
+            else:
+                seg.emotion = result.get("emotion")
+                seg.status = SegmentStatus.PENDING
+                seg.audio_path = None
+                seg.duration = None
+            annotated += 1
+
+    project.emotion_tags_enabled = True
+    save_project(project)
+    logger.info(
+        f"Emotion annotation for '{project_id}': {annotated} segments tagged, {failed} failed (mode={mode})"
+    )
+    return project_to_detail_response(project)
+
+
+@router.post("/projects/{project_id}/segments/{segment_id}/annotate-emotion", response_model=ProjectDetailResponse)
+async def annotate_single_segment_emotion(project_id: str, segment_id: str):
+    """Annotate a single segment with MOSS emotion tags via LLM."""
+    if not check_llm_available():
+        raise HTTPException(status_code=503, detail="LLM endpoint unreachable")
+
+    project = _get_project_or_404(project_id)
+    _, _, seg = _find_segment(project, segment_id)
+    mode = project.emotion_tagging_mode or "segment"
+
+    result = await asyncio.to_thread(annotate_segment_emotion, seg.text, mode)
+    if not result:
+        raise HTTPException(status_code=500, detail="LLM failed to annotate segment emotion")
+
+    if mode == "inline" and result.get("text"):
+        seg.text = result["text"]
+    seg.emotion = result.get("emotion")
+    seg.status = SegmentStatus.PENDING
+    seg.audio_path = None
+    seg.duration = None
+    project.emotion_tags_enabled = True
+    save_project(project)
+    return project_to_detail_response(project)
+
+
 # --- Segment operations ---
 
 @router.put("/projects/{project_id}/segments/{segment_id}", response_model=ProjectDetailResponse)
@@ -401,6 +508,16 @@ async def update_segment(project_id: str, segment_id: str, request: UpdateSegmen
         # Legacy fallback
         if seg.visual_status == "done":
             seg.visual_status = "pending"
+
+    if request.emotion is not None:
+        normalized = request.emotion.strip().lower() if request.emotion else None
+        if normalized in ("", "none", "neutral"):
+            seg.emotion = None
+        else:
+            seg.emotion = normalized
+        seg.status = SegmentStatus.PENDING
+        seg.audio_path = None
+        seg.duration = None
     
     save_project(project)
     return project_to_detail_response(project)
@@ -618,8 +735,9 @@ async def generate_chapter(project_id: str, chapter_idx: int):
         save_project(project)
         
         try:
+            tts_text = prepare_segment_tts_text(seg, project)
             audio, sample_rate = tts_service.generate_speech(
-                text=seg.text, voice_name=voice, language="en"
+                text=tts_text, voice_name=voice, language="en"
             )
             
             if audio is None or len(audio) == 0:

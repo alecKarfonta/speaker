@@ -87,6 +87,33 @@ server {
         }
     }
 
+    # Proxy /tts/stream to moss-realtime (token-level streaming)
+    location /tts/stream {
+        set $upstream_rt ${MOSS_RT_BACKEND_HOST};
+        proxy_pass http://$upstream_rt;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 600s;
+        proxy_buffering off;
+
+        add_header Access-Control-Allow-Origin *;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS";
+        add_header Access-Control-Allow-Headers "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization";
+
+        if ($request_method = 'OPTIONS') {
+            add_header Access-Control-Allow-Origin *;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS";
+            add_header Access-Control-Allow-Headers "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization";
+            add_header Access-Control-Max-Age 1728000;
+            add_header Content-Type 'text/plain; charset=utf-8';
+            add_header Content-Length 0;
+            return 204;
+        }
+    }
+
     # Proxy /tts requests to the TTS backend
     location /tts {
         set $upstream_tts ${TTS_BACKEND_HOST};
@@ -166,10 +193,10 @@ server {
         proxy_set_header Host $host;
     }
 
-    # Proxy /api/v1/qwen requests to the TTS backend (VoiceStudio compat)
+    # Proxy /api/v1/qwen requests to moss-realtime (VoiceStudio + native voice)
     location /api/v1/qwen {
-        set $upstream_tts ${TTS_BACKEND_HOST};
-        proxy_pass http://$upstream_tts;
+        set $upstream_rt ${MOSS_RT_BACKEND_HOST};
+        proxy_pass http://$upstream_rt;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
