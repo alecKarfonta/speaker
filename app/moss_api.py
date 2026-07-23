@@ -473,6 +473,7 @@ def load_model():
     }
 
     # Configure quantization based on available VRAM
+    num_gpus = torch.cuda.device_count() if DEVICE == "cuda" else 0
     if QUANTIZE == "4bit" and DEVICE == "cuda":
         try:
             from transformers import BitsAndBytesConfig
@@ -482,9 +483,24 @@ def load_model():
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
             )
-            model_kwargs["device_map"] = {"": 0}  # Force all layers on GPU 0
+            if num_gpus >= 2 and ENABLE_VOICE_GEN:
+                vg_gpu = int(VOICE_GEN_GPU) if VOICE_GEN_GPU is not None else 1
+                max_memory = {"cpu": "64GiB"}
+                for gpu_idx in range(num_gpus):
+                    max_memory[gpu_idx] = "6GiB" if gpu_idx == vg_gpu else "14GiB"
+                model_kwargs["device_map"] = "auto"
+                model_kwargs["max_memory"] = max_memory
+                logger.info(
+                    f"Using 4-bit NF4 with device_map=auto + CPU offload "
+                    f"(GPU {vg_gpu} reserved for VoiceGenerator)"
+                )
+            elif num_gpus >= 2:
+                model_kwargs["device_map"] = "auto"
+                logger.info(f"Using 4-bit quantization (NF4) with device_map=auto across {num_gpus} GPUs")
+            else:
+                model_kwargs["device_map"] = {"": 0}
+                logger.info("Using 4-bit quantization (NF4) on single GPU")
             model_kwargs["low_cpu_mem_usage"] = True
-            logger.info("Using 4-bit quantization (NF4) on single GPU")
         except ImportError:
             logger.warning("bitsandbytes not available, falling back to no quantization")
             model_kwargs["torch_dtype"] = DTYPE
@@ -513,7 +529,14 @@ def load_model():
     # Detect the actual device for input tensors
     global model_device
     if hasattr(model, 'hf_device_map'):
-        first_device = next(iter(model.hf_device_map.values()))
+        preferred_keys = ("model.embed_tokens", "model.layers.0", "transformer.wte")
+        first_device = None
+        for key in preferred_keys:
+            if key in model.hf_device_map:
+                first_device = model.hf_device_map[key]
+                break
+        if first_device is None:
+            first_device = next(iter(model.hf_device_map.values()))
         model_device = torch.device(f"cuda:{first_device}" if isinstance(first_device, int) else first_device)
     else:
         model_device = next(model.parameters()).device
@@ -1191,7 +1214,10 @@ def _encode_reference_audio(reference_path: str) -> torch.Tensor:
     codes_list = processor.encode_audios_from_wav([wav], sr)
     if not codes_list:
         raise RuntimeError(f"Failed to encode reference audio: {reference_path}")
-    return codes_list[0]
+    codes = codes_list[0]
+    if model_device is not None and hasattr(codes, "to"):
+        codes = codes.to(model_device)
+    return codes
 
 
 def _generate_audio(text: str, reference_path: Optional[str] = None,
@@ -1324,10 +1350,6 @@ def _generate_audio_openmoss(
         payload["voice_name"] = vn
     if request.tokens is not None:
         payload["tokens"] = request.tokens
-    else:
-        est = max(32, len(request.text.split()) * 12)
-        payload["tokens"] = est
-        payload["max_new_tokens"] = min(request.max_new_tokens, max(256, est * 3))
     lang = _resolve_language_name(request.language)
     if lang:
         payload["language"] = lang
@@ -1375,6 +1397,17 @@ async def _run_tts_generation(
         missing = voice_name or request.voice_name
         raise HTTPException(status_code=404, detail=f"Voice '{missing}' not found")
 
+    # Realtime batch /tts must share worker.semaphore with /tts/stream (not inference_semaphore).
+    if model is None and ENABLE_REALTIME and rt_workers:
+        worker = rt_workers[0]
+        async with worker.semaphore:
+            return await asyncio.to_thread(
+                _generate_audio_realtime,
+                text=request.text,
+                reference_path=ref_path,
+                sampling=_rt_sampling_from_request(request),
+            )
+
     async with inference_semaphore:
         if model is not None:
             return await asyncio.to_thread(
@@ -1389,12 +1422,14 @@ async def _run_tts_generation(
                 audio_top_k=request.audio_top_k,
             )
         if ENABLE_REALTIME and rt_workers:
-            return await asyncio.to_thread(
-                _generate_audio_realtime,
-                text=request.text,
-                reference_path=ref_path,
-                sampling=_rt_sampling_from_request(request),
-            )
+            worker = rt_workers[0]
+            async with worker.semaphore:
+                return await asyncio.to_thread(
+                    _generate_audio_realtime,
+                    text=request.text,
+                    reference_path=ref_path,
+                    sampling=_rt_sampling_from_request(request),
+                )
         raise HTTPException(status_code=503, detail="No TTS model loaded yet")
 
 
@@ -1463,8 +1498,16 @@ async def health_check():
         except Exception:
             pass
 
+    rt_busy = bool(rt_workers) and all(w.semaphore.locked() for w in rt_workers)
+    if not is_ready:
+        health_status = "loading"
+    elif rt_busy:
+        health_status = "busy"
+    else:
+        health_status = "ready"
+
     response = HealthResponse(
-        status="ready" if is_ready else "loading",
+        status=health_status,
         model_id=active_model,
         device=DEVICE,
         attention=ATTN_IMPL,
@@ -2138,32 +2181,56 @@ def _generate_voice_design(text: str, instruction: str,
 
 @app.post("/tts/design")
 async def design_voice(request: VoiceDesignRequest):
-    """Generate speech using voice description (no reference audio needed)."""
-    if voice_gen_model is None:
-        raise HTTPException(status_code=503, detail="VoiceGenerator not loaded")
+    """Generate speech using voice description (no reference audio needed).
 
+    Falls back to MOSS-TTS-Realtime native voice when VoiceGenerator is disabled.
+    """
     instruction = request.instruction or request.instruct
-    if not instruction:
-        raise HTTPException(status_code=400, detail="instruction or instruct is required")
 
-    logger.info(f"[Design] Text: '{request.text[:80]}...', instruction: '{instruction[:80]}...'")
-    t0 = time.perf_counter()
+    if voice_gen_model is not None:
+        if not instruction:
+            raise HTTPException(status_code=400, detail="instruction or instruct is required")
 
-    try:
-        async with inference_semaphore:
-            audio, sr = await asyncio.to_thread(
-                _generate_voice_design,
-                text=request.text,
-                instruction=instruction,
-                max_new_tokens=request.max_new_tokens,
-                audio_temperature=request.audio_temperature,
-                audio_top_p=request.audio_top_p,
-                audio_top_k=request.audio_top_k,
-                audio_repetition_penalty=request.audio_repetition_penalty,
-            )
-    except Exception as e:
-        logger.error(f"[Design] Generation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.info(f"[Design] Text: '{request.text[:80]}...', instruction: '{instruction[:80]}...'")
+        t0 = time.perf_counter()
+
+        try:
+            async with inference_semaphore:
+                audio, sr = await asyncio.to_thread(
+                    _generate_voice_design,
+                    text=request.text,
+                    instruction=instruction,
+                    max_new_tokens=request.max_new_tokens,
+                    audio_temperature=request.audio_temperature,
+                    audio_top_p=request.audio_top_p,
+                    audio_top_k=request.audio_top_k,
+                    audio_repetition_penalty=request.audio_repetition_penalty,
+                )
+        except Exception as e:
+            logger.error(f"[Design] Generation failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    elif ENABLE_REALTIME and rt_workers:
+        logger.info(
+            f"[Design-RT] Native voice sample: '{request.text[:80]}...' "
+            f"(instruction ignored, native_voice={RT_NATIVE_VOICE})"
+        )
+        t0 = time.perf_counter()
+        tts_request = TTSRequest(
+            text=request.text,
+            language=request.language or "en",
+            max_new_tokens=request.max_new_tokens,
+            audio_temperature=request.audio_temperature,
+            audio_top_p=request.audio_top_p,
+            audio_top_k=request.audio_top_k,
+            audio_repetition_penalty=request.audio_repetition_penalty,
+        )
+        try:
+            audio, sr = await _run_tts_generation(tts_request)
+        except Exception as e:
+            logger.error(f"[Design-RT] Generation failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    else:
+        raise HTTPException(status_code=503, detail="VoiceGenerator not loaded")
 
     wav_bytes = _audio_to_wav_bytes(audio, sr)
     duration = audio.shape[-1] / sr
@@ -2208,8 +2275,19 @@ async def qwen_synthesize_compat(request: VoiceDesignRequest):
             audio_top_k=request.audio_top_k,
         )
         return await generate_speech(tts_request)
+    elif voice_gen_model is not None:
+        return await design_voice(request)
+    elif ENABLE_REALTIME and rt_workers:
+        tts_request = TTSRequest(
+            text=request.text,
+            language=request.language or "en",
+            max_new_tokens=request.max_new_tokens,
+            audio_temperature=request.audio_temperature,
+            audio_top_p=request.audio_top_p,
+            audio_top_k=request.audio_top_k,
+        )
+        return await generate_speech(tts_request)
     else:
-        # Route to voice design (VoiceGenerator)
         return await design_voice(request)
 
 

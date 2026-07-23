@@ -129,13 +129,9 @@ async def generate_speech(request: TTSRequest):
         "text": text,
         "max_new_tokens": request.max_new_tokens,
     }
+    # tokens = hard duration target (~12.5 frames/s). Only send when caller asks.
     if request.tokens is not None:
         payload["tokens"] = request.tokens
-    else:
-        # Duration hint for MOSS v1.5 (~12.5 tokens/s); helps openmoss stop early.
-        est = max(32, len(request.text.split()) * 12)
-        payload["tokens"] = est
-        payload["max_new_tokens"] = min(request.max_new_tokens, max(256, est * 3))
     lang = _resolve_language_name(request.language)
     if lang:
         payload["language"] = lang
