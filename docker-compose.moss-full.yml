@@ -1,0 +1,24 @@
+# Full-size MOSS-TTS v1.5 8B (PyTorch bf16) on a dedicated GPU.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.moss-full.yml up -d --no-deps moss-tts
+
+services:
+  moss-tts:
+    environment:
+      - MOSS_ENABLE_MAIN_MODEL=true
+      - MOSS_ENABLE_VOICE_GEN=false
+      - MOSS_ENABLE_REALTIME=false
+      - MOSS_BATCH_ENGINE=
+      - OPENMOSS_TTS_URL=disabled
+      - MOSS_QUANTIZE=none
+      - NVIDIA_VISIBLE_DEVICES=0
+    depends_on: {}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]
+    healthcheck:
+      start_period: 600s
